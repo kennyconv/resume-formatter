@@ -65,28 +65,29 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     return json.loads(json_string)
 
 def generate_fm_word_doc(ai_data, manual_inputs):
-    # This tries to load your template file from your GitHub repo
     template_path = "Fannie Mae Resume Format Template.docx"
     
     if os.path.exists(template_path):
         doc = docx.Document(template_path)
     else:
-        # Fallback if you haven't uploaded the template to GitHub yet
         doc = docx.Document()
-        st.warning("Template file not found in GitHub. Using default formatting. Please upload 'Fannie Mae Resume Format Template.docx' to your repo.")
+        st.warning("Template file not found in GitHub. Using default formatting.")
 
-    # 1. FILL CANDIDATE TABLE (Assumes Table 0 in your template)
+    # 1. FILL CANDIDATE TABLE
+    # Ensure we use the Name from AI, fallback to a blank string, NOT a placeholder
+    full_name = ai_data.get("Name", "")
+    
     table = doc.tables[0]
-    table.cell(0, 1).text = ai_data.get("Name", "")
+    table.cell(0, 1).text = full_name
     table.cell(1, 1).text = manual_inputs["location"]
     table.cell(2, 1).text = manual_inputs["remote_onsite"]
     table.cell(3, 1).text = manual_inputs["former_fm"]
     table.cell(4, 1).text = manual_inputs["links"]
 
-    # 2. FILL SUMMARY (Assumes Table 1)
+    # 2. FILL SUMMARY
     doc.tables[1].cell(1, 0).text = ai_data.get("Summary", "")
 
-    # 3. FILL EDUCATION (Assumes Table 2)
+    # 3. FILL EDUCATION
     edu_table = doc.tables[2]
     for i, edu in enumerate(ai_data.get("Education", [])):
         if i + 1 < len(edu_table.rows):
@@ -95,7 +96,7 @@ def generate_fm_word_doc(ai_data, manual_inputs):
             row[1].text = edu.get("Degree", "")
             row[2].text = edu.get("Completed", "Yes")
 
-    # 4. FILL SKILLS (Assumes Table 3)
+    # 4. FILL SKILLS
     skill_table = doc.tables[3]
     for i, skill in enumerate(ai_data.get("Skills", [])):
         if i + 1 < len(skill_table.rows):
@@ -103,15 +104,17 @@ def generate_fm_word_doc(ai_data, manual_inputs):
             row[0].text = skill.get("Skill", "")
             row[1].text = skill.get("Experience", "")
 
-    # 5. WORK EXPERIENCE (Adds to the end of the doc)
+    # 5. WORK EXPERIENCE 
+    # Removed the 'List Bullet' style to prevent the KeyError crash
     doc.add_paragraph("\nPROFESSIONAL EXPERIENCE").bold = True
     for job in ai_data.get("WorkExperience", []):
         p = doc.add_paragraph()
-        p.add_run(f"{job.get('Company')}").bold = True
-        p.add_run(f"\t{job.get('Dates')}")
+        p.add_run(f"{job.get('Company', 'Company')}").bold = True
+        p.add_run(f"\t{job.get('Dates', '')}")
         doc.add_paragraph(job.get("Title", ""))
         for bullet in job.get("Bullets", []):
-            doc.add_paragraph(bullet, style='List Bullet')
+            # Manually adding a bullet point character to avoid style errors
+            doc.add_paragraph(f"• {bullet}")
 
     # 6. INTERVIEW RESULTS
     doc.add_paragraph("\nSUPPLIER TECHNICAL INTERVIEW RESULTS").bold = True
