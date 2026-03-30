@@ -7,11 +7,30 @@ import json
 
 # --- Core Functions ---
 
-def extract_text_from_pdf(uploaded_file):
-    pdf_reader = PyPDF2.PdfReader(uploaded_file)
+def extract_text_from_file(uploaded_file):
+    """Reads raw text from PDF, DOCX, or TXT files."""
+    file_name = uploaded_file.name.lower()
     text = ""
-    for page in pdf_reader.pages:
-        text += page.extract_text() + "\n"
+    
+    if file_name.endswith('.pdf'):
+        pdf_reader = PyPDF2.PdfReader(uploaded_file)
+        for page in pdf_reader.pages:
+            # Some PDFs return None for blank pages, so we handle that safely
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+                
+    elif file_name.endswith('.docx'):
+        doc = docx.Document(uploaded_file)
+        for para in doc.paragraphs:
+            text += para.text + "\n"
+            
+    elif file_name.endswith('.txt'):
+        text = uploaded_file.getvalue().decode("utf-8")
+        
+    else:
+        raise ValueError("Unsupported file format. Please upload a PDF, DOCX, or TXT.")
+        
     return text
 
 def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, interview_results, api_key):
@@ -187,7 +206,7 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("1. Candidate Details")
-    uploaded_file = st.file_uploader("Upload Candidate Resume (PDF)", type=["pdf"])
+    uploaded_file = st.file_uploader("Upload Candidate Resume (PDF, DOCX, TXT)", type=["pdf", "docx", "txt"])
     location = st.text_input("Current Location (City, ST):", placeholder="e.g., Dallas, TX")
     remote_onsite = st.selectbox("Remote or Onsite:", ["Onsite", "Remote", "Hybrid"])
     former_fm = st.selectbox("Former FM FTE or contractor:", ["N", "Y"])
@@ -209,7 +228,7 @@ if st.button("Generate Formatted Resume", type="primary"):
     else:
         with st.spinner("Extracting text, writing summary, matching skills, and formatting document... This may take 15-30 seconds."):
             try:
-                raw_text = extract_text_from_pdf(uploaded_file)
+                raw_text = extract_text_from_file(uploaded_file)
                 
                 manual_inputs = {
                     "location": location,
