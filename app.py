@@ -164,10 +164,11 @@ with c1:
 with c2:
     job_description = st.text_area("Job Description (Fieldglass)")
     
-    # Spotlight Section with Sub-text
-    st.markdown("**Spotlight Call/Other Info**")
-    st.caption("Spotlight call notes, transcript, manager feedback, MSP comments, etc.")
-    extra_info = st.text_area("Spotlight Call/Other Info", label_visibility="collapsed")
+    # Spotlight Section with consistent label and placeholder text
+    extra_info = st.text_area(
+        "Spotlight Call/Other Info", 
+        placeholder="Spotlight call notes, transcript, manager feedback, MSP comments, etc."
+    )
     
     interview_results = st.text_area("Supplier Technical Interview Results")
 
