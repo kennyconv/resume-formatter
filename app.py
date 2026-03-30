@@ -70,7 +70,7 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     return json.loads(json_string)
 
 def docx_replace(doc, old_text, new_text):
-    """Surgical search and replace that works even if Word breaks the text into multiple runs."""
+    """Search and replace that works across paragraphs and tables."""
     for p in doc.paragraphs:
         if old_text in p.text:
             p.text = p.text.replace(old_text, str(new_text))
@@ -86,7 +86,6 @@ def generate_fm_word_doc(ai_data, manual_inputs):
     doc = docx.Document(template_path) if os.path.exists(template_path) else docx.Document()
 
     # 1. TOP TABLE (Candidate Info)
-    # Mapping based on your screenshot: Name is Cell(0,1), Location is Cell(1,1)...
     t0 = doc.tables[0]
     t0.cell(0, 1).text = ai_data.get("FullName", "")
     t0.cell(1, 1).text = manual_inputs["location"]
@@ -112,25 +111,23 @@ def generate_fm_word_doc(ai_data, manual_inputs):
             t3.cell(i+1, 0).text = sk.get("Category", "")
             t3.cell(i+1, 1).text = sk.get("Exp", "")
 
-    # 5. WORK HISTORY (Surgical Replace)
+    # 5. WORK HISTORY
     jobs = ai_data.get("Jobs", [])
     for i in range(1, 8):
         job = jobs[i-1] if i <= len(jobs) else None
-        
-        # Replace placeholders
         comp_key = f"COMPANY{i}"
         title_key = f"TITLE{i}"
-        date_key = "MMM YYYY – CURRENT" if i == 1 else f"MMM YYYY – MMM YYYY" # This was the trick
         
         if job:
             docx_replace(doc, comp_key, job['Company'])
             docx_replace(doc, title_key, job['Title'])
-            # We must be careful replacing dates; we replace the first instance we find for that job
+            
+            # Date Handling
             for p in doc.paragraphs:
                 if job['Company'] in p.text and ("MMM YYYY" in p.text or "CURRENT" in p.text):
                     p.text = p.text.replace("MMM YYYY – CURRENT", job['Dates']).replace("MMM YYYY – MMM YYYY", job['Dates'])
             
-            # Bullets
+            # Bullet Handling
             bullet_key = "Bullets" if i == 1 else f"Bullets{i}"
             for p in doc.paragraphs:
                 if bullet_key in p.text:
@@ -138,10 +135,8 @@ def generate_fm_word_doc(ai_data, manual_inputs):
                     for b in job['Bullets']:
                         p.insert_paragraph_before(f"• {b}")
         else:
-            # Clean up unused placeholders
             docx_replace(doc, comp_key, "")
             docx_replace(doc, title_key, "")
-            docx_replace(doc, "MMM YYYY – MMM YYYY", "")
             docx_replace(doc, f"Bullets{i}", "")
 
     # 6. INTERVIEW RESULTS
@@ -161,22 +156,27 @@ with st.sidebar:
 c1, c2 = st.columns(2)
 with c1:
     uploaded_file = st.file_uploader("Upload Resume", type=["pdf", "docx"])
-    location = st.text_input("Current Location", value="Washington, DC")
+    location = st.text_input("Current Location: (City and State only)", placeholder="Washington, DC")
     remote_onsite = st.selectbox("Remote or Onsite", ["Onsite", "Remote", "Hybrid"])
-    former_fm = st.selectbox("Former FM?", ["N", "Y"])
-    links = st.text_input("Links", value="[https://www.linkedin.com/in/hasosumah](https://www.linkedin.com/in/hasosumah)")
+    former_fm = st.selectbox("Former FM FTE or Contractor?", ["N", "Y"])
+    links = st.text_input("LinkedIn Profile/GitHub/Portfolio Link")
 
 with c2:
-    job_description = st.text_area("Job Description")
-    extra_info = st.text_area("Spotlight/MSP Notes")
-    interview_results = st.text_area("Interview Results")
+    job_description = st.text_area("Job Description (Fieldglass)")
+    
+    # Spotlight Section with Sub-text
+    st.markdown("**Spotlight Call/Other Info**")
+    st.caption("Spotlight call notes, transcript, manager feedback, MSP comments, etc.")
+    extra_info = st.text_area("Spotlight Call/Other Info", label_visibility="collapsed")
+    
+    interview_results = st.text_area("Supplier Technical Interview Results")
 
 if st.button("Generate Formatted Resume"):
     try:
         raw_text = extract_text_from_file(uploaded_file)
         ai_data = parse_and_generate_with_ai(raw_text, job_description, extra_info, interview_results, api_key)
         
-        # FINAL PROTECTION: Hard check for the name in the raw text vs AI
+        # Hard check for name errors
         if "Alex" in ai_data['FullName'] and "Hassan" in raw_text:
             ai_data['FullName'] = "Hassan Osumah"
             ai_data['FirstName'] = "Hassan"
