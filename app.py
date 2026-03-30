@@ -35,7 +35,7 @@ def extract_text_from_file(uploaded_file):
 
 def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, interview_results, api_key):
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-pro')
+    model = genai.GenerativeModel('gemini-3.1-pro-preview')
     
     prompt = f"""
     You are an expert technical recruiter and resume formatter for a staffing agency supporting Fannie Mae. Your goal is to format a candidate's resume to achieve two outcomes: 
