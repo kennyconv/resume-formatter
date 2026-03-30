@@ -27,43 +27,51 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     model = genai.GenerativeModel('gemini-2.5-flash')
     
     prompt = f"""
-    You are an expert technical recruiter. 
+    You are an expert technical recruiter. Your goal is to format a resume for a high-level job submission.
     
-    CRITICAL NAME RULES: 
+    NAME RULES: 
     1. Extract the candidate's FULL NAME correctly from the resume.
-    2. In the SUMMARY section, you MUST use the candidate's FIRST NAME ONLY to start (e.g., "Hassan is a..."). 
+    2. In the SUMMARY section, use the candidate's FIRST NAME ONLY to start. 
 
-    Task 1: Write a highly persuasive 4-5 sentence Summary. 
-    - Use this EXACT style: "[First Name] is a [Title] with [X]+ years of experience specializing in [Skills], aligning perfectly with the need for [JD Requirement]. During his tenure at [Company 1] and [Company 2], he developed a deep foundation in [Specific Task]. He conducts end-to-end investigations utilizing [Tools]. As demonstrated in his technical screen, [First Name] leverages [Technical Skill] to [Result]. His unique blend of [Skill A] and [Skill B] ensures he can immediately contribute to [JD Goal]."
-    - Include quantitative metrics (e.g., 50+ incidents, 15% efficiency) from the Resume or Interview.
-    
-    Task 2: Create exactly 4 Skill rows. 
-    - Row 1: Cybersecurity & SOC Operations (Threat Detection, Incident Response, Insider Threat Investigations)
-    - Row 2: SIEM & Threat Hunting (Splunk, IBM QRadar, Exabeam, Log Analysis, Correlation)
-    - Row 3: Network & Security Analysis (TCP/IP, DNS, HTTP/S, Wireshark, Endpoint Security)
-    - Row 4: Fraud & Behavioral Risk Analysis (Financial Transactions, Pattern Detection, Root Cause Analysis)
-    - Adjust years based on actual resume dates.
+    SUMMARY GUIDELINES:
+    - Write 4-5 sentences.
+    - Start with "[First Name] is a..."
+    - Analyze the Job Description and Spotlight Notes to identify the "Win Themes".
+    - Prove the candidate meets these requirements using specific examples and metrics from their resume and interview.
+    - Mention 1-2 previous employers if relevant.
+    - Reference a specific technical insight from the interview results to prove depth.
+
+    SKILLS SECTION STYLE GUIDE (CRITICAL):
+    - You MUST create exactly 4 rows.
+    - Each row must follow this EXACT format: "Functional Competency & Strategy (Tool 1, Tool 2, Concept 1, Tool 3)"
+    - DO NOT use simple labels like "Java" or "SIEM". 
+    - INSTEAD, use high-level descriptive categories like:
+        * "Cybersecurity & SOC Operations (Threat Detection, Incident Response, Insider Threat)"
+        * "CI/CD Pipeline Automation & DevOps Testing (Jenkins, Docker, Cloud Environments)"
+        * "Cloud Data & API Integration (AWS Redshift, S3, JSON, REST API Validation)"
+    - Only include tools/skills the candidate actually possesses.
+    - Calculate years of experience and "Year Last Used" based on the resume dates.
 
     JSON Structure:
     {{
         "Name": "Full Name",
         "FirstName": "First Name",
-        "Summary": "Persuasive summary...",
+        "Summary": "Persuasive summary text...",
         "Skills": [
-            {{"Skill": "Skill Row Name", "Experience": "X+ years, current"}}
+            {{"Skill": "Functional Category (Specific Tools & Concepts)", "Experience": "X+ years, current"}}
         ],
         "Education": [
-            {{"School": "University", "Degree": "Degree", "Completed": "Yes/No"}}
+            {{"School": "University", "Degree": "Level: Concentration", "Completed": "Yes/No"}}
         ],
         "WorkExperience": [
-            {{"Company": "Company", "Dates": "Dates", "Title": "Title", "Bullets": ["bullet"]}}
+            {{"Company": "Company Name", "Dates": "Month Year – Month Year", "Title": "Job Title", "Bullets": ["bullet 1", "bullet 2"]}}
         ]
     }}
 
-    JD: {job_description}
-    Extra: {extra_info}
-    Interview: {interview_results}
-    Resume: {raw_resume_text}
+    JOB DESCRIPTION: {job_description}
+    SPOTLIGHT NOTES: {extra_info}
+    INTERVIEW Q&A: {interview_results}
+    CANDIDATE RESUME: {raw_resume_text}
     """
     
     response = model.generate_content(prompt)
@@ -93,33 +101,32 @@ def generate_fm_word_doc(ai_data, manual_inputs):
     # 2. SUMMARY (Table 1)
     doc.tables[1].cell(1, 0).text = ai_data.get("Summary", "")
 
-    # 3. EDUCATION (Table 2)
+    # 3. EDUCATION (Table 2) - Skip Header Row 0
     edu_table = doc.tables[2]
-    # Keep Header (Row 0), Fill Data starting Row 1
     for i, edu in enumerate(ai_data.get("Education", [])):
-        if i + 1 < len(edu_table.rows):
-            row = edu_table.rows[i+1].cells
-            row[0].text = edu.get("School", "")
-            row[1].text = edu.get("Degree", "")
-            row[2].text = edu.get("Completed", "Yes")
+        row_idx = i + 1
+        if row_idx < len(edu_table.rows):
+            cells = edu_table.rows[row_idx].cells
+            cells[0].text = edu.get("School", "")
+            cells[1].text = edu.get("Degree", "")
+            cells[2].text = edu.get("Completed", "Yes")
 
-    # 4. SKILLS (Table 3)
+    # 4. SKILLS (Table 3) - Skip Header Row 0
     skill_table = doc.tables[3]
-    # Ensure Header "Skill/Competency | Years..." is at Row 0, Data starts Row 1
     for i, skill in enumerate(ai_data.get("Skills", [])):
-        if i + 1 < len(skill_table.rows):
-            row = skill_table.rows[i+1].cells
-            row[0].text = skill.get("Skill", "")
-            row[1].text = skill.get("Experience", "")
+        row_idx = i + 1
+        if row_idx < len(skill_table.rows):
+            cells = skill_table.rows[row_idx].cells
+            cells[0].text = skill.get("Skill", "")
+            cells[1].text = skill.get("Experience", "")
 
-    # 5. PROFESSIONAL EXPERIENCE (Finding the section or adding at end)
+    # 5. WORK EXPERIENCE
     doc.add_paragraph("\nPROFESSIONAL EXPERIENCE").bold = True
     for job in ai_data.get("WorkExperience", []):
         p = doc.add_paragraph()
         run = p.add_run(f"{job.get('Company')}")
         run.bold = True
         p.add_run(f"\t{job.get('Dates')}")
-        
         doc.add_paragraph(job.get("Title", ""))
         for bullet in job.get("Bullets", []):
             doc.add_paragraph(f"• {bullet}")
@@ -142,15 +149,15 @@ with st.sidebar:
 col1, col2 = st.columns(2)
 with col1:
     uploaded_file = st.file_uploader("Upload Resume", type=["pdf", "docx"])
-    location = st.text_input("Location (City, ST)", placeholder="Washington, DC")
-    remote_onsite = st.selectbox("Remote/Onsite", ["Onsite", "Remote", "Hybrid"])
-    former_fm = st.selectbox("Former FM?", ["N", "Y"])
-    links = st.text_input("LinkedIn Link")
+    location = st.text_input("Current Location (City, ST)", placeholder="e.g., Dallas, TX")
+    remote_onsite = st.selectbox("Remote or Onsite", ["Onsite", "Remote", "Hybrid"])
+    former_fm = st.selectbox("Former FM FTE or Contractor?", ["N", "Y"])
+    links = st.text_input("Links (LinkedIn/GitHub)")
 
 with col2:
-    job_description = st.text_area("Job Description")
-    extra_info = st.text_area("Spotlight/Extra Info")
-    interview_results = st.text_area("Interview Q&A")
+    job_description = st.text_area("Job Description (Fieldglass)")
+    extra_info = st.text_area("Spotlight Call / MSP Notes")
+    interview_results = st.text_area("Supplier Technical Interview Q&A")
 
 if st.button("Generate Formatted Resume"):
     if not api_key or not uploaded_file:
@@ -167,7 +174,7 @@ if st.button("Generate Formatted Resume"):
             }
             
             doc_bytes = generate_fm_word_doc(ai_data, manual_inputs)
-            st.success("Generated!")
+            st.success(f"Formatted Resume for {ai_data.get('Name')} is ready!")
             st.download_button("Download Resume", data=doc_bytes, file_name=f"FM_Formatted_{ai_data.get('FirstName')}.docx")
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Error during generation: {e}")
