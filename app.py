@@ -1,10 +1,12 @@
 import streamlit as st
 import google.generativeai as genai
 import docx
+from docx.shared import Pt
 import PyPDF2
 from io import BytesIO
 import json
 import os
+import re
 
 # --- Core Functions ---
 
@@ -21,36 +23,33 @@ def extract_text_from_file(uploaded_file):
         for para in doc.paragraphs: text += para.text + "\n"
     return text
 
+def get_actual_name(raw_text):
+    """Fallback: Grabs the first non-empty line of the resume to prevent 'Alex' hallucinations."""
+    lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
+    return lines[0] if lines else "CANDIDATE NAME"
+
 def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, interview_results, api_key):
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-2.5-flash')
     
     prompt = f"""
-    You are a professional resume formatting assistant. 
+    You are a professional resume formatter. Extract data from the provided resume.
     
-    STRICT IDENTITY RULE: 
-    - You must extract the candidate's ACTUAL name from the provided resume text. 
-    - The name is typically the very first line or the largest text at the top.
-    - NEVER use placeholder names like "Alex", "John Doe", or "Candidate". 
-    - If you cannot find a name, return "CANDIDATE NAME".
-    
-    SUMMARY RULE:
-    - Use the candidate's First Name only. Start with "[First Name] is a..."
-    - Write 4-5 dense sentences, selling the candidate using metrics and keywords from the JD.
-
-    SKILLS RULE:
-    - Create exactly 4 rows. Use the format: "Functional Category & Strategy (Tool 1, Tool 2, Tool 3)".
+    STRICT RULES:
+    1. SUMMARY: Start with "[First Name] is a...". Write 4-5 dense, metric-heavy sentences.
+    2. SKILLS: Exactly 4 rows. Format: "Functional Category & Strategy (Tool 1, Tool 2, Tool 3)".
+    3. JOBS: Standardize dates to "MMM YYYY – Current" or "MMM YYYY – MMM YYYY".
 
     JSON Structure:
     {{
-        "FullName": "Correct Full Name",
+        "FullName": "Extract correctly from resume",
         "FirstName": "First Name Only",
-        "Summary": "Full Summary...",
+        "Summary": "Summary text...",
         "Skills": [
             {{"Category": "Functional Category (Tools)", "Exp": "X+ years, current"}}
         ],
         "Education": [
-            {{"School": "Uni Name", "Degree": "Degree Name", "Status": "Yes"}}
+            {{"School": "University", "Degree": "Degree Name", "Status": "Yes"}}
         ],
         "Jobs": [
             {{"Company": "Company Name", "Title": "Job Title", "Dates": "MMM YYYY – MMM YYYY", "Bullets": ["b1", "b2"]}}
@@ -68,80 +67,80 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     json_string = raw_output.split("```json")[1].split("```")[0].strip() if "```json" in raw_output else raw_output
     return json.loads(json_string)
 
-def docx_replace(doc, old_text, new_text):
-    """Search and replace across paragraphs and tables."""
-    for p in doc.paragraphs:
-        if old_text in p.text:
-            p.text = p.text.replace(old_text, str(new_text))
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for p in cell.paragraphs:
-                    if old_text in p.text:
-                        p.text = p.text.replace(old_text, str(new_text))
-
-def generate_fm_word_doc(ai_data, manual_inputs):
+def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
     template_path = "Fannie Mae Resume Format Template.docx"
     doc = docx.Document(template_path) if os.path.exists(template_path) else docx.Document()
 
-    # 1. TOP TABLE (Candidate Info)
+    # --- 1. TOP HEADER ---
+    for p in doc.paragraphs:
+        if "CANDIDATE INFORMATION" in p.text:
+            p.text = "CANDIDATE INFORMATION"
+            p.runs[0].bold = True
+
+    # --- 2. CANDIDATE INFO TABLE (Table 0) ---
+    # FIXED: Using Row indices that preserve your "Name:", "Location:" labels
     t0 = doc.tables[0]
-    t0.cell(0, 1).text = ai_data.get("FullName", "")
+    real_name = get_actual_name(raw_text) if "Alex" in ai_data.get("FullName", "") else ai_data.get("FullName")
+    
+    t0.cell(0, 1).text = real_name
     t0.cell(1, 1).text = manual_inputs["location"]
     t0.cell(2, 1).text = manual_inputs["remote_onsite"]
     t0.cell(3, 1).text = manual_inputs["former_fm"]
     t0.cell(4, 1).text = manual_inputs["links"]
 
-    # 2. SUMMARY TABLE
+    # --- 3. SUMMARY (Table 1) ---
     doc.tables[1].cell(1, 0).text = ai_data.get("Summary", "")
 
-    # 3. EDUCATION TABLE
+    # --- 4. EDUCATION (Table 2) ---
+    # FIXED: Skip Header Row 0 (EDUCATION) and Row 1 (School | Degree | Completed)
     t2 = doc.tables[2]
     for i, edu in enumerate(ai_data.get("Education", [])):
-        if i+1 < len(t2.rows):
-            t2.cell(i+1, 0).text = edu.get("School", "")
-            t2.cell(i+1, 1).text = edu.get("Degree", "")
-            t2.cell(i+1, 2).text = edu.get("Status", "Yes")
+        row_idx = i + 2 # Starts filling at Row 2
+        if row_idx < len(t2.rows):
+            t2.cell(row_idx, 0).text = edu.get("School", "")
+            t2.cell(row_idx, 1).text = edu.get("Degree", "")
+            t2.cell(row_idx, 2).text = edu.get("Status", "Yes")
 
-    # 4. SKILLS TABLE
+    # --- 5. SKILLS (Table 3) ---
+    # FIXED: Skip Header Row 0 (SKILL & COMPETENCY) and Row 1 (Skill/Competency | Years)
     t3 = doc.tables[3]
     for i, sk in enumerate(ai_data.get("Skills", [])):
-        if i+1 < len(t3.rows):
-            t3.cell(i+1, 0).text = sk.get("Category", "")
-            t3.cell(i+1, 1).text = sk.get("Exp", "")
+        row_idx = i + 2 # Starts filling at Row 2
+        if row_idx < len(t3.rows):
+            t3.cell(row_idx, 0).text = sk.get("Category", "")
+            t3.cell(row_idx, 1).text = sk.get("Exp", "")
 
-    # 5. WORK HISTORY (Surgical Replace)
+    # --- 6. SURGICAL JOB & INTERVIEW REPLACE ---
+    def replace_text_safely(old, new):
+        for p in doc.paragraphs:
+            if old in p.text:
+                p.text = p.text.replace(old, str(new))
+
     jobs = ai_data.get("Jobs", [])
     for i in range(1, 8):
         job = jobs[i-1] if i <= len(jobs) else None
-        comp_key = f"COMPANY{i}"
-        title_key = f"TITLE{i}"
-        date_pattern1 = "MMM YYYY – CURRENT"
-        date_pattern2 = "MMM YYYY – MMM YYYY"
-        
         if job:
-            docx_replace(doc, comp_key, job['Company'])
-            docx_replace(doc, title_key, job['Title'])
-            
-            # Match the date placeholder on the same line as the company we just replaced
+            replace_text_safely(f"COMPANY{i}", job['Company'])
+            replace_text_safely(f"TITLE{i}", job['Title'])
+            # Replace date placeholder on the same line
             for p in doc.paragraphs:
                 if job['Company'] in p.text:
-                    p.text = p.text.replace(date_pattern1, job['Dates']).replace(date_pattern2, job['Dates'])
+                    p.text = p.text.replace("MMM YYYY – CURRENT", job['Dates']).replace("MMM YYYY – MMM YYYY", job['Dates'])
             
-            # Bullet Handling
-            bullet_key = "Bullets" if i == 1 else f"Bullets{i}"
+            # Bullets
+            bullet_tag = "Bullets" if i == 1 else f"Bullets{i}"
             for p in doc.paragraphs:
-                if bullet_key in p.text:
+                if bullet_tag in p.text:
                     p.text = ""
                     for b in job['Bullets']:
-                        p.insert_paragraph_before(f"• {b}")
+                        new_p = p.insert_paragraph_before(f"• {b}")
         else:
-            docx_replace(doc, comp_key, "")
-            docx_replace(doc, title_key, "")
-            docx_replace(doc, f"Bullets{i}", "")
+            # Clean unused
+            replace_text_safely(f"COMPANY{i}", "")
+            replace_text_safely(f"TITLE{i}", "")
+            replace_text_safely(f"Bullets{i}", "")
 
-    # 6. INTERVIEW RESULTS
-    docx_replace(doc, "ANSWER", manual_inputs["interview_results"])
+    replace_text_safely("ANSWER", manual_inputs["interview_results"])
 
     bio = BytesIO()
     doc.save(bio)
@@ -163,11 +162,8 @@ with c1:
     links = st.text_input("LinkedIn Profile/GitHub/Portfolio Link")
 
 with c2:
-    # UPDATED LINE: Added placeholder for Job Description
     job_description = st.text_area("Job Description", placeholder="Paste the job description here")
-    
     extra_info = st.text_area("Spotlight Call/Other Info", placeholder="Spotlight call notes, transcript, manager feedback, MSP comments, etc.")
-    
     interview_results = st.text_area("Supplier Technical Interview Results")
 
 if st.button("Generate Formatted Resume"):
@@ -176,8 +172,11 @@ if st.button("Generate Formatted Resume"):
         ai_data = parse_and_generate_with_ai(raw_text, job_description, extra_info, interview_results, api_key)
         
         manual_inputs = {"location": location, "remote_onsite": remote_onsite, "former_fm": former_fm, "links": links, "interview_results": interview_results}
-        doc_bytes = generate_fm_word_doc(ai_data, manual_inputs)
-        st.success(f"Success! Generated for {ai_data['FullName']}")
-        st.download_button("Download Resume", data=doc_bytes, file_name=f"FM_Formatted_{ai_data['FirstName']}.docx")
+        doc_bytes = generate_fm_word_doc(ai_data, manual_inputs, raw_text)
+        
+        # Pull actual first name for the filename
+        fname = get_actual_name(raw_text).split()[0]
+        st.success(f"Generated for {get_actual_name(raw_text)}")
+        st.download_button("Download Resume", data=doc_bytes, file_name=f"FM_Formatted_{fname}.docx")
     except Exception as e:
-        st.error(f"Error during generation: {e}")
+        st.error(f"Error: {e}")
