@@ -35,13 +35,13 @@ def extract_text_from_file(uploaded_file):
 
 def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, interview_results, api_key):
     genai.configure(api_key=api_key)
-    # Reverting to the most universal model string
+    # FIXED MODEL STRING: Using the most compatible identifier
     model = genai.GenerativeModel('gemini-1.5-flash')
     
     prompt = f"""
     You are an expert technical recruiter specializing in Fannie Mae placements. 
     
-    STRICT IDENTITY: Extract the candidate's ACTUAL name from the resume text.
+    IDENTITY: Extract the candidate's ACTUAL name from the resume text.
     
     SKILLS SECTION (MANDATORY GOLD STANDARD):
     You MUST create exactly 4 rows. Group the candidate's tools and experience into these exact strategy buckets:
@@ -52,7 +52,7 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     (If the candidate is in a different field, use this 'Functional Strategy (Tools, Concepts)' format).
 
     WORK HISTORY:
-    - Extract ALL previous jobs.
+    - Extract ALL previous jobs from most recent to oldest.
     - Format dates exactly: 'Jun 2021 – Nov 2025' or 'Jun 2021 – Current'.
     - Use 3-letter month abbreviations.
 
@@ -86,18 +86,20 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
 def run_level_replace(paragraph, target, replacement):
     """Surgical replacement that finds the target even if Word fragmented the runs."""
     if target.lower() in paragraph.text.lower():
-        # Try finding it in an individual run first (best for keeping bold/italic)
+        found = False
         for run in paragraph.runs:
             if target.lower() in run.text.lower():
-                run.text = run.text.replace(target, str(replacement))
-                return True
+                run.text = run.text.replace(run.text, str(replacement))
+                found = True
+                break
         
-        # Fallback: Replace in paragraph text if runs are too fragmented
-        full_text = paragraph.text
-        new_text = full_text.replace(target, str(replacement))
-        for i in range(len(paragraph.runs)):
-            paragraph.runs[i].text = ""
-        paragraph.runs[0].text = new_text
+        # Fallback if the placeholder is split across multiple runs
+        if not found:
+            full_text = paragraph.text
+            new_text = full_text.replace(target, str(replacement))
+            for i, run in enumerate(paragraph.runs):
+                if i == 0: run.text = new_text
+                else: run.text = ""
         return True
     return False
 
@@ -117,7 +119,7 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
     # 2. SUMMARY
     doc.tables[1].cell(1, 0).text = ai_data.get("Summary", "")
 
-    # 3. EDUCATION
+    # 3. EDUCATION & SKILLS
     t2 = doc.tables[2]
     for i, edu in enumerate(ai_data.get("Education", [])):
         if i + 2 < len(t2.rows):
@@ -125,29 +127,29 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
             t2.cell(i+2, 1).text = edu.get("Degree", "")
             t2.cell(i+2, 2).text = edu.get("Status", "Yes")
 
-    # 4. SKILLS
     t3 = doc.tables[3]
     for i, sk in enumerate(ai_data.get("Skills", [])):
         if i + 2 < len(t3.rows):
             t3.cell(i+2, 0).text = sk.get("Category", "")
             t3.cell(i+2, 1).text = sk.get("Exp", "")
 
-    # 5. WORK HISTORY (Format-Locked)
+    # 4. WORK HISTORY (Format-Locked Replacement)
     jobs = ai_data.get("Jobs", [])
     for i in range(1, 8):
         job = jobs[i-1] if i <= len(jobs) else None
         
         c_tag = f"company{i}"
         t_tag = f"title{i}"
-        d_tag_1 = "mmm yyyy – Current"
-        d_tag_2 = "mmm yyyy – mmm yyyy"
+        d_tag_current = "mmm yyyy – Current"
+        d_tag_range = "mmm yyyy – mmm yyyy"
         
         for p in doc.paragraphs:
             if c_tag in p.text.lower():
                 if job:
                     run_level_replace(p, c_tag, job['Company'])
-                    run_level_replace(p, d_tag_1, job['Dates'])
-                    run_level_replace(p, d_tag_2, job['Dates'])
+                    # Dates: Check both possible placeholders on this line
+                    run_level_replace(p, d_tag_current, job['Dates'])
+                    run_level_replace(p, d_tag_range, job['Dates'])
                 else: p.text = "" 
             
             if t_tag in p.text.lower():
@@ -161,7 +163,7 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
                     for b in job['Bullets']:
                         p.insert_paragraph_before(f"• {b}")
 
-    # 6. INTERVIEW RESULTS
+    # 5. INTERVIEW RESULTS
     for p in doc.paragraphs:
         if "ANSWER" in p.text:
             p.text = p.text.replace("ANSWER", manual_inputs["interview_results"])
@@ -197,7 +199,7 @@ if st.button("Generate Formatted Resume"):
         manual_inputs = {"location": location, "remote_onsite": remote_onsite, "former_fm": former_fm, "links": links, "interview_results": interview_results}
         
         doc_bytes = generate_fm_word_doc(ai_data, manual_inputs, raw_text)
-        final_name_clean = ai_data.get("FullName", "Candidate").strip().title()
+        final_name_clean = ai_data.get("FullName", "Candidate").title()
         
         st.success(f"Success! Generated for {final_name_clean}")
         st.download_button(
