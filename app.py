@@ -4,7 +4,6 @@ import docx
 import PyPDF2
 from io import BytesIO
 import json
-import os
 import re
 
 # --- Core Functions ---
@@ -19,71 +18,62 @@ def extract_text_from_file(uploaded_file):
             if page_text: text += page_text + "\n"
     elif file_name.endswith('.docx'):
         doc = docx.Document(uploaded_file)
+        # Scan Headers
         try:
             for section in doc.sections:
-                header = section.header
-                if header:
-                    for para in header.paragraphs:
+                if section.header:
+                    for para in section.header.paragraphs:
                         if para.text.strip(): text += para.text + "\n"
         except: pass
+        # Scan Body
         for para in doc.paragraphs:
             if para.text.strip(): text += para.text + "\n"
+        # Scan Tables
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
                     if cell.text.strip(): text += cell.text + " "
     return text
 
-def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, interview_results, api_key):
+def parse_and_generate_with_ai(raw_resume_text, api_key):
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-1.5-flash')
     
     prompt = f"""
-    You are a data extraction tool. Your only job is to move data from a raw resume into a JSON format without changing a single word of the professional experience.
+    You are a data extraction tool. Your ONLY job is to extract raw data from a resume.
+    Do NOT summarize, Do NOT rephrase, and Do NOT improve any wording.
 
-    STRICT WORDING RULE: 
-    - For the 'Bullets' field in the 'Jobs' section, you MUST copy the text EXACTLY as it appears in the original resume.
-    - DO NOT edit, improve, shorten, or rephrase the bullet points.
-    - Treat the bullet points as "read-only" data.
-
-    STRICT IDENTITY: Extract the candidate's ACTUAL name. 
-    
-    SKILLS SECTION:
-    Group tools into exactly 4 rows following the 'Functional Strategy (Tools, Concepts)' format.
-
-    WORK HISTORY:
-    - Extract jobs from most recent to oldest.
-    - Format dates as 'Jun 2021 – Nov 2025' or 'Jun 2021 – Current'.
+    1. Extract Full Name.
+    2. Extract Education (School, Degree).
+    3. Extract Work History:
+       - Company Name
+       - Job Title
+       - Dates (Format: MMM YYYY – MMM YYYY or MMM YYYY – Current)
+       - Bullets: Copy EVERY bullet point EXACTLY as written.
 
     JSON Structure:
     {{
-        "FullName": "Full Name",
-        "FirstName": "First Name",
-        "Summary": "Summary text...",
-        "Skills": [
-            {{"Category": "Strategy (Tools)", "Exp": "X+ years, current"}}
-        ],
+        "FullName": "Name",
         "Education": [
-            {{"School": "Uni", "Degree": "Degree", "Status": "Yes"}}
+            {{"School": "Uni", "Degree": "Degree"}}
         ],
         "Jobs": [
-            {{"Company": "Company", "Title": "Title", "Dates": "Jun 2021 – Nov 2025", "Bullets": ["EXACT BULLET 1", "EXACT BULLET 2"]}}
+            {{"Company": "Company", "Title": "Title", "Dates": "Dates", "Bullets": ["Bullet 1", "Bullet 2"]}}
         ]
     }}
 
-    RESUME: {raw_resume_text}
-    JD: {job_description}
-    NOTES: {extra_info}
-    INTERVIEW: {interview_results}
+    RESUME TEXT:
+    {raw_resume_text}
     """
     
     response = model.generate_content(prompt)
-    raw_output = response.text.strip()
-    json_string = raw_output.split("```json")[1].split("```")[0].strip() if "```json" in raw_output else raw_output
-    return json.loads(json_string)
+    res_text = response.text.strip()
+    if "```json" in res_text:
+        res_text = res_text.split("```json")[1].split("```")[0].strip()
+    return json.loads(res_text)
 
 def run_level_replace(paragraph, target, replacement):
-    """Surgical replacement preserving bold/italic and tab stops."""
+    """Surgical replacement to preserve Tab Stops and Bold/Italic formatting."""
     if target.lower() in paragraph.text.lower():
         found = False
         for run in paragraph.runs:
@@ -91,86 +81,79 @@ def run_level_replace(paragraph, target, replacement):
                 insens_re = re.compile(re.escape(target), re.IGNORECASE)
                 run.text = insens_re.sub(str(replacement), run.text)
                 found = True
-        
         if not found:
             insens_re = re.compile(re.escape(target), re.IGNORECASE)
             new_text = insens_re.sub(str(replacement), paragraph.text)
-            for i in range(len(paragraph.runs)):
-                paragraph.runs[i].text = ""
-            paragraph.runs[0].text = new_text
+            for i, run in enumerate(paragraph.runs):
+                run.text = new_text if i == 0 else ""
 
-def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
+def generate_fm_word_doc(ai_data, manual_inputs):
     template_path = "Fannie Mae Resume Format Template.docx"
-    doc = docx.Document(template_path) if os.path.exists(template_path) else docx.Document()
+    doc = docx.Document(template_path)
 
-    # 1. CANDIDATE INFO
+    # 1. CANDIDATE INFO (Coordinate Mapping)
     t0 = doc.tables[0]
-    final_name = ai_data.get("FullName", "Candidate").strip().title()
-    t0.cell(1, 1).text = final_name
+    t0.cell(1, 1).text = ai_data.get("FullName", "NAME").title()
     t0.cell(2, 1).text = manual_inputs["location"]
     t0.cell(3, 1).text = manual_inputs["remote_onsite"]
     t0.cell(4, 1).text = manual_inputs["former_fm"]
     t0.cell(5, 1).text = manual_inputs["links"]
 
-    # 2. SUMMARY & TABLES
-    doc.tables[1].cell(1, 0).text = ai_data.get("Summary", "")
-    
+    # 2. EDUCATION
     t2 = doc.tables[2]
     for i, edu in enumerate(ai_data.get("Education", [])):
         if i + 2 < len(t2.rows):
             t2.cell(i+2, 0).text = edu.get("School", "")
             t2.cell(i+2, 1).text = edu.get("Degree", "")
-            t2.cell(i+2, 2).text = edu.get("Status", "Yes")
+            t2.cell(i+2, 2).text = "Yes"
 
-    t3 = doc.tables[3]
-    for i, sk in enumerate(ai_data.get("Skills", [])):
-        if i + 2 < len(t3.rows):
-            t3.cell(i+2, 0).text = sk.get("Category", "")
-            t3.cell(i+2, 1).text = sk.get("Exp", "")
-
-    # 3. WORK HISTORY (Mapped to JobXBullets)
+    # 3. WORK HISTORY
     jobs = ai_data.get("Jobs", [])
-    for i in range(1, 8):
-        job = jobs[i-1] if i <= len(jobs) else None
-        
-        c_tag = f"company{i}"
-        t_tag = f"title{i}"
-        b_tag = f"Job{i}Bullets"
-        d_tag_current = "mmm yyyy – Current"
-        d_tag_range = "mmm yyyy – mmm yyyy"
-        
-        for p in doc.paragraphs:
-            if c_tag in p.text.lower():
+    for p in doc.paragraphs:
+        p_text_low = p.text.lower()
+        for i in range(1, 8):
+            job = jobs[i-1] if i <= len(jobs) else None
+            c_tag, t_tag, b_tag = f"company{i}", f"title{i}", f"job{i}bullets"
+            
+            if c_tag in p_text_low:
                 if job:
                     run_level_replace(p, c_tag, job['Company'])
-                    run_level_replace(p, d_tag_current, job['Dates'])
-                    run_level_replace(p, d_tag_range, job['Dates'])
-                else: p.text = "" 
+                    # Handle date placeholders on company line
+                    for d_tag in ["mmm yyyy – current", "mmm yyyy – mmm yyyy"]:
+                        if d_tag in p.text.lower():
+                            run_level_replace(p, d_tag, job['Dates'])
+                else: p.text = "" # Delete unused job block
             
-            if t_tag in p.text.lower():
+            elif t_tag in p_text_low:
                 if job: run_level_replace(p, t_tag, job['Title'])
                 else: p.text = ""
 
-            if b_tag in p.text:
+            elif b_tag in p_text_low:
                 orig_style = p.style
-                p.text = "" 
+                p.text = ""
                 if job:
-                    for bullet in job['Bullets']:
-                        # The code literally takes the string from the AI JSON and puts it here
-                        new_para = p.insert_paragraph_before(f"• {bullet}", style=orig_style)
+                    for b in job['Bullets']:
+                        p.insert_paragraph_before(f"• {b}", style=orig_style)
 
-    # 4. INTERVIEW RESULTS
+    # 4. INTERVIEW RESULTS (Q1-Q5 Logic)
     for p in doc.paragraphs:
-        if "ANSWER" in p.text:
-            p.text = p.text.replace("ANSWER", manual_inputs["interview_results"])
+        for i in range(1, 6):
+            q_tag, a_tag = f"Q{i}", f"ANSWER{i}"
+            val_q = manual_inputs.get(f"q{i}", "")
+            val_a = manual_inputs.get(f"a{i}", "")
+            
+            if q_tag in p.text:
+                p.text = p.text.replace(q_tag, val_q) if val_q else ""
+            if a_tag in p.text:
+                p.text = p.text.replace(a_tag, val_a) if val_a else ""
 
     bio = BytesIO()
     doc.save(bio)
     return bio.getvalue()
 
-# --- UI Layout ---
-st.set_page_config(page_title="Fannie Mae Formatter", layout="wide")
-st.title("📄 Fannie Mae Resume Auto-Formatter")
+# --- Streamlit UI ---
+st.set_page_config(page_title="Fannie Mae Extractor", layout="wide")
+st.title("📄 Fannie Mae Precision Data Extractor")
 
 with st.sidebar:
     api_key = st.text_input("Gemini API Key:", type="password")
@@ -179,23 +162,38 @@ c1, c2 = st.columns(2)
 with c1:
     uploaded_file = st.file_uploader("Upload Resume", type=["pdf", "docx"])
     location = st.text_input("Current Location: (City and State only)", placeholder="Washington, DC")
-    remote_onsite = st.selectbox("Remote or Onsite", ["Onsite", "Remote", "Hybrid"])
+    remote_onsite = st.selectbox("Remote or Onsite", ["Onsite", "Remote"])
     former_fm = st.selectbox("Former FM FTE or Contractor?", ["N", "Y"])
     links = st.text_input("LinkedIn Profile Link")
 
 with c2:
-    job_description = st.text_area("Job Description", placeholder="Paste JD here")
-    extra_info = st.text_area("Spotlight Call/Other Info", placeholder="Spotlight notes...")
-    interview_results = st.text_area("Supplier Technical Interview Results")
+    st.subheader("Supplier Technical Interview Results")
+    q1 = st.text_input("Question 1", key="q1")
+    a1 = st.text_area("Answer 1", key="a1")
+    q2 = st.text_input("Question 2", key="q2")
+    a2 = st.text_area("Answer 2", key="a2")
+    q3 = st.text_input("Question 3", key="q3")
+    a3 = st.text_area("Answer 3", key="a3")
+    q4 = st.text_input("Question 4", key="q4")
+    a4 = st.text_area("Answer 4", key="a4")
+    q5 = st.text_input("Question 5", key="q5")
+    a5 = st.text_area("Answer 5", key="a5")
 
 if st.button("Generate Formatted Resume"):
     try:
         raw_text = extract_text_from_file(uploaded_file)
-        ai_data = parse_and_generate_with_ai(raw_text, job_description, extra_info, interview_results, api_key)
-        manual_inputs = {"location": location, "remote_onsite": remote_onsite, "former_fm": former_fm, "links": links, "interview_results": interview_results}
-        doc_bytes = generate_fm_word_doc(ai_data, manual_inputs, raw_text)
+        ai_data = parse_and_generate_with_ai(raw_text, api_key)
+        
+        manual_inputs = {
+            "location": location, "remote_onsite": remote_onsite, 
+            "former_fm": former_fm, "links": links,
+            "q1": q1, "a1": a1, "q2": q2, "a2": a2, 
+            "q3": q3, "a3": a3, "q4": q4, "a4": a4, "q5": q5, "a5": a5
+        }
+        
+        doc_bytes = generate_fm_word_doc(ai_data, manual_inputs)
         name = ai_data.get("FullName", "Candidate").title()
-        st.success(f"Success! Generated for {name}")
-        st.download_button(label="Download", data=doc_bytes, file_name=f"{name} Fannie Mae Format.docx")
+        st.success(f"Extracted data for {name}")
+        st.download_button("Download Resume", data=doc_bytes, file_name=f"{name} Fannie Mae Format.docx")
     except Exception as e:
         st.error(f"Error: {e}")
