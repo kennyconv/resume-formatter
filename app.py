@@ -27,29 +27,29 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     model = genai.GenerativeModel('gemini-2.5-flash')
     
     prompt = f"""
-    You are a professional resume formatter. 
+    You are a professional recruiter. 
     
     STRICT IDENTITY RULE: 
-    - Extract the candidate's ACTUAL name from the top of the resume. 
-    - NEVER use "Alex" or "Candidate Name".
+    - Extract the candidate's ACTUAL name from the very top of the resume.
+    - NEVER use placeholder names like "Alex", "John Doe", or "Candidate".
     
     SUMMARY RULE:
-    - Use [First Name] only. Start with "[First Name] is a..."
-    - Write 4-5 dense sentences using metrics.
+    - Start with "[First Name] is a...". 
+    - Write 4-5 dense sentences using metrics and selling points.
 
     JSON Structure:
     {{
-        "FullName": "Full Name",
-        "FirstName": "First Name",
+        "FullName": "Correct Full Name",
+        "FirstName": "First Name Only",
         "Summary": "Summary text...",
         "Skills": [
             {{"Cat": "Functional Category (Tools)", "Exp": "X+ years, current"}}
         ],
         "Education": [
-            {{"School": "Uni", "Degree": "Degree", "Status": "Yes"}}
+            {{"School": "University", "Degree": "Degree Name", "Status": "Yes"}}
         ],
         "Jobs": [
-            {{"Comp": "Company", "Title": "Title", "Dates": "MMM YYYY – MMM YYYY", "Bullets": ["b1", "b2"]}}
+            {{"Comp": "Company Name", "Title": "Job Title", "Dates": "MMM YYYY – MMM YYYY", "Bullets": ["bullet 1", "bullet 2"]}}
         ]
     }}
 
@@ -58,6 +58,7 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     NOTES: {extra_info}
     INTERVIEW: {interview_results}
     """
+    
     response = model.generate_content(prompt)
     raw_output = response.text.strip()
     json_string = raw_output.split("```json")[1].split("```")[0].strip() if "```json" in raw_output else raw_output
@@ -67,46 +68,43 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
     template_path = "Fannie Mae Resume Format Template.docx"
     doc = docx.Document(template_path) if os.path.exists(template_path) else docx.Document()
 
-    # --- 1. COORDINATE-LOCKED TABLE INJECTION ---
-    
-    # Table 0: CANDIDATE INFORMATION
-    # Row 0 is the Header "CANDIDATE INFORMATION" - We Bold it.
+    # --- 1. TABLE 0: CANDIDATE INFORMATION (COORDINATE LOCKED) ---
+    # We do NOT touch Row 0 (The "CANDIDATE INFORMATION" header)
     t0 = doc.tables[0]
-    t0.cell(0, 0).paragraphs[0].text = "CANDIDATE INFORMATION"
-    t0.cell(0, 0).paragraphs[0].runs[0].bold = True
     
-    # We put answers in Column 1, starting Row 0 (next to Name label)
-    # If AI fails name, we grab first line of raw_text
-    raw_name = raw_text.split('\n')[0].strip()
-    final_name = ai_data.get("FullName") if "Alex" not in ai_data.get("FullName", "") else raw_name
-    
-    t0.cell(0, 1).text = final_name
-    t0.cell(1, 1).text = manual_inputs["location"]
-    t0.cell(2, 1).text = manual_inputs["remote_onsite"]
-    t0.cell(3, 1).text = manual_inputs["former_fm"]
-    t0.cell(4, 1).text = manual_inputs["links"]
+    # Extract name from first line of raw text if AI fails or returns placeholders
+    first_line_name = raw_text.split('\n')[0].strip().replace(',', '')
+    final_name = ai_data.get("FullName") if "Alex" not in ai_data.get("FullName", "") else first_line_name
 
-    # Table 1: SUMMARY (Put in Row 1, Column 0)
+    # Mapping to the right-hand boxes (Column 1)
+    t0.cell(1, 1).text = final_name              # Row 1: Name:
+    t0.cell(2, 1).text = manual_inputs["location"]   # Row 2: Current Location:
+    t0.cell(3, 1).text = manual_inputs["remote_onsite"] # Row 3: Remote or Onsite:
+    t0.cell(4, 1).text = manual_inputs["former_fm"]     # Row 4: Former FM...
+    t0.cell(5, 1).text = manual_inputs["links"]         # Row 5: LinkedIn...
+
+    # --- 2. TABLE 1: SUMMARY ---
     doc.tables[1].cell(1, 0).text = ai_data.get("Summary", "")
 
-    # Table 2: EDUCATION (Start at Row 2 to keep headers)
+    # --- 3. TABLE 2: EDUCATION (Start at Row 2) ---
     t2 = doc.tables[2]
     for i, edu in enumerate(ai_data.get("Education", [])):
-        if i + 2 < len(t2.rows):
-            t2.cell(i+2, 0).text = edu.get("School", "")
-            t2.cell(i+2, 1).text = edu.get("Degree", "")
-            t2.cell(i+2, 2).text = edu.get("Status", "Yes")
+        row_idx = i + 2 
+        if row_idx < len(t2.rows):
+            t2.cell(row_idx, 0).text = edu.get("School", "")
+            t2.cell(row_idx, 1).text = edu.get("Degree", "")
+            t2.cell(row_idx, 2).text = edu.get("Status", "Yes")
 
-    # Table 3: SKILLS (Start at Row 2 to keep headers)
+    # --- 4. TABLE 3: SKILLS (Start at Row 2) ---
     t3 = doc.tables[3]
     for i, sk in enumerate(ai_data.get("Skills", [])):
-        if i + 2 < len(t3.rows):
-            t3.cell(i+2, 0).text = sk.get("Cat", "")
-            t3.cell(i+2, 1).text = sk.get("Exp", "")
+        row_idx = i + 2
+        if row_idx < len(t3.rows):
+            t3.cell(row_idx, 0).text = sk.get("Cat", "")
+            t3.cell(row_idx, 1).text = sk.get("Exp", "")
 
-    # --- 2. SURGICAL PLACEHOLDER REPLACEMENT ---
-    # We use a loop that replaces the placeholder text directly
-    def replace_placeholder(old, new):
+    # --- 5. PROFESSIONAL EXPERIENCE (Placeholder Replace) ---
+    def replace_text(old, new):
         for p in doc.paragraphs:
             if old in p.text:
                 p.text = p.text.replace(old, str(new))
@@ -115,14 +113,14 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
     for i in range(1, 8):
         job = jobs[i-1] if i <= len(jobs) else None
         if job:
-            replace_placeholder(f"COMPANY{i}", job['Comp'])
-            replace_placeholder(f"TITLE{i}", job['Title'])
-            # Replace the date string on that specific line
+            replace_text(f"COMPANY{i}", job['Comp'])
+            replace_text(f"TITLE{i}", job['Title'])
+            # Date replacement logic
             for p in doc.paragraphs:
                 if job['Comp'] in p.text:
                     p.text = p.text.replace("MMM YYYY – CURRENT", job['Dates']).replace("MMM YYYY – MMM YYYY", job['Dates'])
             
-            # Bullets
+            # Bullet injection
             bullet_tag = "Bullets" if i == 1 else f"Bullets{i}"
             for p in doc.paragraphs:
                 if bullet_tag in p.text:
@@ -130,13 +128,13 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
                     for b in job['Bullets']:
                         p.insert_paragraph_before(f"• {b}")
         else:
-            # Delete unused placeholders
-            replace_placeholder(f"COMPANY{i}", "")
-            replace_placeholder(f"TITLE{i}", "")
-            replace_placeholder(f"Bullets{i}", "")
+            # Clear unused tags
+            replace_text(f"COMPANY{i}", "")
+            replace_text(f"TITLE{i}", "")
+            replace_text(f"Bullets{i}", "")
 
-    # 3. INTERVIEW RESULTS
-    replace_placeholder("ANSWER", manual_inputs["interview_results"])
+    # --- 6. INTERVIEW RESULTS ---
+    replace_text("ANSWER", manual_inputs["interview_results"])
 
     bio = BytesIO()
     doc.save(bio)
@@ -167,12 +165,14 @@ if st.button("Generate Formatted Resume"):
         raw_text = extract_text_from_file(uploaded_file)
         ai_data = parse_and_generate_with_ai(raw_text, job_description, extra_info, interview_results, api_key)
         manual_inputs = {"location": location, "remote_onsite": remote_onsite, "former_fm": former_fm, "links": links, "interview_results": interview_results}
+        
         doc_bytes = generate_fm_word_doc(ai_data, manual_inputs, raw_text)
         
-        # Proper filename extraction
-        real_name = raw_text.split('\n')[0].strip()
-        fname = real_name.split()[0] if real_name else "Candidate"
-        st.success(f"Success! Generated for {real_name}")
+        # Filename logic
+        first_line = raw_text.split('\n')[0].strip().replace(',', '')
+        fname = first_line.split()[0] if first_line else "Candidate"
+        
+        st.success(f"Success! Generated for {first_line}")
         st.download_button("Download Resume", data=doc_bytes, file_name=f"FM_Formatted_{fname}.docx")
     except Exception as e:
         st.error(f"Error: {e}")
