@@ -7,7 +7,7 @@ from io import BytesIO
 import json
 import re
 
-# --- Data Handling ---
+# --- Data Extraction ---
 
 def extract_text_from_file(uploaded_file):
     file_name = uploaded_file.name.lower()
@@ -27,8 +27,8 @@ def extract_text_from_file(uploaded_file):
                     if cell.text.strip(): text += cell.text + " "
     return text
 
-def parse_with_modern_sdk(raw_text, api_key):
-    # Using the new 'google-genai' client to fix the 404 routing error
+def parse_with_fixed_model(raw_text, api_key):
+    # Initializing with the new SDK
     client = genai.Client(api_key=api_key)
     
     prompt = f"""
@@ -41,7 +41,7 @@ def parse_with_modern_sdk(raw_text, api_key):
         "FullName": "Name",
         "Education": [{{"School": "Uni", "Degree": "Major"}}],
         "Jobs": [
-            {{"Company": "Co", "Title": "Title", "Dates": "Dates", "Bullets": ["Bullet 1"]}}
+            {{"Company": "Co", "Title": "Title", "Dates": "MMM YYYY – MMM YYYY", "Bullets": ["Exact Bullet 1"]}}
         ]
     }}
 
@@ -49,15 +49,16 @@ def parse_with_modern_sdk(raw_text, api_key):
     {raw_text}
     """
     
+    # FIXED: Using the specific version-locked model string
     response = client.models.generate_content(
-        model='gemini-2.0-flash', 
+        model='gemini-2.0-flash-001', 
         contents=prompt,
         config=types.GenerateContentConfig(response_mime_type='application/json')
     )
     return json.loads(response.text)
 
 def run_level_replace(paragraph, target, replacement):
-    """Replaces text while keeping Tab Stops (the arrows) intact."""
+    """Surgical replacement to preserve Tab Stop alignment."""
     if target.lower() in paragraph.text.lower():
         for run in paragraph.runs:
             if target.lower() in run.text.lower():
@@ -68,7 +69,7 @@ def generate_docx(ai_data, manual_inputs):
     template_path = "Fannie Mae Resume Format Template.docx"
     doc = docx.Document(template_path)
 
-    # 1. Candidate Info Mapping
+    # 1. Candidate Info
     t0 = doc.tables[0]
     t0.cell(1, 1).text = ai_data.get("FullName", "NAME").title()
     t0.cell(2, 1).text = manual_inputs["location"]
@@ -76,7 +77,7 @@ def generate_docx(ai_data, manual_inputs):
     t0.cell(4, 1).text = manual_inputs["former_fm"]
     t0.cell(5, 1).text = manual_inputs["links"]
 
-    # 2. Education Mapping
+    # 2. Education
     t2 = doc.tables[2]
     for i, edu in enumerate(ai_data.get("Education", [])):
         if i + 2 < len(t2.rows):
@@ -84,26 +85,24 @@ def generate_docx(ai_data, manual_inputs):
             t2.cell(i+2, 1).text = edu.get("Degree", "")
             t2.cell(i+2, 2).text = "Yes"
 
-    # 3. Work History & Bullet Logic
+    # 3. Work History & Bullet Mapping
     jobs = ai_data.get("Jobs", [])
     for p in doc.paragraphs:
         p_text_low = p.text.lower()
         for i in range(1, 8):
             job = jobs[i-1] if i <= len(jobs) else None
             c_tag, t_tag, b_tag = f"company{i}", f"title{i}", f"job{i}bullets"
-            d_tag1, d_tag2 = "mmm yyyy – current", "mmm yyyy – mmm yyyy"
-
+            
             if c_tag in p_text_low:
                 if job:
                     run_level_replace(p, c_tag, job['Company'])
-                    if d_tag1 in p.text.lower(): run_level_replace(p, d_tag1, job['Dates'])
-                    elif d_tag2 in p.text.lower(): run_level_replace(p, d_tag2, job['Dates'])
-                else: p.text = "" # Erases unused role blocks
-            
+                    for d_tag in ["mmm yyyy – current", "mmm yyyy – mmm yyyy"]:
+                        if d_tag in p.text.lower():
+                            run_level_replace(p, d_tag, job['Dates'])
+                else: p.text = "" 
             elif t_tag in p_text_low:
                 if job: run_level_replace(p, t_tag, job['Title'])
                 else: p.text = ""
-
             elif b_tag in p_text_low:
                 orig_style = p.style
                 p.text = ""
@@ -124,7 +123,7 @@ def generate_docx(ai_data, manual_inputs):
     return bio.getvalue()
 
 # --- Streamlit UI ---
-st.set_page_config(page_title="Fannie Mae Precision Extractor")
+st.set_page_config(page_title="Fannie Mae Extractor", layout="wide")
 st.title("📄 Fannie Mae Precision Data Extractor")
 
 api_key = st.sidebar.text_input("Gemini API Key", type="password")
@@ -135,24 +134,23 @@ with col1:
     location = st.text_input("Current Location (City, ST)")
     remote_onsite = st.selectbox("Remote or Onsite", ["Onsite", "Remote"])
     former_fm = st.selectbox("Former FM?", ["N", "Y"])
-    links = st.text_input("LinkedIn Link")
+    links = st.text_input("LinkedIn Profile Link")
 
 with col2:
-    st.subheader("Interview Results")
+    st.subheader("Technical Interview Results")
     qa_data = {}
     for i in range(1, 6):
-        qa_data[f"q{i}"] = st.text_input(f"Question {i}", key=f"q_{i}")
-        qa_data[f"a{i}"] = st.text_area(f"Answer {i}", key=f"a_{i}")
+        qa_data[f"q{i}"] = st.text_input(f"Question {i}", key=f"q_field_{i}")
+        qa_data[f"a{i}"] = st.text_area(f"Answer {i}", key=f"a_field_{i}")
 
 if st.button("Generate Formatted Resume") and uploaded_file and api_key:
     try:
         raw_text = extract_text_from_file(uploaded_file)
-        data = parse_with_modern_sdk(raw_text, api_key)
+        data = parse_with_fixed_model(raw_text, api_key)
         manual = {"location": location, "remote_onsite": remote_onsite, "former_fm": former_fm, "links": links, **qa_data}
-        
-        output_doc = generate_docx(data, manual)
+        doc_out = generate_docx(data, manual)
         name = data.get("FullName", "Candidate").title()
-        st.success(f"Success! Data extracted for {name}")
-        st.download_button("Download Resume", output_doc, f"{name}_FannieMae_Format.docx")
+        st.success(f"Success! Extracted data for {name}")
+        st.download_button("Download", doc_out, f"{name}_FannieMae.docx")
     except Exception as e:
         st.error(f"Error: {e}")
