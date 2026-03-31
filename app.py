@@ -35,25 +35,25 @@ def extract_text_from_file(uploaded_file):
 
 def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, interview_results, api_key):
     genai.configure(api_key=api_key)
-    # Standardized model string for better compatibility
-    model = genai.GenerativeModel('models/gemini-1.5-flash')
+    # Reverting to the most universal model string
+    model = genai.GenerativeModel('gemini-1.5-flash')
     
     prompt = f"""
-    You are an expert technical recruiter. Format this resume for a Fannie Mae submission.
+    You are an expert technical recruiter specializing in Fannie Mae placements. 
     
-    STRICT IDENTITY: Extract the candidate's ACTUAL name from the resume. 
+    STRICT IDENTITY: Extract the candidate's ACTUAL name from the resume text.
     
-    SKILLS SECTION (MANDATORY FORMAT):
-    You MUST create exactly 4 rows. Group the candidate's tools and experience into these specific strategy buckets:
+    SKILLS SECTION (MANDATORY GOLD STANDARD):
+    You MUST create exactly 4 rows. Group the candidate's tools and experience into these exact strategy buckets:
     - Row 1: Cybersecurity & SOC Operations (Threat Detection, Incident Response, Insider Threat Investigations)
     - Row 2: SIEM & Threat Hunting (Splunk, IBM QRadar, Exabeam, Log Analysis, Correlation)
     - Row 3: Network & Security Analysis (TCP/IP, DNS, HTTP/S, Wireshark, Endpoint Security)
     - Row 4: Fraud & Behavioral Risk Analysis (Financial Transactions, Pattern Detection, Root Cause Analysis)
-    (Match the candidate's specific tools to these categories. Use this 'Functional Strategy (Tool 1, Tool 2, Tool 3)' format regardless of role.)
+    (If the candidate is in a different field, use this 'Functional Strategy (Tools, Concepts)' format).
 
-    WORK HISTORY RULE:
-    - Extract ALL jobs from most recent to oldest.
-    - Format dates exactly like: 'Jun 2021 – Nov 2025' or 'Jun 2021 – Current'.
+    WORK HISTORY:
+    - Extract ALL previous jobs.
+    - Format dates exactly: 'Jun 2021 – Nov 2025' or 'Jun 2021 – Current'.
     - Use 3-letter month abbreviations.
 
     JSON Structure:
@@ -84,31 +84,40 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     return json.loads(json_string)
 
 def run_level_replace(paragraph, target, replacement):
-    """Replaces text while preserving specific formatting (Bold/Italic) and tab stops."""
+    """Surgical replacement that finds the target even if Word fragmented the runs."""
     if target.lower() in paragraph.text.lower():
+        # Try finding it in an individual run first (best for keeping bold/italic)
         for run in paragraph.runs:
             if target.lower() in run.text.lower():
                 run.text = run.text.replace(target, str(replacement))
                 return True
+        
+        # Fallback: Replace in paragraph text if runs are too fragmented
+        full_text = paragraph.text
+        new_text = full_text.replace(target, str(replacement))
+        for i in range(len(paragraph.runs)):
+            paragraph.runs[i].text = ""
+        paragraph.runs[0].text = new_text
+        return True
     return False
 
 def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
     template_path = "Fannie Mae Resume Format Template.docx"
     doc = docx.Document(template_path) if os.path.exists(template_path) else docx.Document()
 
-    # 1. TABLE 0: CANDIDATE INFORMATION
+    # 1. CANDIDATE INFO TABLE
     t0 = doc.tables[0]
-    full_name = ai_data.get("FullName", "Candidate").strip().title()
-    t0.cell(1, 1).text = full_name
+    final_name = ai_data.get("FullName", "Candidate").strip().title()
+    t0.cell(1, 1).text = final_name
     t0.cell(2, 1).text = manual_inputs["location"]
     t0.cell(3, 1).text = manual_inputs["remote_onsite"]
     t0.cell(4, 1).text = manual_inputs["former_fm"]
     t0.cell(5, 1).text = manual_inputs["links"]
 
-    # 2. TABLE 1: SUMMARY
+    # 2. SUMMARY
     doc.tables[1].cell(1, 0).text = ai_data.get("Summary", "")
 
-    # 3. TABLE 2: EDUCATION
+    # 3. EDUCATION
     t2 = doc.tables[2]
     for i, edu in enumerate(ai_data.get("Education", [])):
         if i + 2 < len(t2.rows):
@@ -116,14 +125,14 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
             t2.cell(i+2, 1).text = edu.get("Degree", "")
             t2.cell(i+2, 2).text = edu.get("Status", "Yes")
 
-    # 4. TABLE 3: SKILLS
+    # 4. SKILLS
     t3 = doc.tables[3]
     for i, sk in enumerate(ai_data.get("Skills", [])):
         if i + 2 < len(t3.rows):
             t3.cell(i+2, 0).text = sk.get("Category", "")
             t3.cell(i+2, 1).text = sk.get("Exp", "")
 
-    # 5. WORK HISTORY (Run-Level Surgical Replacement)
+    # 5. WORK HISTORY (Format-Locked)
     jobs = ai_data.get("Jobs", [])
     for i in range(1, 8):
         job = jobs[i-1] if i <= len(jobs) else None
@@ -134,7 +143,6 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
         d_tag_2 = "mmm yyyy – mmm yyyy"
         
         for p in doc.paragraphs:
-            # Handle Company & Dates (Preserves Tab)
             if c_tag in p.text.lower():
                 if job:
                     run_level_replace(p, c_tag, job['Company'])
@@ -142,12 +150,10 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
                     run_level_replace(p, d_tag_2, job['Dates'])
                 else: p.text = "" 
             
-            # Handle Title (Preserves Italic/Font)
             if t_tag in p.text.lower():
                 if job: run_level_replace(p, t_tag, job['Title'])
                 else: p.text = ""
 
-            # Handle Bullets
             bullet_tag = "Bullets" if i == 1 else f"Bullets{i}"
             if bullet_tag in p.text:
                 p.text = ""
@@ -181,7 +187,7 @@ with c1:
 
 with c2:
     job_description = st.text_area("Job Description", placeholder="Paste the job description here")
-    extra_info = st.text_area("Spotlight Call/Other Info", placeholder="Spotlight call notes, feedback, etc.")
+    extra_info = st.text_area("Spotlight Call/Other Info", placeholder="Spotlight notes, feedback, etc.")
     interview_results = st.text_area("Supplier Technical Interview Results")
 
 if st.button("Generate Formatted Resume"):
@@ -191,7 +197,7 @@ if st.button("Generate Formatted Resume"):
         manual_inputs = {"location": location, "remote_onsite": remote_onsite, "former_fm": former_fm, "links": links, "interview_results": interview_results}
         
         doc_bytes = generate_fm_word_doc(ai_data, manual_inputs, raw_text)
-        final_name_clean = ai_data.get("FullName", "Candidate").title()
+        final_name_clean = ai_data.get("FullName", "Candidate").strip().title()
         
         st.success(f"Success! Generated for {final_name_clean}")
         st.download_button(
