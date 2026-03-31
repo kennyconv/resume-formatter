@@ -1,6 +1,5 @@
 import streamlit as st
 import google.generativeai as genai
-from google.generativeai import types
 import docx
 import PyPDF2
 from io import BytesIO
@@ -28,19 +27,14 @@ def extract_text_from_file(uploaded_file):
     return text
 
 def parse_and_generate_with_ai(raw_resume_text, api_key):
-    # FORCE API VERSION TO V1 (STABLE)
-    genai.configure(api_key=api_key, transport='rest') 
+    genai.configure(api_key=api_key)
     
-    # Use the simplest model string
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # Try the most explicit model path to bypass the 404
+    model = genai.GenerativeModel(model_name='models/gemini-1.5-flash')
     
     prompt = f"""
-    You are a literal data extraction tool. Extract data from the resume into JSON.
+    You are a data extraction tool. Extract raw data from the resume into JSON.
     DO NOT rewrite, summarize, or improve the text. Copy bullets EXACTLY.
-
-    1. Extract Full Name -> "FullName"
-    2. Extract Education -> List of {{"School": "", "Degree": ""}}
-    3. Extract Work History -> List of {{"Company": "", "Title": "", "Dates": "MMM YYYY – MMM YYYY", "Bullets": []}}
 
     JSON Structure:
     {{
@@ -49,7 +43,7 @@ def parse_and_generate_with_ai(raw_resume_text, api_key):
             {{"School": "School Name", "Degree": "Degree Name"}}
         ],
         "Jobs": [
-            {{"Company": "Company", "Title": "Title", "Dates": "Dates", "Bullets": ["Exact Bullet 1"]}}
+            {{"Company": "Company", "Title": "Title", "Dates": "MMM YYYY – MMM YYYY", "Bullets": ["Exact Bullet 1"]}}
         ]
     }}
 
@@ -57,16 +51,16 @@ def parse_and_generate_with_ai(raw_resume_text, api_key):
     {raw_resume_text}
     """
     
-    # We use a safety setting to ensure the content is generated without filter issues
+    # Using JSON mode to ensure the return is clean
     response = model.generate_content(
         prompt,
-        generation_config=genai.types.GenerationConfig(response_mime_type="application/json")
+        generation_config={"response_mime_type": "application/json"}
     )
     
     return json.loads(response.text)
 
 def run_level_replace(paragraph, target, replacement):
-    """Replaces text while preserving template formatting and tab stops."""
+    """Replaces text while preserving Right Tabs and Bold/Italic formatting."""
     if target.lower() in paragraph.text.lower():
         found = False
         for run in paragraph.runs:
@@ -84,7 +78,7 @@ def generate_fm_word_doc(ai_data, manual_inputs):
     template_path = "Fannie Mae Resume Format Template.docx"
     doc = docx.Document(template_path)
 
-    # 1. CANDIDATE INFO
+    # 1. INFO TABLE (Coordinates)
     t0 = doc.tables[0]
     t0.cell(1, 1).text = ai_data.get("FullName", "NAME").title()
     t0.cell(2, 1).text = manual_inputs["location"]
@@ -100,7 +94,7 @@ def generate_fm_word_doc(ai_data, manual_inputs):
             t2.cell(i+2, 1).text = edu.get("Degree", "")
             t2.cell(i+2, 2).text = "Yes"
 
-    # 3. WORK HISTORY
+    # 3. WORK HISTORY (Mapping & Cleanup)
     jobs = ai_data.get("Jobs", [])
     for p in doc.paragraphs:
         p_text_low = p.text.lower()
@@ -111,6 +105,7 @@ def generate_fm_word_doc(ai_data, manual_inputs):
             if c_tag in p_text_low:
                 if job:
                     run_level_replace(p, c_tag, job['Company'])
+                    # Preserves the Right-Tab for dates
                     for d_tag in ["mmm yyyy – current", "mmm yyyy – mmm yyyy"]:
                         if d_tag in p.text.lower():
                             run_level_replace(p, d_tag, job['Dates'])
@@ -127,7 +122,7 @@ def generate_fm_word_doc(ai_data, manual_inputs):
                     for b in job['Bullets']:
                         p.insert_paragraph_before(f"• {b}", style=orig_style)
 
-    # 4. INTERVIEW RESULTS (Q1-Q5 logic)
+    # 4. INTERVIEW RESULTS (Cleanup)
     for p in doc.paragraphs:
         for i in range(1, 6):
             q_tag, a_tag = f"Q{i}", f"ANSWER{i}"
@@ -143,9 +138,9 @@ def generate_fm_word_doc(ai_data, manual_inputs):
     doc.save(bio)
     return bio.getvalue()
 
-# --- UI ---
+# --- UI Setup ---
 st.set_page_config(page_title="Fannie Mae Extractor", layout="wide")
-st.title("📄 Fannie Mae Precision Extractor")
+st.title("📄 Fannie Mae Precision Data Extractor")
 
 with st.sidebar:
     api_key = st.text_input("Gemini API Key:", type="password")
@@ -159,30 +154,28 @@ with c1:
     links = st.text_input("LinkedIn Profile Link")
 
 with c2:
-    st.subheader("Supplier Technical Interview Results")
-    q1 = st.text_input("Question 1", key="q1")
-    a1 = st.text_area("Answer 1", key="a1")
-    q2 = st.text_input("Question 2", key="q2")
-    a2 = st.text_area("Answer 2", key="a2")
-    q3 = st.text_input("Question 3", key="q3")
-    a3 = st.text_area("Answer 3", key="a3")
-    q4 = st.text_input("Question 4", key="q4")
-    a4 = st.text_area("Answer 4", key="a4")
-    q5 = st.text_input("Question 5", key="q5")
-    a5 = st.text_area("Answer 5", key="a5")
+    st.subheader("Technical Interview Results")
+    q1 = st.text_input("Question 1", key="iq1")
+    a1 = st.text_area("Answer 1", key="ia1")
+    q2 = st.text_input("Question 2", key="iq2")
+    a2 = st.text_area("Answer 2", key="ia2")
+    q3 = st.text_input("Question 3", key="iq3")
+    a3 = st.text_area("Answer 3", key="ia3")
+    q4 = st.text_input("Question 4", key="iq4")
+    a4 = st.text_area("Answer 4", key="ia4")
+    q5 = st.text_input("Question 5", key="iq5")
+    a5 = st.text_area("Answer 5", key="ia5")
 
 if st.button("Generate Formatted Resume"):
     try:
         raw_text = extract_text_from_file(uploaded_file)
         ai_data = parse_and_generate_with_ai(raw_text, api_key)
-        
         manual_inputs = {
             "location": location, "remote_onsite": remote_onsite, 
             "former_fm": former_fm, "links": links,
             "q1": q1, "a1": a1, "q2": q2, "a2": a2, 
             "q3": q3, "a3": a3, "q4": q4, "a4": a4, "q5": q5, "a5": a5
         }
-        
         doc_bytes = generate_fm_word_doc(ai_data, manual_inputs)
         name = ai_data.get("FullName", "Candidate").title()
         st.success(f"Success! Data extracted for {name}")
