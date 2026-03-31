@@ -18,17 +18,14 @@ def extract_text_from_file(uploaded_file):
             if page_text: text += page_text + "\n"
     elif file_name.endswith('.docx'):
         doc = docx.Document(uploaded_file)
-        # Scan Headers
         try:
             for section in doc.sections:
                 if section.header:
                     for para in section.header.paragraphs:
                         if para.text.strip(): text += para.text + "\n"
         except: pass
-        # Scan Body
         for para in doc.paragraphs:
             if para.text.strip(): text += para.text + "\n"
-        # Scan Tables
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
@@ -37,6 +34,7 @@ def extract_text_from_file(uploaded_file):
 
 def parse_and_generate_with_ai(raw_resume_text, api_key):
     genai.configure(api_key=api_key)
+    # Use the stable model string to avoid the 404 error
     model = genai.GenerativeModel('gemini-1.5-flash')
     
     prompt = f"""
@@ -55,7 +53,7 @@ def parse_and_generate_with_ai(raw_resume_text, api_key):
     {{
         "FullName": "Name",
         "Education": [
-            {{"School": "Uni", "Degree": "Degree"}}
+            {{"School": "University Name", "Degree": "Degree Name"}}
         ],
         "Jobs": [
             {{"Company": "Company", "Title": "Title", "Dates": "Dates", "Bullets": ["Bullet 1", "Bullet 2"]}}
@@ -68,12 +66,13 @@ def parse_and_generate_with_ai(raw_resume_text, api_key):
     
     response = model.generate_content(prompt)
     res_text = response.text.strip()
+    # Clean up AI output to extract only the JSON block
     if "```json" in res_text:
         res_text = res_text.split("```json")[1].split("```")[0].strip()
     return json.loads(res_text)
 
 def run_level_replace(paragraph, target, replacement):
-    """Surgical replacement to preserve Tab Stops and Bold/Italic formatting."""
+    """Surgical replacement to preserve Tab Stops and formatting."""
     if target.lower() in paragraph.text.lower():
         found = False
         for run in paragraph.runs:
@@ -91,7 +90,7 @@ def generate_fm_word_doc(ai_data, manual_inputs):
     template_path = "Fannie Mae Resume Format Template.docx"
     doc = docx.Document(template_path)
 
-    # 1. CANDIDATE INFO (Coordinate Mapping)
+    # 1. CANDIDATE INFO (Coordinates)
     t0 = doc.tables[0]
     t0.cell(1, 1).text = ai_data.get("FullName", "NAME").title()
     t0.cell(2, 1).text = manual_inputs["location"]
@@ -107,7 +106,7 @@ def generate_fm_word_doc(ai_data, manual_inputs):
             t2.cell(i+2, 1).text = edu.get("Degree", "")
             t2.cell(i+2, 2).text = "Yes"
 
-    # 3. WORK HISTORY
+    # 3. WORK HISTORY (Format-Locked Mapping)
     jobs = ai_data.get("Jobs", [])
     for p in doc.paragraphs:
         p_text_low = p.text.lower()
@@ -118,15 +117,16 @@ def generate_fm_word_doc(ai_data, manual_inputs):
             if c_tag in p_text_low:
                 if job:
                     run_level_replace(p, c_tag, job['Company'])
-                    # Handle date placeholders on company line
+                    # Search for date placeholders on the company line
                     for d_tag in ["mmm yyyy – current", "mmm yyyy – mmm yyyy"]:
                         if d_tag in p.text.lower():
                             run_level_replace(p, d_tag, job['Dates'])
-                else: p.text = "" # Delete unused job block
+                else:
+                    p.text = "" # Delete unused company/date line
             
             elif t_tag in p_text_low:
                 if job: run_level_replace(p, t_tag, job['Title'])
-                else: p.text = ""
+                else: p.text = "" # Delete unused title line
 
             elif b_tag in p_text_low:
                 orig_style = p.style
@@ -134,8 +134,9 @@ def generate_fm_word_doc(ai_data, manual_inputs):
                 if job:
                     for b in job['Bullets']:
                         p.insert_paragraph_before(f"• {b}", style=orig_style)
+                # If no job, p remains empty (placeholder removed)
 
-    # 4. INTERVIEW RESULTS (Q1-Q5 Logic)
+    # 4. INTERVIEW RESULTS (Dynamic Cleanup)
     for p in doc.paragraphs:
         for i in range(1, 6):
             q_tag, a_tag = f"Q{i}", f"ANSWER{i}"
@@ -161,7 +162,7 @@ with st.sidebar:
 c1, c2 = st.columns(2)
 with c1:
     uploaded_file = st.file_uploader("Upload Resume", type=["pdf", "docx"])
-    location = st.text_input("Current Location: (City and State only)", placeholder="Washington, DC")
+    location = st.text_input("Current Location: (City, ST)")
     remote_onsite = st.selectbox("Remote or Onsite", ["Onsite", "Remote"])
     former_fm = st.selectbox("Former FM FTE or Contractor?", ["N", "Y"])
     links = st.text_input("LinkedIn Profile Link")
@@ -193,7 +194,7 @@ if st.button("Generate Formatted Resume"):
         
         doc_bytes = generate_fm_word_doc(ai_data, manual_inputs)
         name = ai_data.get("FullName", "Candidate").title()
-        st.success(f"Extracted data for {name}")
-        st.download_button("Download Resume", data=doc_bytes, file_name=f"{name} Fannie Mae Format.docx")
+        st.success(f"Success! Extracted data for {name}")
+        st.download_button("Download Formatted Word Doc", data=doc_bytes, file_name=f"{name} Fannie Mae Format.docx")
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error during extraction: {e}")
