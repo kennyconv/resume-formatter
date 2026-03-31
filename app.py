@@ -40,7 +40,7 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     prompt = f"""
     You are a professional technical recruiter. 
     
-    STRICT IDENTITY RULE: Extract the candidate's ACTUAL name from the top of the resume. 
+    STRICT IDENTITY RULE: Extract the candidate's ACTUAL name from the resume. 
     
     SKILLS SECTION STYLE (CRITICAL):
     You MUST create exactly 4 rows using this high-level consultant style:
@@ -53,6 +53,7 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     WORK HISTORY RULE:
     - Extract ALL previous jobs.
     - Format dates exactly as: 'Jun 2021 – Nov 2025' or 'Jun 2021 – Current'.
+    - Use 3-letter month abbreviations.
 
     JSON Structure:
     {{
@@ -66,7 +67,7 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
             {{"School": "Uni", "Degree": "Degree", "Status": "Yes"}}
         ],
         "Jobs": [
-            {{"Company": "Company", "Title": "Title", "Dates": "Jun 2021 – Nov 2025", "Bullets": ["b1", "b2"]}}
+            {{"Company": "Company Name", "Title": "Job Title", "Dates": "Jun 2021 – Nov 2025", "Bullets": ["b1", "b2"]}}
         ]
     }}
 
@@ -82,20 +83,22 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     return json.loads(json_string)
 
 def run_level_replace(paragraph, target, replacement):
-    """Surgical replacement that finds the target even if it spans multiple runs."""
+    """Surgical replacement that finds the target even if Word split the runs."""
     if target.lower() in paragraph.text.lower():
-        # Check individual runs first (best for preserving bold/italic)
         found = False
         for run in paragraph.runs:
+            # Case-insensitive replacement within the run
             if target.lower() in run.text.lower():
-                run.text = run.text.replace(target, str(replacement))
+                import re
+                insens_re = re.compile(re.escape(target), re.IGNORECASE)
+                run.text = insens_re.sub(str(replacement), run.text)
                 found = True
         
-        # Fallback: If Word split the placeholder across runs, we force it into the first run
         if not found:
-            full_text = paragraph.text
-            new_text = full_text.replace(target, str(replacement))
-            # Clear all runs and put the new text in the first one to preserve at least some formatting
+            # Fallback if placeholder is split across runs
+            import re
+            insens_re = re.compile(re.escape(target), re.IGNORECASE)
+            new_text = insens_re.sub(str(replacement), paragraph.text)
             for i in range(len(paragraph.runs)):
                 paragraph.runs[i].text = ""
             paragraph.runs[0].text = new_text
@@ -104,7 +107,7 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
     template_path = "Fannie Mae Resume Format Template.docx"
     doc = docx.Document(template_path) if os.path.exists(template_path) else docx.Document()
 
-    # 1. TABLE MAPPING
+    # 1. TABLE MAPPING (Coordinates)
     t0 = doc.tables[0]
     clean_name = ai_data.get("FullName", "Candidate").strip().title()
     t0.cell(1, 1).text = clean_name
@@ -115,6 +118,7 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
 
     doc.tables[1].cell(1, 0).text = ai_data.get("Summary", "")
 
+    # Education (Skip headers)
     t2 = doc.tables[2]
     for i, edu in enumerate(ai_data.get("Education", [])):
         if i + 2 < len(t2.rows):
@@ -122,13 +126,14 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
             t2.cell(i+2, 1).text = edu.get("Degree", "")
             t2.cell(i+2, 2).text = edu.get("Status", "Yes")
 
+    # Skills (Skip headers)
     t3 = doc.tables[3]
     for i, sk in enumerate(ai_data.get("Skills", [])):
         if i + 2 < len(t3.rows):
             t3.cell(i+2, 0).text = sk.get("Category", "")
             t3.cell(i+2, 1).text = sk.get("Exp", "")
 
-    # 2. WORK HISTORY
+    # 2. WORK HISTORY (Format-Locked Replacement)
     jobs = ai_data.get("Jobs", [])
     for i in range(1, 8):
         job = jobs[i-1] if i <= len(jobs) else None
@@ -137,28 +142,31 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
         t_tag = f"title{i}"
         d_tag_current = "mmm yyyy – Current"
         d_tag_range = "mmm yyyy – mmm yyyy"
+        bullet_tag = "Bullets" if i == 1 else f"Bullets{i}"
         
         for p in doc.paragraphs:
+            # Match Company and Date line (Preserves Tab)
             if c_tag in p.text.lower():
                 if job:
                     run_level_replace(p, c_tag, job['Company'])
-                    # Replace whatever date format exists in the template with the real dates
                     run_level_replace(p, d_tag_current, job['Dates'])
                     run_level_replace(p, d_tag_range, job['Dates'])
                 else:
-                    p.text = "" 
+                    p.text = "" # Clears unused roles
             
+            # Match Job Title
             if t_tag in p.text.lower():
                 if job:
                     run_level_replace(p, t_tag, job['Title'])
                 else:
                     p.text = ""
 
-            bullet_tag = "Bullets" if i == 1 else f"Bullets{i}"
+            # Match Bullets
             if bullet_tag in p.text:
-                p.text = ""
+                p.text = "" # Clear the tag
                 if job:
                     for b in job['Bullets']:
+                        # Inserts bullet paragraphs before the placeholder paragraph
                         p.insert_paragraph_before(f"• {b}")
 
     # 3. INTERVIEW RESULTS
@@ -187,7 +195,7 @@ with c1:
 
 with c2:
     job_description = st.text_area("Job Description", placeholder="Paste the job description here")
-    extra_info = st.text_area("Spotlight Call/Other Info", placeholder="Spotlight notes...")
+    extra_info = st.text_area("Spotlight Call/Other Info", placeholder="Spotlight call notes, feedback, etc.")
     interview_results = st.text_area("Supplier Technical Interview Results")
 
 if st.button("Generate Formatted Resume"):
@@ -195,10 +203,15 @@ if st.button("Generate Formatted Resume"):
         raw_text = extract_text_from_file(uploaded_file)
         ai_data = parse_and_generate_with_ai(raw_text, job_description, extra_info, interview_results, api_key)
         manual_inputs = {"location": location, "remote_onsite": remote_onsite, "former_fm": former_fm, "links": links, "interview_results": interview_results}
-        doc_bytes = generate_fm_word_doc(ai_data, manual_inputs, raw_text)
         
+        doc_bytes = generate_fm_word_doc(ai_data, manual_inputs, raw_text)
         full_name = ai_data.get("FullName", "Candidate").title()
+        
         st.success(f"Success! Generated for {full_name}")
-        st.download_button(label="Download", data=doc_bytes, file_name=f"{full_name} Fannie Mae Format.docx")
+        st.download_button(
+            label="Download Formatted Resume", 
+            data=doc_bytes, 
+            file_name=f"{full_name} Fannie Mae Format.docx"
+        )
     except Exception as e:
         st.error(f"Error: {e}")
