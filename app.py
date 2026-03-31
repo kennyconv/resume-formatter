@@ -38,28 +38,35 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     model = genai.GenerativeModel('gemini-2.5-flash')
     
     prompt = f"""
-    You are a professional recruiter. Format this resume for a Fannie Mae submission.
+    You are a professional technical recruiter. 
     
-    STRICT IDENTITY RULE: Extract the candidate's ACTUAL name.
+    STRICT IDENTITY RULE: Extract the candidate's ACTUAL name from the top of the resume. 
     
+    SKILLS SECTION STYLE (CRITICAL):
+    You MUST create exactly 4 rows using this high-level consultant style:
+    - Row 1: Cybersecurity & SOC Operations (Threat Detection, Incident Response, Insider Threat Investigations)
+    - Row 2: SIEM & Threat Hunting (Splunk, IBM QRadar, Exabeam, Log Analysis, Correlation)
+    - Row 3: Network & Security Analysis (TCP/IP, DNS, HTTP/S, Wireshark, Endpoint Security)
+    - Row 4: Fraud & Behavioral Risk Analysis (Financial Transactions, Pattern Detection, Root Cause Analysis)
+    (Note: If the candidate is a developer or other role, follow this same 'Functional Category & Strategy (Tools, Concepts)' format).
+
     WORK HISTORY RULE:
-    - Extract jobs from most recent to oldest.
-    - Format dates exactly like: 'Jun 2021 – Nov 2025' or 'Jun 2021 – Current'.
-    - Use 3-letter month abbreviations.
+    - Extract ALL previous jobs.
+    - Format dates exactly as: 'Jun 2021 – Nov 2025' or 'Jun 2021 – Current'.
 
     JSON Structure:
     {{
         "FullName": "Full Name",
         "FirstName": "First Name",
-        "Summary": "Full Summary...",
+        "Summary": "Full Summary starting with [First Name] is a...",
         "Skills": [
-            {{"Category": "Functional Category (Tools)", "Exp": "X+ years, current"}}
+            {{"Category": "Category Name (Tools)", "Exp": "X+ years, current"}}
         ],
         "Education": [
-            {{"School": "Uni Name", "Degree": "Degree Name", "Status": "Yes"}}
+            {{"School": "Uni", "Degree": "Degree", "Status": "Yes"}}
         ],
         "Jobs": [
-            {{"Company": "Company Name", "Title": "Job Title", "Dates": "Jun 2021 – Nov 2025", "Bullets": ["b1", "b2"]}}
+            {{"Company": "Company", "Title": "Title", "Dates": "Jun 2021 – Nov 2025", "Bullets": ["b1", "b2"]}}
         ]
     }}
 
@@ -75,11 +82,23 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     return json.loads(json_string)
 
 def run_level_replace(paragraph, target, replacement):
-    """Replaces text while preserving the specific 'Run' formatting (Bold, Italic, Font)."""
-    if target in paragraph.text:
+    """Surgical replacement that finds the target even if it spans multiple runs."""
+    if target.lower() in paragraph.text.lower():
+        # Check individual runs first (best for preserving bold/italic)
+        found = False
         for run in paragraph.runs:
-            if target in run.text:
+            if target.lower() in run.text.lower():
                 run.text = run.text.replace(target, str(replacement))
+                found = True
+        
+        # Fallback: If Word split the placeholder across runs, we force it into the first run
+        if not found:
+            full_text = paragraph.text
+            new_text = full_text.replace(target, str(replacement))
+            # Clear all runs and put the new text in the first one to preserve at least some formatting
+            for i in range(len(paragraph.runs)):
+                paragraph.runs[i].text = ""
+            paragraph.runs[0].text = new_text
 
 def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
     template_path = "Fannie Mae Resume Format Template.docx"
@@ -109,40 +128,38 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
             t3.cell(i+2, 0).text = sk.get("Category", "")
             t3.cell(i+2, 1).text = sk.get("Exp", "")
 
-    # 2. WORK HISTORY (Run-Level Surgical Replacement)
+    # 2. WORK HISTORY
     jobs = ai_data.get("Jobs", [])
     for i in range(1, 8):
         job = jobs[i-1] if i <= len(jobs) else None
         
-        comp_tag = f"company{i}"
-        title_tag = f"title{i}"
-        date_tag_1 = "mmm yyyy – Current"
-        date_tag_2 = "mmm yyyy – mmm yyyy"
+        c_tag = f"company{i}"
+        t_tag = f"title{i}"
+        d_tag_current = "mmm yyyy – Current"
+        d_tag_range = "mmm yyyy – mmm yyyy"
         
         for p in doc.paragraphs:
-            # Match Company/Date line
-            if comp_tag in p.text:
+            if c_tag in p.text.lower():
                 if job:
-                    run_level_replace(p, comp_tag, job['Company'])
-                    run_level_replace(p, date_tag_1, job['Dates'])
-                    run_level_replace(p, date_tag_2, job['Dates'])
+                    run_level_replace(p, c_tag, job['Company'])
+                    # Replace whatever date format exists in the template with the real dates
+                    run_level_replace(p, d_tag_current, job['Dates'])
+                    run_level_replace(p, d_tag_range, job['Dates'])
                 else:
-                    p.text = "" # Remove line if no job
-
-            # Match Title line
-            elif title_tag in p.text:
+                    p.text = "" 
+            
+            if t_tag in p.text.lower():
                 if job:
-                    run_level_replace(p, title_tag, job['Title'])
+                    run_level_replace(p, t_tag, job['Title'])
                 else:
                     p.text = ""
 
-            # Match Bullets line
-            elif f"Bullets{i if i > 1 else ''}" in p.text:
-                p.text = "" # Clear placeholder
+            bullet_tag = "Bullets" if i == 1 else f"Bullets{i}"
+            if bullet_tag in p.text:
+                p.text = ""
                 if job:
                     for b in job['Bullets']:
-                        # Insert bullet paragraphs while keeping the list style
-                        new_p = p.insert_paragraph_before(f"• {b}")
+                        p.insert_paragraph_before(f"• {b}")
 
     # 3. INTERVIEW RESULTS
     for p in doc.paragraphs:
@@ -182,10 +199,6 @@ if st.button("Generate Formatted Resume"):
         
         full_name = ai_data.get("FullName", "Candidate").title()
         st.success(f"Success! Generated for {full_name}")
-        st.download_button(
-            label="Download Formatted Resume", 
-            data=doc_bytes, 
-            file_name=f"{full_name} Fannie Mae Format.docx"
-        )
+        st.download_button(label="Download", data=doc_bytes, file_name=f"{full_name} Fannie Mae Format.docx")
     except Exception as e:
         st.error(f"Error: {e}")
