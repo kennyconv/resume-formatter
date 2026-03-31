@@ -1,7 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
 import docx
-from docx.shared import Pt
 import PyPDF2
 from io import BytesIO
 import json
@@ -19,7 +18,21 @@ def extract_text_from_file(uploaded_file):
             if page_text: text += page_text + "\n"
     elif file_name.endswith('.docx'):
         doc = docx.Document(uploaded_file)
-        for para in doc.paragraphs: text += para.text + "\n"
+        
+        # 1. NEW: Deep scan headers (where names are often hidden)
+        for section in doc.sections:
+            for para in section.header.paragraphs:
+                text += para.text + "\n"
+        
+        # 2. Main body paragraphs
+        for para in doc.paragraphs:
+            text += para.text + "\n"
+            
+        # 3. Tables (in case the name is in a header table)
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    text += cell.text + " "
     return text
 
 def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, interview_results, api_key):
@@ -27,29 +40,29 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     model = genai.GenerativeModel('gemini-2.5-flash')
     
     prompt = f"""
-    You are a professional recruiter. 
+    You are a professional resume formatter. 
     
     STRICT IDENTITY RULE: 
-    - Extract the candidate's ACTUAL name from the very top of the resume.
-    - NEVER use placeholder names like "Alex", "John Doe", or "Candidate".
+    - The candidate's name is the FIRST piece of information in the provided text.
+    - It may be in all caps or a header.
+    - Find the real name (e.g., Hassan Osumah). NEVER use placeholder names.
     
     SUMMARY RULE:
-    - Start with "[First Name] is a...". 
-    - Write 4-5 dense sentences using metrics and selling points.
+    - Start with "[First Name] is a...". Use exactly 4-5 high-impact sentences.
 
     JSON Structure:
     {{
-        "FullName": "Correct Full Name",
+        "FullName": "Full Name Extracted from Resume",
         "FirstName": "First Name Only",
         "Summary": "Summary text...",
         "Skills": [
             {{"Cat": "Functional Category (Tools)", "Exp": "X+ years, current"}}
         ],
         "Education": [
-            {{"School": "University", "Degree": "Degree Name", "Status": "Yes"}}
+            {{"School": "Uni", "Degree": "Degree", "Status": "Yes"}}
         ],
         "Jobs": [
-            {{"Comp": "Company Name", "Title": "Job Title", "Dates": "MMM YYYY – MMM YYYY", "Bullets": ["bullet 1", "bullet 2"]}}
+            {{"Comp": "Company", "Title": "Title", "Dates": "MMM YYYY – MMM YYYY", "Bullets": ["b1", "b2"]}}
         ]
     }}
 
@@ -69,14 +82,11 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
     doc = docx.Document(template_path) if os.path.exists(template_path) else docx.Document()
 
     # --- 1. TABLE 0: CANDIDATE INFORMATION (COORDINATE LOCKED) ---
-    # We do NOT touch Row 0 (The "CANDIDATE INFORMATION" header)
     t0 = doc.tables[0]
     
-    # Extract name from first line of raw text if AI fails or returns placeholders
-    first_line_name = raw_text.split('\n')[0].strip().replace(',', '')
-    final_name = ai_data.get("FullName") if "Alex" not in ai_data.get("FullName", "") else first_line_name
+    # Use the AI extracted name, but strip any trailing punctuation
+    final_name = ai_data.get("FullName", "CANDIDATE NAME").strip().replace(',', '')
 
-    # Mapping to the right-hand boxes (Column 1)
     t0.cell(1, 1).text = final_name              # Row 1: Name:
     t0.cell(2, 1).text = manual_inputs["location"]   # Row 2: Current Location:
     t0.cell(3, 1).text = manual_inputs["remote_onsite"] # Row 3: Remote or Onsite:
@@ -103,7 +113,7 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
             t3.cell(row_idx, 0).text = sk.get("Cat", "")
             t3.cell(row_idx, 1).text = sk.get("Exp", "")
 
-    # --- 5. PROFESSIONAL EXPERIENCE (Placeholder Replace) ---
+    # --- 5. WORK HISTORY REPLACEMENT ---
     def replace_text(old, new):
         for p in doc.paragraphs:
             if old in p.text:
@@ -115,12 +125,10 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
         if job:
             replace_text(f"COMPANY{i}", job['Comp'])
             replace_text(f"TITLE{i}", job['Title'])
-            # Date replacement logic
             for p in doc.paragraphs:
                 if job['Comp'] in p.text:
                     p.text = p.text.replace("MMM YYYY – CURRENT", job['Dates']).replace("MMM YYYY – MMM YYYY", job['Dates'])
             
-            # Bullet injection
             bullet_tag = "Bullets" if i == 1 else f"Bullets{i}"
             for p in doc.paragraphs:
                 if bullet_tag in p.text:
@@ -128,7 +136,6 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
                     for b in job['Bullets']:
                         p.insert_paragraph_before(f"• {b}")
         else:
-            # Clear unused tags
             replace_text(f"COMPANY{i}", "")
             replace_text(f"TITLE{i}", "")
             replace_text(f"Bullets{i}", "")
@@ -167,12 +174,9 @@ if st.button("Generate Formatted Resume"):
         manual_inputs = {"location": location, "remote_onsite": remote_onsite, "former_fm": former_fm, "links": links, "interview_results": interview_results}
         
         doc_bytes = generate_fm_word_doc(ai_data, manual_inputs, raw_text)
+        fname = ai_data.get("FirstName", "Candidate")
         
-        # Filename logic
-        first_line = raw_text.split('\n')[0].strip().replace(',', '')
-        fname = first_line.split()[0] if first_line else "Candidate"
-        
-        st.success(f"Success! Generated for {first_line}")
+        st.success(f"Success! Generated for {ai_data.get('FullName')}")
         st.download_button("Download Resume", data=doc_bytes, file_name=f"FM_Formatted_{fname}.docx")
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error during generation: {e}")
