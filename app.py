@@ -7,7 +7,7 @@ from io import BytesIO
 import json
 import re
 
-# --- Core Functions ---
+# --- Data Handling ---
 
 def extract_text_from_file(uploaded_file):
     file_name = uploaded_file.name.lower()
@@ -27,12 +27,12 @@ def extract_text_from_file(uploaded_file):
                     if cell.text.strip(): text += cell.text + " "
     return text
 
-def parse_with_new_sdk(raw_text, api_key):
-    # This modern client defaults to the stable v1 endpoint, fixing the 404
+def parse_with_modern_sdk(raw_text, api_key):
+    # Using the new 'google-genai' client to fix the 404 routing error
     client = genai.Client(api_key=api_key)
     
     prompt = f"""
-    You are a data extraction tool. Extract data into JSON.
+    You are a literal data extraction tool. Extract data into JSON.
     STRICT RULE: Copy professional experience bullets EXACTLY. 
     DO NOT rewrite, summarize, or improve any text. 
 
@@ -41,7 +41,7 @@ def parse_with_new_sdk(raw_text, api_key):
         "FullName": "Name",
         "Education": [{{"School": "Uni", "Degree": "Major"}}],
         "Jobs": [
-            {{"Company": "Co", "Title": "Title", "Dates": "MMM YYYY – MMM YYYY", "Bullets": ["Bullet 1"]}}
+            {{"Company": "Co", "Title": "Title", "Dates": "Dates", "Bullets": ["Bullet 1"]}}
         ]
     }}
 
@@ -57,7 +57,7 @@ def parse_with_new_sdk(raw_text, api_key):
     return json.loads(response.text)
 
 def run_level_replace(paragraph, target, replacement):
-    """Replaces text while preserving the Tab Stops and formatting in your template."""
+    """Replaces text while keeping Tab Stops (the arrows) intact."""
     if target.lower() in paragraph.text.lower():
         for run in paragraph.runs:
             if target.lower() in run.text.lower():
@@ -68,7 +68,7 @@ def generate_docx(ai_data, manual_inputs):
     template_path = "Fannie Mae Resume Format Template.docx"
     doc = docx.Document(template_path)
 
-    # 1. Candidate Info (Table 0)
+    # 1. Candidate Info Mapping
     t0 = doc.tables[0]
     t0.cell(1, 1).text = ai_data.get("FullName", "NAME").title()
     t0.cell(2, 1).text = manual_inputs["location"]
@@ -76,7 +76,7 @@ def generate_docx(ai_data, manual_inputs):
     t0.cell(4, 1).text = manual_inputs["former_fm"]
     t0.cell(5, 1).text = manual_inputs["links"]
 
-    # 2. Education (Table 2)
+    # 2. Education Mapping
     t2 = doc.tables[2]
     for i, edu in enumerate(ai_data.get("Education", [])):
         if i + 2 < len(t2.rows):
@@ -84,7 +84,7 @@ def generate_docx(ai_data, manual_inputs):
             t2.cell(i+2, 1).text = edu.get("Degree", "")
             t2.cell(i+2, 2).text = "Yes"
 
-    # 3. Work History & Bullet Mapping
+    # 3. Work History & Bullet Logic
     jobs = ai_data.get("Jobs", [])
     for p in doc.paragraphs:
         p_text_low = p.text.lower()
@@ -96,10 +96,9 @@ def generate_docx(ai_data, manual_inputs):
             if c_tag in p_text_low:
                 if job:
                     run_level_replace(p, c_tag, job['Company'])
-                    # This logic keeps the date on the far right as per your template's Tab Stop
                     if d_tag1 in p.text.lower(): run_level_replace(p, d_tag1, job['Dates'])
                     elif d_tag2 in p.text.lower(): run_level_replace(p, d_tag2, job['Dates'])
-                else: p.text = "" # Clears unused roles
+                else: p.text = "" # Erases unused role blocks
             
             elif t_tag in p_text_low:
                 if job: run_level_replace(p, t_tag, job['Title'])
@@ -112,12 +111,11 @@ def generate_docx(ai_data, manual_inputs):
                     for b in job['Bullets']:
                         p.insert_paragraph_before(f"• {b}", style=orig_style)
 
-    # 4. Interview Logic (Q1-Q5 and ANSWER1-ANSWER5)
+    # 4. Q1-Q5 Interview Logic
     for p in doc.paragraphs:
         for i in range(1, 6):
             q_tag, a_tag = f"Q{i}", f"ANSWER{i}"
-            q_val = manual_inputs.get(f"q{i}")
-            a_val = manual_inputs.get(f"a{i}")
+            q_val, a_val = manual_inputs.get(f"q{i}"), manual_inputs.get(f"a{i}")
             if q_tag in p.text: p.text = p.text.replace(q_tag, q_val) if q_val else ""
             if a_tag in p.text: p.text = p.text.replace(a_tag, a_val) if a_val else ""
 
@@ -125,7 +123,7 @@ def generate_docx(ai_data, manual_inputs):
     doc.save(bio)
     return bio.getvalue()
 
-# --- Streamlit Interface ---
+# --- Streamlit UI ---
 st.set_page_config(page_title="Fannie Mae Precision Extractor")
 st.title("📄 Fannie Mae Precision Data Extractor")
 
@@ -136,25 +134,25 @@ with col1:
     uploaded_file = st.file_uploader("Upload Resume", type=["pdf", "docx"])
     location = st.text_input("Current Location (City, ST)")
     remote_onsite = st.selectbox("Remote or Onsite", ["Onsite", "Remote"])
-    former_fm = st.selectbox("Former FM FTE or Contractor?", ["N", "Y"])
-    links = st.text_input("LinkedIn Profile Link")
+    former_fm = st.selectbox("Former FM?", ["N", "Y"])
+    links = st.text_input("LinkedIn Link")
 
 with col2:
-    st.subheader("Technical Interview Results")
+    st.subheader("Interview Results")
     qa_data = {}
     for i in range(1, 6):
-        qa_data[f"q{i}"] = st.text_input(f"Question {i}", key=f"q_in_{i}")
-        qa_data[f"a{i}"] = st.text_area(f"Answer {i}", key=f"a_in_{i}")
+        qa_data[f"q{i}"] = st.text_input(f"Question {i}", key=f"q_{i}")
+        qa_data[f"a{i}"] = st.text_area(f"Answer {i}", key=f"a_{i}")
 
 if st.button("Generate Formatted Resume") and uploaded_file and api_key:
     try:
         raw_text = extract_text_from_file(uploaded_file)
-        data = parse_with_new_sdk(raw_text, api_key)
+        data = parse_with_modern_sdk(raw_text, api_key)
         manual = {"location": location, "remote_onsite": remote_onsite, "former_fm": former_fm, "links": links, **qa_data}
         
         output_doc = generate_docx(data, manual)
         name = data.get("FullName", "Candidate").title()
         st.success(f"Success! Data extracted for {name}")
-        st.download_button("Download Resume", output_doc, f"{name} Fannie Mae Format.docx")
+        st.download_button("Download Resume", output_doc, f"{name}_FannieMae_Format.docx")
     except Exception as e:
         st.error(f"Error: {e}")
