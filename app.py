@@ -29,8 +29,19 @@ def extract_text_from_file(uploaded_file):
 def parse_and_generate_with_ai(raw_resume_text, api_key):
     genai.configure(api_key=api_key)
     
-    # Try the most explicit model path to bypass the 404
-    model = genai.GenerativeModel(model_name='models/gemini-1.5-flash')
+    # --- AUTO-FIX FOR 404 ERROR ---
+    # This block finds the exact string your specific SDK version expects
+    model_name = "gemini-1.5-flash" 
+    try:
+        available_models = [m.name for m in genai.list_models()]
+        for m in available_models:
+            if "gemini-1.5-flash" in m:
+                model_name = m # Grab the exact string (e.g., 'models/gemini-1.5-flash')
+                break
+    except:
+        pass # Fallback to default if list_models fails
+    
+    model = genai.GenerativeModel(model_name=model_name)
     
     prompt = f"""
     You are a data extraction tool. Extract raw data from the resume into JSON.
@@ -40,7 +51,7 @@ def parse_and_generate_with_ai(raw_resume_text, api_key):
     {{
         "FullName": "Name",
         "Education": [
-            {{"School": "School Name", "Degree": "Degree Name"}}
+            {{"School": "Uni", "Degree": "Degree"}}
         ],
         "Jobs": [
             {{"Company": "Company", "Title": "Title", "Dates": "MMM YYYY – MMM YYYY", "Bullets": ["Exact Bullet 1"]}}
@@ -51,16 +62,14 @@ def parse_and_generate_with_ai(raw_resume_text, api_key):
     {raw_resume_text}
     """
     
-    # Using JSON mode to ensure the return is clean
     response = model.generate_content(
         prompt,
         generation_config={"response_mime_type": "application/json"}
     )
-    
     return json.loads(response.text)
 
 def run_level_replace(paragraph, target, replacement):
-    """Replaces text while preserving Right Tabs and Bold/Italic formatting."""
+    """Replaces text while preserving template Tabs and formatting."""
     if target.lower() in paragraph.text.lower():
         found = False
         for run in paragraph.runs:
@@ -78,7 +87,7 @@ def generate_fm_word_doc(ai_data, manual_inputs):
     template_path = "Fannie Mae Resume Format Template.docx"
     doc = docx.Document(template_path)
 
-    # 1. INFO TABLE (Coordinates)
+    # 1. CANDIDATE INFO (NAME, City, ST, Onsite, Y/N, LINK)
     t0 = doc.tables[0]
     t0.cell(1, 1).text = ai_data.get("FullName", "NAME").title()
     t0.cell(2, 1).text = manual_inputs["location"]
@@ -94,7 +103,7 @@ def generate_fm_word_doc(ai_data, manual_inputs):
             t2.cell(i+2, 1).text = edu.get("Degree", "")
             t2.cell(i+2, 2).text = "Yes"
 
-    # 3. WORK HISTORY (Mapping & Cleanup)
+    # 3. WORK HISTORY (JobXBullets & Role Cleanup)
     jobs = ai_data.get("Jobs", [])
     for p in doc.paragraphs:
         p_text_low = p.text.lower()
@@ -105,7 +114,7 @@ def generate_fm_word_doc(ai_data, manual_inputs):
             if c_tag in p_text_low:
                 if job:
                     run_level_replace(p, c_tag, job['Company'])
-                    # Preserves the Right-Tab for dates
+                    # Preserve tab spacing for dates
                     for d_tag in ["mmm yyyy – current", "mmm yyyy – mmm yyyy"]:
                         if d_tag in p.text.lower():
                             run_level_replace(p, d_tag, job['Dates'])
@@ -122,7 +131,7 @@ def generate_fm_word_doc(ai_data, manual_inputs):
                     for b in job['Bullets']:
                         p.insert_paragraph_before(f"• {b}", style=orig_style)
 
-    # 4. INTERVIEW RESULTS (Cleanup)
+    # 4. INTERVIEW RESULTS (Q1-Q5 Clean Up)
     for p in doc.paragraphs:
         for i in range(1, 6):
             q_tag, a_tag = f"Q{i}", f"ANSWER{i}"
@@ -140,7 +149,7 @@ def generate_fm_word_doc(ai_data, manual_inputs):
 
 # --- UI Setup ---
 st.set_page_config(page_title="Fannie Mae Extractor", layout="wide")
-st.title("📄 Fannie Mae Precision Data Extractor")
+st.title("📄 Fannie Mae Precision Extractor")
 
 with st.sidebar:
     api_key = st.text_input("Gemini API Key:", type="password")
@@ -179,6 +188,6 @@ if st.button("Generate Formatted Resume"):
         doc_bytes = generate_fm_word_doc(ai_data, manual_inputs)
         name = ai_data.get("FullName", "Candidate").title()
         st.success(f"Success! Data extracted for {name}")
-        st.download_button("Download Resume", data=doc_bytes, file_name=f"{name} Fannie Mae Format.docx")
+        st.download_button("Download", data=doc_bytes, file_name=f"{name} Fannie Mae Format.docx")
     except Exception as e:
         st.error(f"Error: {e}")
