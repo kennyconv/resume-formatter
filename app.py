@@ -29,32 +29,30 @@ def extract_text_from_file(uploaded_file):
 def parse_and_generate_with_ai(raw_resume_text, api_key):
     genai.configure(api_key=api_key)
     
-    # --- AUTO-FIX FOR 404 ERROR ---
-    # This block finds the exact string your specific SDK version expects
-    model_name = "gemini-1.5-flash" 
+    # DYNAMIC MODEL DISCOVERY: This prevents the 404 error
+    model_id = "gemini-1.5-flash" # Default
     try:
-        available_models = [m.name for m in genai.list_models()]
-        for m in available_models:
-            if "gemini-1.5-flash" in m:
-                model_name = m # Grab the exact string (e.g., 'models/gemini-1.5-flash')
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods and 'gemini-1.5-flash' in m.name:
+                model_id = m.name # This captures the exact string (e.g. 'models/gemini-1.5-flash')
                 break
-    except:
-        pass # Fallback to default if list_models fails
+    except Exception as e:
+        st.warning(f"Note: Could not list models, attempting default path... {e}")
     
-    model = genai.GenerativeModel(model_name=model_name)
+    model = genai.GenerativeModel(model_name=model_id)
     
     prompt = f"""
-    You are a data extraction tool. Extract raw data from the resume into JSON.
+    You are a data extraction tool. Extract data from the resume into JSON.
     DO NOT rewrite, summarize, or improve the text. Copy bullets EXACTLY.
 
     JSON Structure:
     {{
         "FullName": "Name",
         "Education": [
-            {{"School": "Uni", "Degree": "Degree"}}
+            {{"School": "University", "Degree": "Degree Name"}}
         ],
         "Jobs": [
-            {{"Company": "Company", "Title": "Title", "Dates": "MMM YYYY – MMM YYYY", "Bullets": ["Exact Bullet 1"]}}
+            {{"Company": "Company Name", "Title": "Job Title", "Dates": "Dates", "Bullets": ["Exact Bullet 1", "Exact Bullet 2"]}}
         ]
     }}
 
@@ -62,6 +60,7 @@ def parse_and_generate_with_ai(raw_resume_text, api_key):
     {raw_resume_text}
     """
     
+    # Use JSON mode for the cleanest possible return
     response = model.generate_content(
         prompt,
         generation_config={"response_mime_type": "application/json"}
@@ -69,7 +68,7 @@ def parse_and_generate_with_ai(raw_resume_text, api_key):
     return json.loads(response.text)
 
 def run_level_replace(paragraph, target, replacement):
-    """Replaces text while preserving template Tabs and formatting."""
+    """Replaces text while preserving template tabs and styling."""
     if target.lower() in paragraph.text.lower():
         found = False
         for run in paragraph.runs:
@@ -87,7 +86,7 @@ def generate_fm_word_doc(ai_data, manual_inputs):
     template_path = "Fannie Mae Resume Format Template.docx"
     doc = docx.Document(template_path)
 
-    # 1. CANDIDATE INFO (NAME, City, ST, Onsite, Y/N, LINK)
+    # 1. CANDIDATE INFO
     t0 = doc.tables[0]
     t0.cell(1, 1).text = ai_data.get("FullName", "NAME").title()
     t0.cell(2, 1).text = manual_inputs["location"]
@@ -103,7 +102,7 @@ def generate_fm_word_doc(ai_data, manual_inputs):
             t2.cell(i+2, 1).text = edu.get("Degree", "")
             t2.cell(i+2, 2).text = "Yes"
 
-    # 3. WORK HISTORY (JobXBullets & Role Cleanup)
+    # 3. WORK HISTORY (Literal Mapping & Cleanup)
     jobs = ai_data.get("Jobs", [])
     for p in doc.paragraphs:
         p_text_low = p.text.lower()
@@ -114,11 +113,10 @@ def generate_fm_word_doc(ai_data, manual_inputs):
             if c_tag in p_text_low:
                 if job:
                     run_level_replace(p, c_tag, job['Company'])
-                    # Preserve tab spacing for dates
                     for d_tag in ["mmm yyyy – current", "mmm yyyy – mmm yyyy"]:
                         if d_tag in p.text.lower():
                             run_level_replace(p, d_tag, job['Dates'])
-                else: p.text = "" 
+                else: p.text = "" # Clears unused role headers
             
             elif t_tag in p_text_low:
                 if job: run_level_replace(p, t_tag, job['Title'])
@@ -163,7 +161,7 @@ with c1:
     links = st.text_input("LinkedIn Profile Link")
 
 with c2:
-    st.subheader("Technical Interview Results")
+    st.subheader("Supplier Technical Interview Results")
     q1 = st.text_input("Question 1", key="iq1")
     a1 = st.text_area("Answer 1", key="ia1")
     q2 = st.text_input("Question 2", key="iq2")
@@ -179,15 +177,17 @@ if st.button("Generate Formatted Resume"):
     try:
         raw_text = extract_text_from_file(uploaded_file)
         ai_data = parse_and_generate_with_ai(raw_text, api_key)
+        
         manual_inputs = {
             "location": location, "remote_onsite": remote_onsite, 
             "former_fm": former_fm, "links": links,
             "q1": q1, "a1": a1, "q2": q2, "a2": a2, 
             "q3": q3, "a3": a3, "q4": q4, "a4": a4, "q5": q5, "a5": a5
         }
+        
         doc_bytes = generate_fm_word_doc(ai_data, manual_inputs)
         name = ai_data.get("FullName", "Candidate").title()
-        st.success(f"Success! Data extracted for {name}")
+        st.success(f"Success! Extracted data for {name}")
         st.download_button("Download", data=doc_bytes, file_name=f"{name} Fannie Mae Format.docx")
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error during extraction: {e}")
