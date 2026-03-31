@@ -81,7 +81,6 @@ def run_level_replace(paragraph, target, replacement):
     if target.lower() in paragraph.text.lower():
         for run in paragraph.runs:
             if target.lower() in run.text.lower():
-                # Case-insensitive surgical swap
                 insens_re = re.compile(re.escape(target), re.IGNORECASE)
                 run.text = insens_re.sub(str(replacement), run.text)
 
@@ -89,7 +88,7 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
     template_path = "Fannie Mae Resume Format Template.docx"
     doc = docx.Document(template_path) if os.path.exists(template_path) else docx.Document()
 
-    # 1. TABLE COORDINATES (Exact mapping)
+    # 1. CANDIDATE INFO TABLE
     t0 = doc.tables[0]
     t0.cell(1, 1).text = ai_data.get("FullName", "").strip().title()
     t0.cell(2, 1).text = manual_inputs["location"]
@@ -113,35 +112,46 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
             t3.cell(i+2, 0).text = sk.get("Category", "")
             t3.cell(i+2, 1).text = sk.get("Exp", "")
 
-    # 3. WORK HISTORY (Surgical Run-Level Mapping)
+    # 3. WORK HISTORY
     jobs = ai_data.get("Jobs", [])
-    for i in range(1, 8):
-        job = jobs[i-1] if i <= len(jobs) else None
-        c_tag, t_tag, b_tag = f"company{i}", f"title{i}", f"Job{i}Bullets"
-        d_tag_1, d_tag_2 = "mmm yyyy – Current", "mmm yyyy – mmm yyyy"
+    
+    # We iterate through paragraphs once to avoid the list.index error
+    for p in doc.paragraphs:
+        p_text_lower = p.text.lower()
         
-        for p in doc.paragraphs:
-            # Replace Company & Dates without touching the Tab Stop
-            if c_tag in p.text.lower():
+        for i in range(1, 8):
+            job = jobs[i-1] if i <= len(jobs) else None
+            c_tag, t_tag, b_tag = f"company{i}", f"title{i}", f"job{i}bullets"
+            d_tag_1, d_tag_2 = "mmm yyyy – current", "mmm yyyy – mmm yyyy"
+
+            # Handle Company & Dates (Preserves existing Tabs)
+            if c_tag in p_text_lower:
                 if job:
                     run_level_replace(p, c_tag, job['Company'])
-                    run_level_replace(p, d_tag_1, job['Dates'])
-                    run_level_replace(p, d_tag_2, job['Dates'])
-                else: p.text = "" # Clears unused role headers
-            
-            # Replace Title while keeping style
-            if t_tag in p.text.lower():
-                if job: run_level_replace(p, t_tag, job['Title'])
-                else: p.text = ""
+                    # We check for the date placeholders specifically on this line
+                    if d_tag_1 in p.text.lower():
+                        run_level_replace(p, d_tag_1, job['Dates'])
+                    elif d_tag_2 in p.text.lower():
+                        run_level_replace(p, d_tag_2, job['Dates'])
+                else:
+                    p.text = ""
 
-            # Inject Bullets using the template's EXACT paragraph style
-            if b_tag in p.text:
-                orig_style = p.style
-                p.text = "" # Clear placeholder but keep the paragraph object
+            # Handle Title
+            elif t_tag in p_text_lower:
                 if job:
-                    for b in job['Bullets']:
-                        # This creates a new paragraph ABOVE the placeholder with the exact same style
-                        doc.paragraphs[doc.paragraphs.index(p)].insert_paragraph_before(f"• {b}", style=orig_style)
+                    run_level_replace(p, t_tag, job['Title'])
+                else:
+                    p.text = ""
+
+            # Handle Bullets (The Literal Copy-Paste Fix)
+            elif b_tag in p_text_lower:
+                orig_style = p.style
+                p.text = "" # Clear the placeholder text
+                if job:
+                    for idx, b in enumerate(job['Bullets']):
+                        # Use insert_paragraph_before to maintain the list formatting
+                        new_p = p.insert_paragraph_before(f"• {b}", style=orig_style)
+                # The original placeholder paragraph 'p' remains as an empty line/anchor
 
     # 4. INTERVIEW RESULTS
     for p in doc.paragraphs:
@@ -179,7 +189,7 @@ if st.button("Generate Formatted Resume"):
         manual_inputs = {"location": location, "remote_onsite": remote_onsite, "former_fm": former_fm, "links": links, "interview_results": interview_results}
         doc_bytes = generate_fm_word_doc(ai_data, manual_inputs, raw_text)
         name = ai_data.get("FullName", "Candidate").title()
-        st.success(f"Generated for {name}")
+        st.success(f"Success! Generated for {name}")
         st.download_button(label="Download", data=doc_bytes, file_name=f"{name} Fannie Mae Format.docx")
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error during generation: {e}")
