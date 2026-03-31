@@ -19,7 +19,7 @@ def extract_text_from_file(uploaded_file):
     elif file_name.endswith('.docx'):
         doc = docx.Document(uploaded_file)
         
-        # 1. Scan Headers (with error handling for empty headers)
+        # 1. Scan Headers (where names like Hassan's are often hidden)
         try:
             for section in doc.sections:
                 header = section.header
@@ -51,14 +51,13 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     You are a professional resume formatting assistant. 
     
     STRICT IDENTITY RULE: 
-    - You must extract the candidate's ACTUAL name from the provided resume text. 
+    - Extract the candidate's ACTUAL name from the provided resume text. 
     - The name is typically at the very top.
     - NEVER use placeholder names like "Alex", "John Doe", or "Candidate". 
-    - If you cannot find a name, return "CANDIDATE NAME".
     
     SUMMARY RULE:
     - Use the candidate's First Name only. Start with "[First Name] is a..."
-    - Write 4-5 dense sentences, selling the candidate using metrics and keywords from the JD.
+    - Write 4-5 dense sentences using metrics and keywords from the JD.
 
     SKILLS RULE:
     - Create exactly 4 rows. Use the format: "Functional Category & Strategy (Tool 1, Tool 2, Tool 3)".
@@ -106,12 +105,12 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
     template_path = "Fannie Mae Resume Format Template.docx"
     doc = docx.Document(template_path) if os.path.exists(template_path) else docx.Document()
 
-    # --- 1. TABLE 0: CANDIDATE INFORMATION (COORDINATE LOCKED) ---
-    # We do NOT touch Row 0 (The "CANDIDATE INFORMATION" header)
+    # --- 1. TABLE 0: CANDIDATE INFORMATION ---
     t0 = doc.tables[0]
     
-    # Use the AI extracted name, but strip any trailing punctuation
-    final_name = ai_data.get("FullName", "CANDIDATE NAME").strip().replace(',', '')
+    # NEW: Title Case conversion for the name (e.g., HASSAN OSUMAH -> Hassan Osumah)
+    raw_full_name = ai_data.get("FullName", "CANDIDATE NAME").strip().replace(',', '')
+    final_name = raw_full_name.title()
 
     t0.cell(1, 1).text = final_name              # Row 1: Name:
     t0.cell(2, 1).text = manual_inputs["location"]   # Row 2: Current Location:
@@ -122,7 +121,7 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
     # --- 2. TABLE 1: SUMMARY ---
     doc.tables[1].cell(1, 0).text = ai_data.get("Summary", "")
 
-    # --- 3. TABLE 2: EDUCATION (Start at Row 2) ---
+    # --- 3. TABLE 2: EDUCATION ---
     t2 = doc.tables[2]
     for i, edu in enumerate(ai_data.get("Education", [])):
         row_idx = i + 2 
@@ -131,7 +130,7 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
             t2.cell(row_idx, 1).text = edu.get("Degree", "")
             t2.cell(row_idx, 2).text = edu.get("Status", "Yes")
 
-    # --- 4. TABLE 3: SKILLS (Start at Row 2) ---
+    # --- 4. TABLE 3: SKILLS ---
     t3 = doc.tables[3]
     for i, sk in enumerate(ai_data.get("Skills", [])):
         row_idx = i + 2
@@ -202,7 +201,15 @@ if st.button("Generate Formatted Resume"):
         manual_inputs = {"location": location, "remote_onsite": remote_onsite, "former_fm": former_fm, "links": links, "interview_results": interview_results}
         doc_bytes = generate_fm_word_doc(ai_data, manual_inputs, raw_text)
         
-        st.success(f"Success! Generated for {ai_data['FullName']}")
-        st.download_button("Download Resume", data=doc_bytes, file_name=f"FM_Formatted_{ai_data['FirstName']}.docx")
+        # FINAL PROTECTION: Formatting name for the success message and download filename
+        clean_full_name = ai_data.get("FullName", "Candidate").strip().replace(',', '').title()
+        
+        st.success(f"Success! Generated for {clean_full_name}")
+        st.download_button(
+            label="Download Formatted Resume", 
+            data=doc_bytes, 
+            file_name=f"{clean_full_name} Fannie Mae Format.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
     except Exception as e:
         st.error(f"Error during generation: {e}")
