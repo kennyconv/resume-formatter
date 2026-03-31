@@ -39,12 +39,15 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     
     prompt = f"""
     You are a professional resume formatting assistant. 
-    STRICT IDENTITY RULE: Extract the candidate's ACTUAL name.
+    
+    STRICT IDENTITY RULE: 
+    - Extract the candidate's ACTUAL name.
     
     WORK HISTORY RULE:
     - Extract jobs from most recent to oldest.
-    - Format dates as 'AbbreviatedMonth YYYY – AbbreviatedMonth YYYY' (e.g., Jun 2021 – Nov 2025).
-    - If current, use 'Jun 2021 – Current'.
+    - FOR THE MOST RECENT JOB: Format dates as 'Jun 2021 – Nov 2025' or 'Jun 2021 – Current'.
+    - FOR ALL PREVIOUS JOBS: Format dates as 'Jan 2019 – May 2021'.
+    - Ensure the months are 3-letter abbreviations (e.g., Jan, Jun, Nov).
 
     JSON Structure:
     {{
@@ -73,21 +76,12 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     json_string = raw_output.split("```json")[1].split("```")[0].strip() if "```json" in raw_output else raw_output
     return json.loads(json_string)
 
-def surgical_replace(paragraph, old_text, new_text):
-    """Replaces text within a paragraph while preserving existing formatting and tab stops."""
-    if old_text in paragraph.text:
-        # We replace the text in the 'runs' to preserve bold/italic/tabs
-        for run in paragraph.runs:
-            if old_text in run.text:
-                run.text = run.text.replace(old_text, str(new_text))
-
 def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
     template_path = "Fannie Mae Resume Format Template.docx"
     doc = docx.Document(template_path) if os.path.exists(template_path) else docx.Document()
 
-    # 1. CANDIDATE INFO (Coordinate Mapping)
+    # 1. TABLE MAPPING (Coordinates Locked)
     t0 = doc.tables[0]
-    # Ensure name is Title Case
     clean_name = ai_data.get("FullName", "Candidate").strip().title()
     t0.cell(1, 1).text = clean_name
     t0.cell(2, 1).text = manual_inputs["location"]
@@ -95,10 +89,9 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
     t0.cell(4, 1).text = manual_inputs["former_fm"]
     t0.cell(5, 1).text = manual_inputs["links"]
 
-    # 2. SUMMARY
     doc.tables[1].cell(1, 0).text = ai_data.get("Summary", "")
 
-    # 3. EDUCATION & SKILLS
+    # Education (Row 2+)
     t2 = doc.tables[2]
     for i, edu in enumerate(ai_data.get("Education", [])):
         if i + 2 < len(t2.rows):
@@ -106,46 +99,52 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
             t2.cell(i+2, 1).text = edu.get("Degree", "")
             t2.cell(i+2, 2).text = edu.get("Status", "Yes")
 
+    # Skills (Row 2+)
     t3 = doc.tables[3]
     for i, sk in enumerate(ai_data.get("Skills", [])):
         if i + 2 < len(t3.rows):
             t3.cell(i+2, 0).text = sk.get("Category", "")
             t3.cell(i+2, 1).text = sk.get("Exp", "")
 
-    # 4. WORK HISTORY (Format-Aware Replacement)
+    # 2. WORK HISTORY (Surgical Paragraph Replacement)
     jobs = ai_data.get("Jobs", [])
+    
     for i in range(1, 8):
         job = jobs[i-1] if i <= len(jobs) else None
         
-        c_tag = f"company{i}"
-        t_tag = f"title{i}"
-        d_tag_current = "mmm yyyy – Current"
-        d_tag_range = "mmm yyyy – mmm yyyy"
-        
+        target_company = f"company{i}"
+        target_title = f"title{i}"
+        target_bullets = "Bullets" if i == 1 else f"Bullets{i}"
+
         for p in doc.paragraphs:
-            if c_tag in p.text:
+            # Match Company and Date line
+            # We look at p.text (the whole line) to avoid "Run" fragmentation errors
+            if target_company in p.text.lower():
                 if job:
-                    surgical_replace(p, c_tag, job['Company'])
-                    surgical_replace(p, d_tag_current, job['Dates'])
-                    surgical_replace(p, d_tag_range, job['Dates'])
-                else:
-                    p.text = "" # Remove unused line
-            
-            if t_tag in p.text:
-                if job:
-                    surgical_replace(p, t_tag, job['Title'])
+                    # Preserve the Tab between Company and Date by using \t
+                    # We rebuild the string: Real Company + Tab + Real Date
+                    p.text = f"{job['Company']}\t{job['Dates']}"
+                    # Re-apply bolding to the company line
+                    if len(p.runs) > 0: p.runs[0].bold = True
                 else:
                     p.text = ""
 
-            # Bullets Placeholder
-            bullet_tag = "Bullets" if i == 1 else f"Bullets{i}"
-            if bullet_tag in p.text:
-                p.text = "" # Clear the placeholder
+            # Match Title line
+            elif target_title in p.text.lower():
                 if job:
-                    for bullet in job['Bullets']:
-                        new_p = p.insert_paragraph_before(f"• {bullet}")
+                    p.text = job['Title']
+                    if len(p.runs) > 0: p.runs[0].italic = True
+                else:
+                    p.text = ""
 
-    # 5. INTERVIEW RESULTS
+            # Match Bullets line
+            elif target_bullets in p.text:
+                p.text = "" # Clear the tag
+                if job:
+                    for b in job['Bullets']:
+                        p.insert_paragraph_before(f"• {b}")
+
+    # 3. INTERVIEW RESULTS
     for p in doc.paragraphs:
         if "ANSWER" in p.text:
             p.text = p.text.replace("ANSWER", manual_inputs["interview_results"])
@@ -164,14 +163,14 @@ with st.sidebar:
 c1, c2 = st.columns(2)
 with c1:
     uploaded_file = st.file_uploader("Upload Resume", type=["pdf", "docx"])
-    location = st.text_input("Current Location: (City and State only)", placeholder="Washington, DC")
+    location = st.text_input("Current Location: (City and State only)", placeholder="Dallas, TX")
     remote_onsite = st.selectbox("Remote or Onsite", ["Onsite", "Remote", "Hybrid"])
     former_fm = st.selectbox("Former FM FTE or Contractor?", ["N", "Y"])
     links = st.text_input("LinkedIn Profile/GitHub/Portfolio Link")
 
 with c2:
     job_description = st.text_area("Job Description", placeholder="Paste the job description here")
-    extra_info = st.text_area("Spotlight Call/Other Info", placeholder="Spotlight call notes, transcript, manager feedback, MSP comments, etc.")
+    extra_info = st.text_area("Spotlight Call/Other Info", placeholder="Spotlight notes...")
     interview_results = st.text_area("Supplier Technical Interview Results")
 
 if st.button("Generate Formatted Resume"):
@@ -181,8 +180,12 @@ if st.button("Generate Formatted Resume"):
         manual_inputs = {"location": location, "remote_onsite": remote_onsite, "former_fm": former_fm, "links": links, "interview_results": interview_results}
         doc_bytes = generate_fm_word_doc(ai_data, manual_inputs, raw_text)
         
-        full_name_clean = ai_data.get("FullName", "Candidate").title()
-        st.success(f"Success! Generated for {full_name_clean}")
-        st.download_button("Download", data=doc_bytes, file_name=f"{full_name_clean} Fannie Mae Format.docx")
+        full_name = ai_data.get("FullName", "Candidate").title()
+        st.success(f"Success! Generated for {full_name}")
+        st.download_button(
+            label="Download Formatted Resume", 
+            data=doc_bytes, 
+            file_name=f"{full_name} Fannie Mae Format.docx"
+        )
     except Exception as e:
         st.error(f"Error: {e}")
