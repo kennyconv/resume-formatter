@@ -35,25 +35,26 @@ def extract_text_from_file(uploaded_file):
 
 def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, interview_results, api_key):
     genai.configure(api_key=api_key)
+    # Using the most stable model identifier
     model = genai.GenerativeModel('gemini-1.5-flash')
     
     prompt = f"""
-    You are an expert technical recruiter specializing in Fannie Mae placements. 
+    You are an expert technical recruiter. Format this resume for a Fannie Mae submission.
     
-    IDENTITY: Extract the candidate's ACTUAL name from the resume text.
+    STRICT IDENTITY RULE: Extract the candidate's ACTUAL name from the resume. 
     
-    SKILLS (STRICT CONSULTANT FORMAT):
-    Group tools into these 4 specific strategy rows:
-    - Cybersecurity & SOC Operations (Threat Detection, Incident Response, Insider Threat Investigations)
-    - SIEM & Threat Hunting (Splunk, IBM QRadar, Exabeam, Log Analysis, Correlation)
-    - Network & Security Analysis (TCP/IP, DNS, HTTP/S, Wireshark, Endpoint Security)
-    - Fraud & Behavioral Risk Analysis (Financial Transactions, Pattern Detection, Root Cause Analysis)
-    (If skills differ, use this 'Category (Tools, Concepts)' structure).
+    SKILLS SECTION (MANDATORY FORMAT):
+    You MUST create exactly 4 rows. Group the candidate's tools and experience into these specific strategy buckets:
+    - Row 1: Cybersecurity & SOC Operations (Threat Detection, Incident Response, Insider Threat Investigations)
+    - Row 2: SIEM & Threat Hunting (Splunk, IBM QRadar, Exabeam, Log Analysis, Correlation)
+    - Row 3: Network & Security Analysis (TCP/IP, DNS, HTTP/S, Wireshark, Endpoint Security)
+    - Row 4: Fraud & Behavioral Risk Analysis (Financial Transactions, Pattern Detection, Root Cause Analysis)
+    (Match the candidate's specific tools to these categories. If they are not a security candidate, use the format: 'Functional Strategy (Tool 1, Tool 2, Tool 3)')
 
-    WORK HISTORY:
-    - Extract ALL jobs.
-    - Format dates as: 'Jun 2021 – Nov 2025' or 'Jun 2021 – Current'.
-    - Use 3-letter months.
+    WORK HISTORY RULE:
+    - Extract ALL previous jobs from most recent to oldest.
+    - Format dates exactly like: 'Jun 2021 – Nov 2025' or 'Jun 2021 – Current'.
+    - Use 3-letter month abbreviations.
 
     JSON Structure:
     {{
@@ -83,7 +84,7 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     return json.loads(json_string)
 
 def run_level_replace(paragraph, target, replacement):
-    """Surgical replacement to keep font and alignment."""
+    """Replaces text while preserving specific formatting and tab stops."""
     if target.lower() in paragraph.text.lower():
         for run in paragraph.runs:
             if target.lower() in run.text.lower():
@@ -95,17 +96,19 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
     template_path = "Fannie Mae Resume Format Template.docx"
     doc = docx.Document(template_path) if os.path.exists(template_path) else docx.Document()
 
-    # 1. CANDIDATE INFO TABLE
+    # 1. TABLE 0: CANDIDATE INFORMATION
     t0 = doc.tables[0]
-    t0.cell(1, 1).text = ai_data.get("FullName", "Candidate").title()
+    full_name = ai_data.get("FullName", "Candidate").strip().title()
+    t0.cell(1, 1).text = full_name
     t0.cell(2, 1).text = manual_inputs["location"]
     t0.cell(3, 1).text = manual_inputs["remote_onsite"]
     t0.cell(4, 1).text = manual_inputs["former_fm"]
     t0.cell(5, 1).text = manual_inputs["links"]
 
+    # 2. TABLE 1: SUMMARY
     doc.tables[1].cell(1, 0).text = ai_data.get("Summary", "")
 
-    # Education (Skip headers)
+    # 3. TABLE 2: EDUCATION
     t2 = doc.tables[2]
     for i, edu in enumerate(ai_data.get("Education", [])):
         if i + 2 < len(t2.rows):
@@ -113,30 +116,31 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
             t2.cell(i+2, 1).text = edu.get("Degree", "")
             t2.cell(i+2, 2).text = edu.get("Status", "Yes")
 
-    # Skills (Skip headers)
+    # 4. TABLE 3: SKILLS
     t3 = doc.tables[3]
     for i, sk in enumerate(ai_data.get("Skills", [])):
         if i + 2 < len(t3.rows):
             t3.cell(i+2, 0).text = sk.get("Category", "")
             t3.cell(i+2, 1).text = sk.get("Exp", "")
 
-    # 2. WORK HISTORY (Format-Preserving)
+    # 5. WORK HISTORY (Run-Level Surgical Replacement)
     jobs = ai_data.get("Jobs", [])
     for i in range(1, 8):
         job = jobs[i-1] if i <= len(jobs) else None
         
         c_tag = f"company{i}"
         t_tag = f"title{i}"
-        d_tag_current = "mmm yyyy – Current"
-        d_tag_range = "mmm yyyy – mmm yyyy"
+        # Match template casing exactly
+        d_tag_1 = "mmm yyyy – Current"
+        d_tag_2 = "mmm yyyy – mmm yyyy"
         
         for p in doc.paragraphs:
             if c_tag in p.text.lower():
                 if job:
                     run_level_replace(p, c_tag, job['Company'])
-                    run_level_replace(p, d_tag_current, job['Dates'])
-                    run_level_replace(p, d_tag_range, job['Dates'])
-                else: p.text = ""
+                    run_level_replace(p, d_tag_1, job['Dates'])
+                    run_level_replace(p, d_tag_2, job['Dates'])
+                else: p.text = "" # Remove unused roles
             
             if t_tag in p.text.lower():
                 if job: run_level_replace(p, t_tag, job['Title'])
@@ -147,9 +151,10 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
                 p.text = ""
                 if job:
                     for b in job['Bullets']:
+                        # Insert bullets before the placeholder
                         p.insert_paragraph_before(f"• {b}")
 
-    # 3. INTERVIEW
+    # 6. INTERVIEW RESULTS
     for p in doc.paragraphs:
         if "ANSWER" in p.text:
             p.text = p.text.replace("ANSWER", manual_inputs["interview_results"])
@@ -158,7 +163,7 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
     doc.save(bio)
     return bio.getvalue()
 
-# --- UI ---
+# --- Streamlit UI ---
 st.set_page_config(page_title="Fannie Mae Formatter", layout="wide")
 st.title("📄 Fannie Mae Resume Auto-Formatter")
 
@@ -171,11 +176,11 @@ with c1:
     location = st.text_input("Current Location: (City and State only)", placeholder="Washington, DC")
     remote_onsite = st.selectbox("Remote or Onsite", ["Onsite", "Remote", "Hybrid"])
     former_fm = st.selectbox("Former FM FTE or Contractor?", ["N", "Y"])
-    links = st.text_input("LinkedIn Profile Link")
+    links = st.text_input("LinkedIn Profile/GitHub/Portfolio Link")
 
 with c2:
-    job_description = st.text_area("Job Description", placeholder="Paste JD here")
-    extra_info = st.text_area("Spotlight Call/Other Info", placeholder="Spotlight notes...")
+    job_description = st.text_area("Job Description", placeholder="Paste the job description here")
+    extra_info = st.text_area("Spotlight Call/Other Info", placeholder="Spotlight notes, feedback, etc.")
     interview_results = st.text_area("Supplier Technical Interview Results")
 
 if st.button("Generate Formatted Resume"):
@@ -183,9 +188,15 @@ if st.button("Generate Formatted Resume"):
         raw_text = extract_text_from_file(uploaded_file)
         ai_data = parse_and_generate_with_ai(raw_text, job_description, extra_info, interview_results, api_key)
         manual_inputs = {"location": location, "remote_onsite": remote_onsite, "former_fm": former_fm, "links": links, "interview_results": interview_results}
+        
         doc_bytes = generate_fm_word_doc(ai_data, manual_inputs, raw_text)
-        name = ai_data.get("FullName", "Candidate").title()
-        st.success(f"Generated for {name}")
-        st.download_button("Download", data=doc_bytes, file_name=f"{name} Fannie Mae Format.docx")
+        final_name = ai_data.get("FullName", "Candidate").title()
+        
+        st.success(f"Success! Generated for {final_name}")
+        st.download_button(
+            label="Download Formatted Resume", 
+            data=doc_bytes, 
+            file_name=f"{final_name} Fannie Mae Format.docx"
+        )
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error during generation: {e}")
