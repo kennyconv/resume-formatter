@@ -35,13 +35,13 @@ def extract_text_from_file(uploaded_file):
 
 def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, interview_results, api_key):
     genai.configure(api_key=api_key)
-    # Using the most stable model identifier
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # Standardized model string for better compatibility
+    model = genai.GenerativeModel('models/gemini-1.5-flash')
     
     prompt = f"""
     You are an expert technical recruiter. Format this resume for a Fannie Mae submission.
     
-    STRICT IDENTITY RULE: Extract the candidate's ACTUAL name from the resume. 
+    STRICT IDENTITY: Extract the candidate's ACTUAL name from the resume. 
     
     SKILLS SECTION (MANDATORY FORMAT):
     You MUST create exactly 4 rows. Group the candidate's tools and experience into these specific strategy buckets:
@@ -49,10 +49,10 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     - Row 2: SIEM & Threat Hunting (Splunk, IBM QRadar, Exabeam, Log Analysis, Correlation)
     - Row 3: Network & Security Analysis (TCP/IP, DNS, HTTP/S, Wireshark, Endpoint Security)
     - Row 4: Fraud & Behavioral Risk Analysis (Financial Transactions, Pattern Detection, Root Cause Analysis)
-    (Match the candidate's specific tools to these categories. If they are not a security candidate, use the format: 'Functional Strategy (Tool 1, Tool 2, Tool 3)')
+    (Match the candidate's specific tools to these categories. Use this 'Functional Strategy (Tool 1, Tool 2, Tool 3)' format regardless of role.)
 
     WORK HISTORY RULE:
-    - Extract ALL previous jobs from most recent to oldest.
+    - Extract ALL jobs from most recent to oldest.
     - Format dates exactly like: 'Jun 2021 – Nov 2025' or 'Jun 2021 – Current'.
     - Use 3-letter month abbreviations.
 
@@ -84,7 +84,7 @@ def parse_and_generate_with_ai(raw_resume_text, job_description, extra_info, int
     return json.loads(json_string)
 
 def run_level_replace(paragraph, target, replacement):
-    """Replaces text while preserving specific formatting and tab stops."""
+    """Replaces text while preserving specific formatting (Bold/Italic) and tab stops."""
     if target.lower() in paragraph.text.lower():
         for run in paragraph.runs:
             if target.lower() in run.text.lower():
@@ -130,28 +130,29 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
         
         c_tag = f"company{i}"
         t_tag = f"title{i}"
-        # Match template casing exactly
         d_tag_1 = "mmm yyyy – Current"
         d_tag_2 = "mmm yyyy – mmm yyyy"
         
         for p in doc.paragraphs:
+            # Handle Company & Dates (Preserves Tab)
             if c_tag in p.text.lower():
                 if job:
                     run_level_replace(p, c_tag, job['Company'])
                     run_level_replace(p, d_tag_1, job['Dates'])
                     run_level_replace(p, d_tag_2, job['Dates'])
-                else: p.text = "" # Remove unused roles
+                else: p.text = "" 
             
+            # Handle Title (Preserves Italic/Font)
             if t_tag in p.text.lower():
                 if job: run_level_replace(p, t_tag, job['Title'])
                 else: p.text = ""
 
+            # Handle Bullets
             bullet_tag = "Bullets" if i == 1 else f"Bullets{i}"
             if bullet_tag in p.text:
                 p.text = ""
                 if job:
                     for b in job['Bullets']:
-                        # Insert bullets before the placeholder
                         p.insert_paragraph_before(f"• {b}")
 
     # 6. INTERVIEW RESULTS
@@ -163,7 +164,7 @@ def generate_fm_word_doc(ai_data, manual_inputs, raw_text):
     doc.save(bio)
     return bio.getvalue()
 
-# --- Streamlit UI ---
+# --- UI ---
 st.set_page_config(page_title="Fannie Mae Formatter", layout="wide")
 st.title("📄 Fannie Mae Resume Auto-Formatter")
 
@@ -180,7 +181,7 @@ with c1:
 
 with c2:
     job_description = st.text_area("Job Description", placeholder="Paste the job description here")
-    extra_info = st.text_area("Spotlight Call/Other Info", placeholder="Spotlight notes, feedback, etc.")
+    extra_info = st.text_area("Spotlight Call/Other Info", placeholder="Spotlight call notes, feedback, etc.")
     interview_results = st.text_area("Supplier Technical Interview Results")
 
 if st.button("Generate Formatted Resume"):
@@ -190,13 +191,13 @@ if st.button("Generate Formatted Resume"):
         manual_inputs = {"location": location, "remote_onsite": remote_onsite, "former_fm": former_fm, "links": links, "interview_results": interview_results}
         
         doc_bytes = generate_fm_word_doc(ai_data, manual_inputs, raw_text)
-        final_name = ai_data.get("FullName", "Candidate").title()
+        final_name_clean = ai_data.get("FullName", "Candidate").title()
         
-        st.success(f"Success! Generated for {final_name}")
+        st.success(f"Success! Generated for {final_name_clean}")
         st.download_button(
             label="Download Formatted Resume", 
             data=doc_bytes, 
-            file_name=f"{final_name} Fannie Mae Format.docx"
+            file_name=f"{final_name_clean} Fannie Mae Format.docx"
         )
     except Exception as e:
         st.error(f"Error during generation: {e}")
