@@ -1,4 +1,4 @@
-google-genai==0.3.0
+google-genai
 python-docx
 PyPDF2
 streamlit
