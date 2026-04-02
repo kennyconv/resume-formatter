@@ -10,6 +10,12 @@ import os
 import copy
 
 # ====================================================================
+# --- PRELOADED TEMPLATE SETTING ---
+# ====================================================================
+# The app will automatically look for this file in your GitHub repo
+TEMPLATE_FILENAME = "Template.docx"
+
+# ====================================================================
 # --- STREAMLIT UI & FORM INPUTS ---
 # ====================================================================
 
@@ -18,7 +24,6 @@ st.title("📄 Fannie Mae Precision Extractor & Template Filler")
 
 with st.sidebar:
     st.header("🔑 API Key")
-    # SECURITY FIX: Removed hardcoded API key so it is safe for GitHub
     API_KEY = st.text_input("Gemini API Key", type="password")
     st.info("Paste your Gemini API key here to run the tool.")
 
@@ -50,8 +55,8 @@ st.header("📝 Job Description & Notes")
 Job_Description_Notes_etc = st.text_area("Paste JD, Manager Notes, etc. here:", height=200)
 
 st.header("📂 File Uploads")
-resume_file = st.file_uploader("📤 Step 1: Upload the resume...", type=['pdf', 'docx', 'doc'])
-template_file = st.file_uploader("📄 Step 2: Upload your Word Template...", type=['docx'])
+# REMOVED the template uploader. Now it only asks for the resume.
+resume_file = st.file_uploader("📤 Upload the candidate's resume...", type=['pdf', 'docx', 'doc'])
 
 # ====================================================================
 # --- DATA EXTRACTION & HELPER FUNCTIONS (100% UNTOUCHED) ---
@@ -83,11 +88,14 @@ def standardize_dates(date_str):
         "May": "May", "June": "Jun", "July": "Jul", "August": "Aug",
         "September": "Sep", "Sept": "Sep", "October": "Oct", "November": "Nov", "December": "Dec"
     }
+
     date_str = re.sub(r"['’](\d{2})", lambda m: ("20" if int(m.group(1)) < 50 else "19") + m.group(1), date_str)
     date_str = re.sub(r'(\d{1,2})/(\d{4})', lambda m: f"{month_map.get(m.group(1).zfill(2), m.group(1))} {m.group(2)}", date_str)
+
     for full, short in month_map.items():
         if not full.isdigit():
             date_str = re.sub(full, short, date_str, flags=re.IGNORECASE)
+
     return date_str
 
 def extract_text(file_path):
@@ -125,10 +133,12 @@ def extract_text(file_path):
 
 def repair_and_load_json(raw_text):
     text = raw_text.strip()
+
     text = re.sub(r'^```[a-zA-Z]*\n|\n```$', '', text, flags=re.MULTILINE).strip()
     match = re.search(r'\{.*\}', text, re.DOTALL)
     if match:
         text = match.group()
+
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -148,6 +158,7 @@ def repair_and_load_json(raw_text):
 def replace_tag_safely(p, tag, value, unbold=False):
     if tag.lower() not in p.text.lower():
         return False
+
     replaced = False
     for run in p.runs:
         if tag.lower() in run.text.lower():
@@ -156,10 +167,12 @@ def replace_tag_safely(p, tag, value, unbold=False):
             if unbold:
                 run.font.bold = False
             replaced = True
+
     if not replaced:
         full_text = p.text
         pattern = re.compile(re.escape(tag), re.IGNORECASE)
         new_text = pattern.sub(str(value), full_text)
+
         if p.runs:
             p.runs[0].text = new_text
             if unbold:
@@ -172,8 +185,10 @@ def insert_bullet_line_after(paragraph, text):
     new_p_xml = copy.deepcopy(paragraph._p)
     paragraph._p.addnext(new_p_xml)
     new_p = Paragraph(new_p_xml, paragraph._parent)
+
     for run in new_p.runs:
         run._element.getparent().remove(run._element)
+
     if paragraph.runs:
         new_run = new_p.add_run(text)
         ref_font = paragraph.runs[0].font
@@ -185,6 +200,7 @@ def insert_bullet_line_after(paragraph, text):
         new_run.font.name = ref_font.name
     else:
         new_p.add_run(text)
+
     return new_p
 
 def delete_paragraph(paragraph):
@@ -194,6 +210,7 @@ def delete_paragraph(paragraph):
 
 def process_word_doc(temp_path, mapping, out_path):
     doc = docx.Document(temp_path)
+
     for table in doc.tables:
         rows_to_delete = []
         for row in table.rows:
@@ -204,8 +221,10 @@ def process_word_doc(temp_path, mapping, out_path):
                     rows_to_delete.append(row)
         for row in rows_to_delete:
             table._tbl.remove(row._tr)
+
     paras_to_remove = []
     kill_keys = ['Company', 'Title', 'Bullets', 'Dates', 'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'A1', 'A2', 'A3', 'A4', 'A5', 'Summary', 'Skill', 'Years']
+
     for p in list(doc.paragraphs):
         for key, value in mapping.items():
             tag = f"{{{{{key}}}}}"
@@ -221,11 +240,13 @@ def process_word_doc(temp_path, mapping, out_path):
                         for run in p.runs:
                             if '\n' in run.text:
                                 run.text = run.text.replace('\n', '')
+
                         lines = str(value).split('\n')
                         replace_tag_safely(p, tag, lines[0])
                         curr_p = p
                         for line in lines[1:]:
                             curr_p = insert_bullet_line_after(curr_p, line)
+
                         spacer = curr_p.insert_paragraph_before("")
                         curr_p._p.addnext(spacer._p)
                         try:
@@ -237,6 +258,7 @@ def process_word_doc(temp_path, mapping, out_path):
                     else:
                         is_answer = key in ['A1', 'A2', 'A3', 'A4', 'A5']
                         replace_tag_safely(p, tag, str(value).strip(), unbold=is_answer)
+
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
@@ -246,11 +268,13 @@ def process_word_doc(temp_path, mapping, out_path):
                         if tag.lower() in p.text.lower():
                             is_answer = key in ['A1', 'A2', 'A3', 'A4', 'A5']
                             replace_tag_safely(p, tag, str(value) if value else "", unbold=is_answer)
+
     for p in paras_to_remove:
         try:
             delete_paragraph(p)
         except:
             pass
+
     doc.save(out_path)
     return out_path
 
@@ -263,19 +287,17 @@ if st.button("🚀 Generate Submission Document", type="primary"):
         st.error("❌ Error: Please enter your Gemini API Key in the sidebar.")
     elif not resume_file:
         st.error("❌ Error: Please upload a resume.")
-    elif not template_file:
-        st.error("❌ Error: Please upload a Word template.")
+    elif not os.path.exists(TEMPLATE_FILENAME):
+        # Checks to make sure the template is actually in your GitHub repo
+        st.error(f"❌ Error: The preloaded template '{TEMPLATE_FILENAME}' was not found. Please make sure it is uploaded to your GitHub repository.")
     else:
-        with st.spinner("Processing documents and querying AI..."):
+        with st.spinner("Processing document and querying AI..."):
             try:
-                # Save uploaded files temporarily
+                # Save uploaded resume temporarily
                 resume_path = f"temp_{resume_file.name}"
-                template_path = f"temp_{template_file.name}"
                 
                 with open(resume_path, "wb") as f:
                     f.write(resume_file.getbuffer())
-                with open(template_path, "wb") as f:
-                    f.write(template_file.getbuffer())
 
                 raw_text = extract_text(resume_path)
                 
@@ -604,7 +626,9 @@ Resume:
                         st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
 
                 out_file = f"Submission_{name.replace(' ', '_')}.docx"
-                process_word_doc(template_path, mapping, out_file)
+                
+                # INJECT DATA INTO THE PRELOADED TEMPLATE
+                process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
                 
                 # Provide download button
                 with open(out_file, "rb") as file:
@@ -618,10 +642,9 @@ Resume:
                 
                 st.success(f"✅ Success! Document is ready for download.")
 
-                # Clean up temp files
+                # Clean up the temporary resume file
                 try:
                     os.remove(resume_path)
-                    os.remove(template_path)
                 except:
                     pass
 
