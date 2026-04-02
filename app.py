@@ -217,7 +217,11 @@ def delete_paragraph(paragraph):
 
 def process_word_doc(temp_path, mapping, out_path):
     doc = docx.Document(temp_path)
-
+    
+    # --- NEW EDUCATION TABLE LOGIC ---
+    # Check if the AI extracted ANY schools at all
+    has_any_education = bool(mapping.get("School1") or mapping.get("School2") or mapping.get("School3"))
+    
     for table in doc.tables:
         rows_to_delete = []
         for row in table.rows:
@@ -225,9 +229,12 @@ def process_word_doc(temp_path, mapping, out_path):
             for i in range(1, 4):
                 tag = f"{{{{School{i}}}}}"
                 if tag.lower() in row_text.lower() and not mapping.get(f"School{i}"):
-                    rows_to_delete.append(row)
+                    # Only delete the empty row IF they have at least 1 other school listed
+                    if has_any_education and row not in rows_to_delete:
+                        rows_to_delete.append(row)
         for row in rows_to_delete:
             table._tbl.remove(row._tr)
+    # ---------------------------------
 
     paras_to_remove = []
     kill_keys = ['Company', 'Title', 'Bullets', 'Dates', 'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'A1', 'A2', 'A3', 'A4', 'A5', 'Summary', 'Skill', 'Years']
@@ -253,6 +260,29 @@ def process_word_doc(temp_path, mapping, out_path):
                         curr_p = p
                         for line in lines[1:]:
                             curr_p = insert_bullet_line_after(curr_p, line)
+
+                        # --- NEW ENVIRONMENT INJECTION LOGIC ---
+                        num_match = re.search(r'\d+', key)
+                        if num_match:
+                            env_val = mapping.get(f"Environment{num_match.group()}")
+                            if env_val and str(env_val).strip():
+                                env_p = curr_p.insert_paragraph_before("")
+                                curr_p._p.addnext(env_p._p)
+                                try:
+                                    env_p.style = doc.styles['Normal']
+                                except:
+                                    pass
+                                env_p.paragraph_format.left_indent = Pt(0)
+                                env_p.paragraph_format.space_after = Pt(0)
+                                
+                                clean_env = re.sub(r'^Environment\s*:\s*', '', str(env_val).strip(), flags=re.IGNORECASE)
+                                b_run = env_p.add_run("Environment: ")
+                                b_run.bold = True
+                                n_run = env_p.add_run(clean_env)
+                                n_run.bold = False
+                                
+                                curr_p = env_p
+                        # ---------------------------------------
 
                         spacer = curr_p.insert_paragraph_before("")
                         curr_p._p.addnext(spacer._p)
@@ -319,13 +349,14 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 1. Name: Pull from top/header (Title Case).
                 2. Contractor: Agency is Company, Client is Title.
                 3. Education: Extract School and Degree.
-                4. Experience: Company, Title, Bullets (LIST), Dates.
+                4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                   - For 'Environment', extract any tools/tech listed at the end of the role (e.g., "Environment: Python, AWS"). If none, leave blank "". Do not include this in the Bullets.
 
                 JSON Structure:
                 {{
                     "FullName": "",
                     "Education": [{{"School": "", "Degree": ""}}],
-                    "Experience": [{{"Company": "", "Title": "", "Bullets": [], "Dates": ""}}]
+                    "Experience": [{{"Company": "", "Title": "", "Bullets": [], "Environment": "", "Dates": ""}}]
                 }}
 
                 RESUME: {raw_text}
@@ -357,11 +388,13 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                         clean_title = re.sub(r'\s*\(.*$', '', raw_title).strip()
                         mapping[f"Title{i}"] = clean_title
                         mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
+                        mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
                         mapping[f"Dates{i}"] = standardize_dates(exp[i-1].get('Dates', ''))
                     else:
                         mapping[f"Company{i}"] = ""
                         mapping[f"Title{i}"] = ""
                         mapping[f"Bullets{i}"] = ""
+                        mapping[f"Environment{i}"] = ""
                         mapping[f"Dates{i}"] = ""
 
                 if Job_Description_Notes_etc.strip():
