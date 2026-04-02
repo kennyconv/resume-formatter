@@ -23,9 +23,16 @@ st.set_page_config(page_title="Fannie Mae Precision Extractor", layout="wide")
 st.title("📄 Fannie Mae Precision Extractor & Template Filler")
 
 with st.sidebar:
-    st.header("🔑 API Key")
-    API_KEY = st.text_input("Gemini API Key", type="password")
-    st.info("Paste your Gemini API key here to run the tool.")
+    st.header("🔑 API Configuration")
+    
+    # Logic: Check if the key exists in Streamlit Secrets first
+    if "API_KEY" in st.secrets:
+        API_KEY = st.secrets["API_KEY"]
+        st.success("✅ API Key loaded from Secrets")
+    else:
+        # Fallback: If no secret is found, show the input box
+        API_KEY = st.text_input("Gemini API Key", type="password")
+        st.info("Paste your Gemini API key here to run the tool.")
 
 st.header("📋 Candidate Information")
 col1, col2 = st.columns(2)
