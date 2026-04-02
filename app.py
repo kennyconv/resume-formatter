@@ -3,7 +3,7 @@ import google.generativeai as genai
 import docx
 from docx.text.paragraph import Paragraph
 from docx.shared import Pt
-import PyPDF2
+import pypdf
 import json
 import re
 import os
@@ -110,7 +110,7 @@ def extract_text(file_path):
     ext = os.path.splitext(file_path)[1].lower()
     try:
         if ext == '.pdf':
-            pdf = PyPDF2.PdfReader(file_path)
+            pdf = pypdf.PdfReader(file_path)
             for page in pdf.pages:
                 content = page.extract_text()
                 if content:
