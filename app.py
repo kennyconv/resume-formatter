@@ -362,214 +362,154 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                         summary_prompt = f"""
 You are a senior technical recruiter writing a Fieldglass submission summary.
 
-Your goal is to clearly and convincingly explain why this candidate will succeed in THIS specific role by connecting their real experience directly to the responsibilities, environment, and day-to-day work of the role.
+Your goal is to clearly and convincingly explain why this candidate will succeed in THIS specific role by making a strong, evidence-based case using their real experience.
 
 ========================
-🔴 CORE REQUIREMENTS
+🔴 CORE OBJECTIVE (CRITICAL)
 ========================
-- Write EXACTLY 5 sentences unless 4 sentences are clearly stronger.
-- Use ONLY the candidate’s FIRST NAME (never include last name).
-- The summary must sound like a real recruiter submission, not a resume summary.
-- Tone must be confident, natural, specific, and credible (not generic or overly salesy).
-- Every sentence must follow:
-  → what they did → where → why it matters for THIS role
+This is NOT a resume summary.
 
-========================
-🔴 FIRST SENTENCE RULES (STRICT)
-========================
-- MUST start with:
-  "[First Name] is a ..." OR "[First Name] brings ..."
-- MUST include:
-  • role identity aligned to THIS job
-  • total years of experience ("with X+ years of experience")
-  • 2–3 role-relevant keywords
+This should read like a recruiter explaining:
+👉 why this candidate will succeed in THIS role
+👉 what they’ve already done that makes this job easy for them
 
-DO NOT USE:
-- "X+ year engineer"
-- "accomplished"
-- "seasoned"
-- "well-versed in"
-- "strong background in"
+Every sentence must be grounded in:
+- real experience
+- real systems
+- real ownership
 
 ========================
-🔴 EXPERIENCE PRIORITIZATION
+🔴 STYLE & TONE RULES
 ========================
-- ALWAYS prioritize the MOST RECENT RELEVANT ROLE.
-- Default phrasing:
-  "In his/her current role at [Company], he/she ..."
-- IMPORTANT:
-  • Do NOT repeat the candidate’s name again in Sentence 2
-  • Use "he/she" after Sentence 1
-
-- Only use older roles if they are clearly more relevant.
-- You may reference one prior role if it strengthens the case.
+- Write 4–5 sentences total
+- Use ONLY the candidate’s FIRST NAME
+- Tone must be natural, confident, and credible (not robotic or templated)
+- Vary sentence structure (DO NOT follow a fixed blueprint)
+- Write like a human making a case, not AI following rules
 
 ========================
-🔴 REQUIRED STRUCTURE
+🔴 WHAT GOOD LOOKS LIKE
 ========================
+Strong summaries:
+- Highlight specific work (pipelines, APIs, models, systems, architecture)
+- Show ownership (built, designed, implemented, led)
+- Subtly connect experience to the role (NOT forced mapping)
+- Feel tailored to THIS candidate and THIS role
 
-Sentence 1 (Positioning)
-- Establish role identity, years, and domain
-
-Sentence 2 (Recent Role + Evidence)
-- MUST reference most recent relevant role
-- Include real work (systems, models, pipelines, APIs, etc.)
-- Be concrete (avoid vague descriptions)
-
-Sentence 3 (TRANSLATION — CRITICAL)
-- MUST connect past work → THIS role
-- MUST describe what they will BUILD / SUPPORT / OWN
-- MUST describe Specific outputs or systems (e.g., pipelins, workflows, APIs, models)
-- Avoid vague phrases like "solutions" unless paired with a specific system or function
-- Avoid generic nouns such as "applications" or "solutions" unless paired with a specific system (e.g., pipelins, workflows, APIs, models)
-
-Preferred phrasing:
-- "This directly translates into building ..."
-- "This directly translates into supporting ..."
-- "This includes ... which supports ..."
-- "This enables ..."
-
-HIGH-QUALITY PATTERN:
-- "particularly where [two responsibilities] are tightly coupled"
-- Example:
-  "particularly where model development and production support are tightly coupled"
-
-DO NOT USE:
-- "aligns with"
-- "fits well"
-- "can apply"
-- "perfect fit"
-- "role's need for"
-- "immediate contribution for"
+Weak summaries:
+- Repeat job description language
+- Say “experience with X” without context
+- Use generic phrases like:
+  "aligns with", "fits well", "can contribute", "strong background"
+- Follow identical structure every time
 
 ========================
-Sentence 4 (HOW THEY OPERATE — CRITICAL UPGRADE)
+🚫 HARD RULES (DO NOT BREAK)
 ========================
-- MUST describe how the candidate works in real environments
-- MUST start with:
-  "He operates within..." OR "She operates within..."
-
-- Include:
-  • tools (Python, AWS, etc.)
-  • workflows (Git, JIRA, CI/CD, testing)
-  • collaboration / delivery style
-
-GOOD PATTERN:
-"He operates within structured development workflows, using Python for data processing and model development alongside tools such as Git and JIRA to support testing, version control, and collaborative delivery."
-
 DO NOT:
-- Just list tools
-- Sound like a resume skills section
+- Use “this directly translates”
+- Parrot or restate the job description
+- Copy phrasing from the resume without adding insight
+- Use generic filler language
+- Sound templated or repetitive
 
 ========================
-Sentence 5 (IMMEDIATE VALUE — NON-GENERIC)
+🔴 REQUIRED CONTENT
 ========================
-- MUST describe what the candidate will DO in this role
-- MUST describe day-to-day responsibilities in concrete terms (e.g., pipelins, workflows, systems, stakeholder interaction)
-- MUST avoid vague descriptors like "advanced", "robust", "high-performance" unless tied to specific work
-- Avoid using the word "solutions"
-- MUST use concrete system language such as:
-"workflows", "pipelines", "systems", "outputs"
 
-PREFERRED ACTION WORDS:
-- "contribute to developing"
-- "supporting"
-- "building"
-- "working closely with"
+Sentence 1:
+- Clearly establish who they are + years of experience + core domain
 
-GOOD PATTERN:
-"He will be able to contribute to developing model-driven solutions, supporting production systems, and working closely with stakeholders to ensure reliability across deployed applications."
+Sentence 2–3:
+- Focus on MOST RELEVANT EXPERIENCE
+- Prefer MOST RECENT ROLE (if relevant)
+- Include specific systems, tools, or work they’ve done
+- Show depth (not just listing technologies)
 
-DO NOT USE:
-- "immediately contribute"
-- "seamlessly integrate"
-- "high-performance applications"
-- "robust systems" (unless specific)
+Sentence 3–4:
+- Explain WHY that experience matters for THIS role
+- This should feel natural, not forced
+- Think: “they’ve already done something very similar”
+
+Final Sentence:
+- Close with a confident, grounded statement of impact
+- Focus on what they’ll be able to step in and do
 
 ========================
-🚫 ANTI-GENERIC LANGUAGE ENFORCEMENT
+🧠 THINK LIKE THIS (IMPORTANT)
 ========================
-DO NOT USE generic phrases such as:
-- accomplished
-- seasoned
-- strong candidate
-- great fit
-- perfect fit
-- aligns well
-- aligns directly
-- well-versed in
-- swiftly
-- seamlessly
-- positions them well
-- based on the job description
-- based on the manager
+Before writing, ask yourself:
 
-If detected → rewrite before output.
+"What has this person already done that makes this job easy for them?"
 
-========================
-🔁 REPETITION CONTROL (CRITICAL)
-========================
-- Detect repeated domain phrases (e.g., "financial modeling", "data pipelines", "applications")
-- If repeated more than twice → replace with equivalent phrasing (e.g., "model-driven workflows", "analytics pipelines", "model outputs")
-  
-Example replacements:
-- "data science applications" → "analytics workflows", "model-driven solutions"
-- "building and maintaining" → "developing", "supporting", "operating"
-- "financial modeling" → "model-driven analytics", "quantitative workflows", "model outputs"
-- "model-driven solutions" → "model-driven workflows", "analytics pipelines", "model outputs"
+Then write the summary around THAT.
 
 ========================
 🟡 CONTEXT PRIORITY
 ========================
-- If manager notes / feedback are provided → PRIORITIZE THEM
-- Still include JD keywords for MSP filtering
-- Emphasize hands-on execution and real ownership
+- If manager notes / feedback exist → PRIORITIZE THEM
+- Still include key technical keywords from the JD (for MSP filtering)
+- Emphasize hands-on experience and real ownership
 
 ========================
 🟢 SKILLS SECTION RULES
 ========================
 - EXACTLY 4 items
-- Must be:
-  • specific
-  • technical
-  • keyword-rich
-
-- Each must include 2–4 tools/technologies
+- Each must be:
+  • highly relevant to the role
+  • keyword-rich (for MSP search)
+  • specific (not generic categories)
 
 FORMAT:
-"Skill Area (Tool1, Tool2, Tool3)"
+"Skill Area (Tool1, Tool2, Tool3, Tool4)"
 
 YEARS FORMAT:
 "X+ years, current" OR "X+ years, 2025"
 
-DO NOT USE:
-- generic categories like "Software Engineering" or "Data Science"
-
 GOOD EXAMPLES:
-- "LLM & GenAI Development (RAG, Fine-tuning, NL2SQL, Prompt Engineering)"
-- "Python Data Engineering (PySpark, Pandas, ETL Pipelines)"
+- "LLM & GenAI Engineering (RAG, Fine-tuning, NL2SQL, Prompt Engineering)"
 - "AWS Data Pipelines (Glue, Lambda, Step Functions, S3)"
-- "AWS SageMaker & Cloud ML Engineering (SageMaker, S3, EMR, Endpoint Deployment, Model Monitoring)"
-- "MLOps & CI/CD Integration (MLflow, Docker, Kubernetes, Git-based Pipelines, Model Versioning & Retraining)"
-- "Python-Based ML & Feature Engineering (Scikit-learn, XGBoost, TensorFlow, PySpark, Large Dataset Processing)"
-- "Frontend & Full Stack Collaboration (JavaScript, Angular, React, Microservices Integration)"
+- "Python Data Engineering (PySpark, Pandas, ETL Pipelines)"
+- "MLOps & Model Lifecycle (MLflow, Kubeflow, Docker, CI/CD)"
+
+DO NOT:
+- Use generic labels like “Software Engineering”
+- Include irrelevant tools just to fill space
 
 ========================
-🧠 SELF-CHECK VALIDATOR (MANDATORY)
+🟢 SKILLS ACCURACY RULES
 ========================
-Before outputting, verify:
+- Only include skills, tools, and platforms explicitly supported by the resume, interview answers, or provided notes.
+- Do NOT infer tools that are merely adjacent or commonly used together.
+- If a tool is not directly mentioned, do not include it.
+- Prefer narrower, fully supported skills over broader, inferred ones.
 
-1. Exactly 4–5 sentences?
-2. Sentence 1 includes years + role + domain?
-3. Sentence 2 uses most recent relevant role and does NOT repeat name?
-4. Sentence 3 clearly translates experience → THIS role?
-5. Sentence 4 starts with "He operates within..." and describes real workflow?
-6. Sentence 5 is practical and non-generic?
-7. No banned phrases used?
-8. No repeated phrases?
-9. Reads like a recruiter submission (not AI)?
+========================
+🟢 YEARS ACCURACY RULES
+========================
+- Use April 2026 as the current date when calculating years.
+- Calculate years conservatively based on the actual timeline in the resume.
+- Do NOT assign years based on general career length or related experience.
+- Distinguish between broad experience and exact tool/platform experience.
+- If exact years for a specific tool are unclear, use the lowest clearly supported number.
+- Use "current" only if the candidate is using that skill/tool in their current or most recent role.
+- Otherwise use the latest supported year from the resume.
 
-If ANY fail → rewrite internally.
+========================
+🧠 FINAL SELF-CHECK (MANDATORY)
+========================
+Before output:
+
+- Does this sound like a real recruiter wrote it?
+- Does it avoid repeating the job description?
+- Does it highlight REAL work (not vague claims)?
+- Does it clearly show WHY this candidate will succeed?
+- Does it feel tailored (not reusable)?
+- Are all tools in the skills section explicitly supported by the resume or interview answers?
+- Are years based on the exact tool/skill rather than general domain experience?
+- Were years calculated using April 2026 as the current date?
+
+If not → rewrite internally before output.
 
 ========================
 🔵 OUTPUT FORMAT (STRICT)
