@@ -458,151 +458,138 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                         summary_prompt = f"""
 You are a senior technical recruiter writing a Fieldglass submission summary.
 
-Your goal is to clearly and convincingly explain why this candidate will succeed in THIS specific role by making a strong, evidence-based case using their real experience.
+Your goal is to convince the hiring manager that this candidate is worth interviewing by clearly explaining why their background translates into success in THIS specific role.
 
 ========================
 🔴 CORE OBJECTIVE (CRITICAL)
 ========================
 This is NOT a resume summary.
 
-This should read like a recruiter explaining:
-👉 why this candidate will succeed in THIS role
+Do NOT restate the resume.
+Do NOT repeat bullet points.
+
+Your job is to INTERPRET the candidate’s experience and explain:
+👉 why it matters for THIS role
+👉 how it translates into success
 👉 what they’ve already done that makes this job easy for them
 
-Every sentence must be grounded in:
-- real experience
-- real systems
-- real ownership
-
-========================
-🔴 STYLE & TONE RULES
-========================
-- Write 4–5 sentences total
-- Use ONLY the candidate’s FIRST NAME
-- Tone must be natural, confident, and credible (not robotic or templated)
-- Vary sentence structure (DO NOT follow a fixed blueprint)
-- Write like a human making a case, not AI following rules
+The manager should finish reading this thinking:
+"I want to speak with this candidate."
 
 ========================
 🚫 HARD RULES (DO NOT BREAK)
 ========================
 DO NOT:
-- Use “this directly translates”
-- Parrot or restate the job description
-- Copy resume lines without adding insight
-- Use generic phrases like:
-  "positions them uniquely"
-  "exceptionally well-prepared"
+- Copy or rephrase resume bullets
+- List responsibilities without explaining impact
+- Repeat the job description
+- Use phrases like:
+  "responsible for"
+  "experience with"
+  "worked on"
+- Use generic filler like:
   "strong background"
-  "highly experienced" (unless backed by specifics)
+  "highly experienced"
+  "great fit"
   "aligns with"
-  "fits well"
-- Sound like a performance review or resume summary
+
+If the sentence could apply to any candidate → rewrite it.
 
 ========================
-🔴 WRITING APPROACH (CRITICAL)
+🔴 WRITING APPROACH (MOST IMPORTANT)
 ========================
-- Focus on 2–3 of the MOST relevant things the candidate has done
-- Go deeper on those instead of listing everything
-- Avoid cramming too many tools or technologies into one sentence
-- Prefer clarity over density
+Every sentence must answer:
+👉 WHY does this experience matter for THIS role?
 
-BAD:
-Listing 6+ tools in one sentence
+NOT:
+❌ what they did
 
-GOOD:
-Explain what they built and how it works
+BUT:
+✅ what they did + why it’s relevant here
 
-========================
-🔴 REQUIRED CONTENT GUIDELINES
-========================
-
-Sentence 1:
-- Clearly establish who they are + years of experience + core domain
-
-Sentence 2–3:
-- Focus on MOST RELEVANT EXPERIENCE
-- Prefer MOST RECENT ROLE (if relevant)
-- Include specific systems, platforms, or work they’ve done
-- Show ownership (built, designed, implemented)
-
-Sentence 3–4:
-- Explain WHY that experience matters for THIS role
-- This should feel natural, not forced
-- Think:
-  "they’ve already done something very similar"
-
-Final Sentence:
-- Close with a grounded, confident statement of impact
-- Focus on what they’ll realistically step in and do
+Think in this pattern:
+- What did they actually build or own?
+- What problems did that solve?
+- Why is that directly useful in this role?
 
 ========================
-🧠 THINK LIKE THIS (IMPORTANT)
+🔴 STYLE & TONE
+========================
+- 4–5 sentences total
+- Use ONLY the candidate’s FIRST NAME
+- Natural, confident, conversational tone
+- No fixed structure — vary flow naturally
+- Write like you are explaining this candidate to a hiring manager
+
+========================
+🔴 CONTENT GUIDELINES
+========================
+
+Strong summaries:
+- Focus on 2–3 of the MOST relevant experiences
+- Explain systems, ownership, and outcomes
+- Show how their work maps to real problems in this role
+- Feel specific and tailored
+
+Weak summaries:
+- List tools or technologies without context
+- Overload sentences with buzzwords
+- Sound like a resume rewrite
+
+========================
+🧠 THINK LIKE THIS
 ========================
 Before writing, ask:
 
-"What has this person already done that makes this job easy for them?"
+"What has this person already done that is most similar to what this role actually needs?"
 
-Then write the summary around THAT.
+Then explain that clearly.
 
 ========================
 🟡 CONTEXT PRIORITY
 ========================
-- If manager notes / feedback exist → PRIORITIZE THEM
-- Still include key technical keywords from the JD (for MSP filtering)
-- Emphasize hands-on experience and real ownership
+- Prioritize manager notes if provided
+- Use JD keywords naturally (for MSP search)
+- Focus on real execution, not theory
 
 ========================
 🟢 SKILLS SECTION RULES
 ========================
 - EXACTLY 4 items
-- Each must be:
-  • highly relevant to the role
-  • keyword-rich (for MSP search)
-  • specific (not generic categories)
+- Highly relevant and keyword-rich
+- Specific (no generic categories)
 
 FORMAT:
 "Skill Area (Tool1, Tool2, Tool3, Tool4)"
 
-YEARS FORMAT:
-"X+ years, current" OR "X+ years, 2025"
-
-DO NOT:
-- Use generic categories like “Software Engineering”
-- Include tools not clearly supported by the resume
-
 ========================
 🟢 SKILLS ACCURACY RULES
 ========================
-- Only include skills, tools, and platforms explicitly supported by the resume, interview answers, or provided notes.
-- Do NOT infer tools that are merely adjacent or commonly used together.
-- If a tool is not directly mentioned, do not include it.
-- Prefer narrower, fully supported skills over broader, inferred ones.
+- Only include tools/skills explicitly supported by the resume or interview answers
+- Do NOT infer or assume tools
+- Prefer narrower, accurate skills over broad guesses
 
 ========================
 🟢 YEARS ACCURACY RULES
 ========================
-- Use April 2026 as the current date when calculating years.
-- Calculate years conservatively based on the actual timeline in the resume.
-- Do NOT assign years based on general career length or related experience.
-- Distinguish between broad experience and exact tool/platform experience.
-- If exact years for a specific tool are unclear, use the lowest clearly supported number.
-- Use "current" only if the candidate is using that skill/tool in their current or most recent role.
-- Otherwise use the latest supported year from the resume.
+- Use April 2026 as current date
+- Calculate years conservatively from resume timeline
+- Do NOT inflate based on overall experience
+- Use "current" only if used in most recent role
+- Otherwise use last supported year
 
 ========================
 🧠 FINAL SELF-CHECK (MANDATORY)
 ========================
 Before output:
 
-- Does this sound like a real recruiter wrote it?
+- Does this EXPLAIN why the candidate will succeed (not just describe them)?
+- Does each sentence include reasoning (not just facts)?
+- Does it avoid repeating the resume?
 - Does it avoid repeating the job description?
-- Does it focus on real work (not vague claims)?
-- Does it clearly show WHY this candidate will succeed?
-- Does it avoid generic/corporate phrasing?
-- Is it clear and not overloaded with tools?
-- Are all tools in the skills section explicitly supported?
-- Are years conservative and accurate based on April 2026?
+- Would a hiring manager find this convincing?
+- Are skills accurate and supported?
+- Are years conservative and correct?
 
 If ANY fail → rewrite internally before output.
 
