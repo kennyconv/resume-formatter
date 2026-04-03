@@ -276,10 +276,16 @@ def process_word_doc(temp_path, mapping, out_path):
                                 env_p.paragraph_format.space_after = Pt(0)
                                 
                                 clean_env = re.sub(r'^Environment\s*:\s*', '', str(env_val).strip(), flags=re.IGNORECASE)
+                                
                                 b_run = env_p.add_run("Environment: ")
                                 b_run.bold = True
+                                b_run.font.name = 'Times New Roman'
+                                b_run.font.size = Pt(12)
+                                
                                 n_run = env_p.add_run(clean_env)
                                 n_run.bold = False
+                                n_run.font.name = 'Times New Roman'
+                                n_run.font.size = Pt(12)
                                 
                                 curr_p = env_p
                         # ---------------------------------------
