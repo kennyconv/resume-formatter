@@ -19,10 +19,54 @@ TEMPLATE_FILENAME = "Template.docx"
 # --- STREAMLIT UI & FORM INPUTS ---
 # ====================================================================
 
+# --- STREAMLIT UI & FORM INPUTS ---
+# ====================================================================
+
 st.set_page_config(page_title="Fannie Mae Precision Extractor", layout="wide")
+
+# --- 🔒 PASSWORD PROTECTION LOGIC ---
+def check_password():
+    """Returns `True` if the user entered the correct password."""
+    
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state["password"] == st.secrets["APP_PASSWORD"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Delete the password from memory for security
+        else:
+            st.session_state["password_correct"] = False
+
+    # If the user has already unlocked the app in this session, let them pass
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # If not, show the login screen
+    st.title("🔒 Access Restricted")
+    st.text_input(
+        "Please enter the team password to use this tool:", 
+        type="password", 
+        on_change=password_entered, 
+        key="password"
+    )
+    
+    # If they tried and failed, show an error
+    if "password_correct" in st.session_state:
+        st.error("❌ Incorrect password.")
+        
+    return False
+
+# 🛑 STOP THE APP HERE IF THEY DON'T HAVE THE PASSWORD
+if not check_password():
+    st.stop()
+# ------------------------------------
+
+
+# 👇 IF THEY PASS THE CHECK, THE REST OF THE APP LOADS NORMALLY 👇
 st.title("📄 Fannie Mae Precision Extractor & Template Filler")
 
 with st.sidebar:
+    st.header("🔑 API Configuration")
+# ... your code continues exactly as it is ...
     st.header("🔑 API Configuration")
     
     # Logic: Check if the key exists in Streamlit Secrets first
