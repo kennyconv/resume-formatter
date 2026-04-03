@@ -162,7 +162,7 @@ def repair_and_load_json(raw_text):
 # --- PRECISION TEMPLATE ENGINE (100% UNTOUCHED) ---
 # ====================================================================
 
-def replace_tag_safely(p, tag, value, unbold=False):
+def replace_tag_safely(p, tag, value, unbold=False, force_bold=False):
     if tag.lower() not in p.text.lower():
         return False
 
@@ -173,6 +173,8 @@ def replace_tag_safely(p, tag, value, unbold=False):
             run.text = pattern.sub(str(value), run.text)
             if unbold:
                 run.font.bold = False
+            if force_bold:
+                run.font.bold = True
             replaced = True
 
     if not replaced:
@@ -184,6 +186,8 @@ def replace_tag_safely(p, tag, value, unbold=False):
             p.runs[0].text = new_text
             if unbold:
                 p.runs[0].font.bold = False
+            if force_bold:
+                p.runs[0].font.bold = True
             for i in range(1, len(p.runs)):
                 p.runs[i].text = ""
     return True
@@ -299,8 +303,10 @@ def process_word_doc(temp_path, mapping, out_path):
                         spacer.paragraph_format.space_after = Pt(0)
                         spacer.paragraph_format.space_before = Pt(0)
                     else:
+                        else:
                         is_answer = key in ['A1', 'A2', 'A3', 'A4', 'A5']
-                        replace_tag_safely(p, tag, str(value).strip(), unbold=is_answer)
+                        is_question = key in ['Q1', 'Q2', 'Q3', 'Q4', 'Q5']
+                        replace_tag_safely(p, tag, str(value).strip(), unbold=is_answer, force_bold=is_question)
 
     for table in doc.tables:
         for row in table.rows:
@@ -310,7 +316,8 @@ def process_word_doc(temp_path, mapping, out_path):
                         tag = f"{{{{{key}}}}}"
                         if tag.lower() in p.text.lower():
                             is_answer = key in ['A1', 'A2', 'A3', 'A4', 'A5']
-                            replace_tag_safely(p, tag, str(value) if value else "", unbold=is_answer)
+                            is_question = key in ['Q1', 'Q2', 'Q3', 'Q4', 'Q5']
+                            replace_tag_safely(p, tag, str(value) if value else "", unbold=is_answer, force_bold=is_question)
 
     for p in paras_to_remove:
         try:
