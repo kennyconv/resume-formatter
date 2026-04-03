@@ -456,108 +456,122 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 if Job_Description_Notes_etc.strip():
                     try:
                         summary_prompt = f"""
-You are a senior technical recruiter writing a Fieldglass submission summary.
+You are a senior recruiter writing a Fieldglass submission summary.
 
-Your goal is to convince the hiring manager that this candidate is worth interviewing by clearly explaining why their background translates into success in THIS specific role.
+Your goal is to clearly and convincingly explain why this candidate will succeed in THIS role by pointing to what they have already done that is directly relevant.
 
-========================
-🔴 CORE OBJECTIVE (CRITICAL)
-========================
-This is NOT a resume summary.
-
-Do NOT restate the resume.
-Do NOT repeat bullet points.
-
-Your job is to INTERPRET the candidate’s experience and explain:
-👉 why it matters for THIS role
-👉 how it translates into success
-👉 what they’ve already done that makes this job easy for them
-
-The manager should finish reading this thinking:
-"I want to speak with this candidate."
+This should feel like a real recruiter making a case — not a resume summary and not a templated AI response.
 
 ========================
-🚫 HARD RULES (DO NOT BREAK)
+🔴 CORE RULES
 ========================
-DO NOT:
-- Copy or rephrase resume bullets
-- List responsibilities without explaining impact
-- Repeat the job description
-- Use phrases like:
-  "responsible for"
-  "experience with"
-  "worked on"
-- Use generic filler like:
-  "strong background"
-  "highly experienced"
-  "great fit"
-  "aligns with"
-
-If the sentence could apply to any candidate → rewrite it.
-
-========================
-🔴 WRITING APPROACH (MOST IMPORTANT)
-========================
-Every sentence must answer:
-👉 WHY does this experience matter for THIS role?
-
-NOT:
-❌ what they did
-
-BUT:
-✅ what they did + why it’s relevant here
-
-Think in this pattern:
-- What did they actually build or own?
-- What problems did that solve?
-- Why is that directly useful in this role?
-
-========================
-🔴 STYLE & TONE
-========================
-- 4–5 sentences total
+- Write 4–5 sentences total
 - Use ONLY the candidate’s FIRST NAME
-- Natural, confident, conversational tone
-- No fixed structure — vary flow naturally
-- Write like you are explaining this candidate to a hiring manager
+- Keep tone natural, confident, and conversational (not corporate or robotic)
+- Vary sentence structure — DO NOT follow a rigid template
+- Each sentence should feel like a clear, standalone thought
 
 ========================
-🔴 CONTENT GUIDELINES
+🔴 ROLE-AGNOSTIC WRITING (CRITICAL)
+========================
+This prompt must work for ANY role type:
+- Technical (engineering, data, ML, etc.)
+- Functional (business analyst, product, operations, etc.)
+- Mixed roles (tech + business)
+
+Adjust automatically based on the role:
+
+IF TECHNICAL ROLE:
+- Focus on systems, architecture, pipelines, APIs, infrastructure, etc.
+
+IF FUNCTIONAL / BA / PRODUCT ROLE:
+- Focus on:
+  • requirements gathering
+  • stakeholder interaction
+  • business impact
+  • process improvements
+  • tools like Jira, SQL, dashboards, etc.
+
+DO NOT force technical language into non-technical roles.
+DO NOT force business language into technical roles.
+
+Always match how the role actually operates.
+
+========================
+🔴 WRITING STYLE (MOST IMPORTANT)
+========================
+Write like this:
+
+- Focus on what the candidate actually DID (not what they “have experience in”)
+- Show ownership (built, led, supported, improved, worked directly with)
+- Explain things in plain language (not buzzwords)
+- Make it easy to picture what they worked on
+- Use subtle selling, not exaggerated claims
+
+The best summaries:
+- Feel specific and grounded
+- Do not try to sound impressive — they sound real
+- Show ownership and hands-on work
+- Make the reader think: “this person has already done this”
+
+========================
+🚫 DO NOT DO THIS
+========================
+- Do NOT restate the job description
+- Do NOT say “aligns with”, “fits well”, “perfect fit”
+- Do NOT use phrases like:
+  "positions them uniquely"
+  "exceptionally well-prepared"
+  "strong background in"
+- Do NOT list too many tools in one sentence
+- Do NOT sound like a performance review
+
+========================
+🔴 HOW TO STRUCTURE IT (LOOSE GUIDANCE)
 ========================
 
-Strong summaries:
-- Focus on 2–3 of the MOST relevant experiences
-- Explain systems, ownership, and outcomes
-- Show how their work maps to real problems in this role
-- Feel specific and tailored
+Sentence 1:
+- Who they are + years of experience + general domain
 
-Weak summaries:
-- List tools or technologies without context
-- Overload sentences with buzzwords
-- Sound like a resume rewrite
+Sentence 2:
+- Most relevant recent work (what they actually worked on)
+
+Sentence 3:
+- Go one level deeper on that work OR show ownership
+
+GOOD STYLE EXAMPLE:
+“He’s not just supporting reporting — he’s working directly with stakeholders to define requirements and translate them into usable data outputs.”
+
+Sentence 4:
+- Add another relevant capability (tools, systems, workflows, collaboration, etc.)
+
+Sentence 5 (optional):
+- Close with a grounded, realistic impact statement
 
 ========================
 🧠 THINK LIKE THIS
 ========================
 Before writing, ask:
 
-"What has this person already done that is most similar to what this role actually needs?"
+“What has this person already done that is very similar to this job?”
 
-Then explain that clearly.
+Then write the summary around that.
 
 ========================
-🟡 CONTEXT PRIORITY
+🟡 CONTEXT USAGE
 ========================
 - Prioritize manager notes if provided
-- Use JD keywords naturally (for MSP search)
-- Focus on real execution, not theory
+- Still include key keywords from the JD (for MSP search)
+- Do NOT copy the JD — include keywords naturally
 
 ========================
 🟢 SKILLS SECTION RULES
 ========================
 - EXACTLY 4 items
-- Highly relevant and keyword-rich
-- Specific (no generic categories)
+- Each must be:
+  • specific
+  • directly supported by the resume or interview answers
+  • relevant to the role type (technical vs functional)
 
 FORMAT:
 "Skill Area (Tool1, Tool2, Tool3, Tool4)"
@@ -565,36 +579,39 @@ FORMAT:
 ========================
 🟢 SKILLS ACCURACY RULES
 ========================
-- Only include tools/skills explicitly supported by the resume or interview answers
-- Do NOT infer or assume tools
-- Prefer narrower, accurate skills over broad guesses
+- Only include skills, tools, and platforms explicitly supported by the resume, interview answers, or provided notes.
+- Do NOT infer tools that are merely adjacent or commonly used together.
+- If a tool is not directly mentioned, do not include it.
+- Prefer narrower, fully supported skills over broader, inferred ones.
 
 ========================
 🟢 YEARS ACCURACY RULES
 ========================
-- Use April 2026 as current date
-- Calculate years conservatively from resume timeline
-- Do NOT inflate based on overall experience
-- Use "current" only if used in most recent role
-- Otherwise use last supported year
+- Use April 2026 as the current date when calculating years.
+- Calculate years conservatively based on the actual timeline in the resume.
+- Do NOT assign years based on general career length or related experience.
+- Distinguish between broad experience and exact tool/platform experience.
+- If exact years for a specific tool are unclear, use the lowest clearly supported number.
+- Use "current" only if the candidate is using that skill/tool in their current or most recent role.
+- Otherwise use the latest supported year from the resume.
 
 ========================
-🧠 FINAL SELF-CHECK (MANDATORY)
+🧠 FINAL CHECK
 ========================
 Before output:
 
-- Does this EXPLAIN why the candidate will succeed (not just describe them)?
-- Does each sentence include reasoning (not just facts)?
-- Does it avoid repeating the resume?
-- Does it avoid repeating the job description?
-- Would a hiring manager find this convincing?
-- Are skills accurate and supported?
-- Are years conservative and correct?
+- Does this sound like a real recruiter wrote it?
+- Does it clearly describe what the candidate actually did?
+- Is it tailored to the type of role (technical vs functional)?
+- Is it easy to understand and not overloaded?
+- Does it avoid generic phrasing?
+- Are all skills/tools explicitly supported?
+- Are years reasonable and conservative?
 
-If ANY fail → rewrite internally before output.
+If not → rewrite internally.
 
 ========================
-🔵 OUTPUT FORMAT (STRICT)
+🔵 OUTPUT FORMAT
 ========================
 Return ONLY valid JSON:
 
