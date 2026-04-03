@@ -303,7 +303,6 @@ def process_word_doc(temp_path, mapping, out_path):
                         spacer.paragraph_format.space_after = Pt(0)
                         spacer.paragraph_format.space_before = Pt(0)
                     else:
-                        else:
                         is_answer = key in ['A1', 'A2', 'A3', 'A4', 'A5']
                         is_question = key in ['Q1', 'Q2', 'Q3', 'Q4', 'Q5']
                         replace_tag_safely(p, tag, str(value).strip(), unbold=is_answer, force_bold=is_question)
