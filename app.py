@@ -465,7 +465,7 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 Follow this exact structure for the SUMMARY:
                 - Sentence 1: The Anchor. Who are they and what is their dominant, most relevant expertise? (Use their FIRST NAME only).
                 - Sentence 2: The Heavy Lift. What is the most complex/relevant project they recently delivered? (Focus on ownership: built, architected, delivered).
-                - Sentence 3: The Tech Stack. How did they do it? (Mention specific tools, volume, or scale that align with the Job Description).
+                - Sentence 3: The Tech Stack. How did they do it? (Mention specific tools, volume, or scale that align with the Job Description. DO NOT repeat tools or verbs used in Sentence 2).
                 - Sentence 4: The Closer. Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
 
                 ========================
@@ -530,6 +530,18 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 - Match years to the specific tool/skill (not domain)
                 - Use "current" only if used in most recent role
                 - If unclear → use the lowest supported estimate
+
+                ========================
+                🧠 FINAL TUNING & POLISH LAYER (CRITICAL)
+                ========================
+                Before outputting the JSON, evaluate your drafted SUMMARY against these 5 checks:
+                1. SIMPLIFIED: Are there run-on sentences? Are there unnecessary filler words?
+                2. HUMAN TONE: Are there generic claims ("highly experienced", "exceptional fit")?
+                3. TOOL DENSITY: Does any single sentence list more than 3 tools? 
+                4. NO REPETITION: Did you repeat the same verbs (e.g., "delivered", "built") or concepts across sentences?
+                5. THE PITCH: Does it sound like a natural, confident recruiter speaking out loud?
+
+                If the summary fails ANY of these checks, you must internally rewrite and tighten the sentences BEFORE generating the final JSON output.
 
                 ========================
                 OUTPUT FORMAT (STRICT)
