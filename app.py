@@ -525,6 +525,28 @@ CONTEXT PRIORITY
 - Emphasize hands-on execution
 
 ========================
+🔴 Q&A USAGE RULES (CRITICAL)
+========================
+- The resume is the PRIMARY source of truth for experience.
+- The technical interview Q&A is SECONDARY and should only be used to:
+  • clarify depth
+  • add supporting detail
+  • reinforce experience already shown in the resume
+
+DO NOT:
+- Base the summary primarily on Q&A responses
+- Introduce tools, systems, or concepts that are only mentioned in Q&A but not supported by the resume
+- Overweight theoretical or idealized answers from Q&A
+
+If there is any conflict:
+👉 prioritize the resume over Q&A
+
+The summary should reflect what the candidate has DONE, not just what they can describe.
+
+- Only use Q&A details if they clearly reinforce or expand on something already present in the resume.
+- If a concept appears only in Q&A and not in the resume, do not include it.
+
+========================
 SKILLS SECTION
 ========================
 - EXACTLY 4 items
