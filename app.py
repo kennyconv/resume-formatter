@@ -466,7 +466,7 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 - Sentence 1: The Anchor. Who are they, how many years of experience do they have, and what is their dominant, most relevant expertise? (Use their FIRST NAME only. Format: "[First Name] is a [Title] with [X]+ years of experience [designing / architecting / specializing in / building]...").
                 - Sentence 2: The Heavy Lift. What is the most complex/relevant project they recently delivered? (Focus on ownership: built, architected, delivered).
                 - Sentence 3: The Tech Stack. How did they do it? (Mention specific tools, volume, or scale that align with the Job Description. DO NOT repeat tools or verbs used in Sentence 2).
-                - Sentence 4: The Closer. Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
+                - Sentence 4: The Closer. Based on their past execution, what specific value will they deliver on Day 1 in THIS new role? (Do NOT start with "Because" or "With." Use a strong, direct structure like: "[First Name]'s success in [X] makes them an immediate asset for [Y]." Note: Do NOT use the word "your". Refer to the work as "this team," "this project," or "the application".)
 
                 ========================
                 STYLE & TONE RULES (STRICT)
@@ -482,7 +482,7 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 ========================
                 EXAMPLE OF A PERFECT SUMMARY
                 ========================
-                "Sarah is a senior data engineer with 8+ years of experience architecting cloud-native data migrations within heavily regulated financial environments. Most recently, she led the end-to-end migration of a legacy on-prem data warehouse to AWS, reducing reporting latency by 40%. She built automated ETL pipelines using Python, PySpark, and Apache Airflow to process 5TB of daily transaction data. Because she has already successfully navigated complex data governance structures using the exact tech stack required for this project, she will be able to drive immediate value for the engineering team."
+                "Sarah is a senior data engineer with 8+ years of experience architecting cloud-native data migrations within heavily regulated financial environments. Most recently, she led the end-to-end migration of a legacy on-prem data warehouse to AWS, reducing reporting latency by 40%. She built automated ETL pipelines using Python, PySpark, and Apache Airflow to process 5TB of daily transaction data. Sarah's success in navigating complex data governance structures makes her an immediate asset for driving this AWS migration."
 
                 ========================
                 🔴 Q&A USAGE RULES (CRITICAL)
