@@ -456,162 +456,121 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 if Job_Description_Notes_etc.strip():
                     try:
                         summary_prompt = f"""
-You are a senior recruiter writing a Fieldglass submission summary.
+You are a senior technical recruiter writing a Fieldglass submission summary.
 
-Your goal is to clearly and convincingly explain why this candidate will succeed in THIS role by pointing to what they have already done that is directly relevant.
-
-This should feel like a real recruiter making a case — not a resume summary and not a templated AI response.
+Your task: explain clearly and convincingly why this candidate will succeed in THIS role using their real experience.
 
 ========================
-🔴 CORE RULES
+CORE OBJECTIVE
 ========================
-- Write 4–5 sentences total
+This is NOT a resume summary.
+
+Write like a recruiter making a case:
+- What has this person already done?
+- Why does that make this role easy for them?
+
+Every sentence must reflect real work, real systems, and real ownership.
+
+========================
+STYLE RULES
+========================
+- 4–5 sentences total
 - Use ONLY the candidate’s FIRST NAME
-- Keep tone natural, confident, and conversational (not corporate or robotic)
-- Vary sentence structure — DO NOT follow a rigid template
-- Each sentence should feel like a clear, standalone thought
+- Natural, confident, human tone (not robotic or templated)
+- Vary sentence structure
+- Focus on clarity over sounding “impressive”
 
 ========================
-🔴 ROLE-AGNOSTIC WRITING (CRITICAL)
+WHAT TO DO
 ========================
-This prompt must work for ANY role type:
-- Technical (engineering, data, ML, etc.)
-- Functional (business analyst, product, operations, etc.)
-- Mixed roles (tech + business)
-
-Adjust automatically based on the role:
-
-IF TECHNICAL ROLE:
-- Focus on systems, architecture, pipelines, APIs, infrastructure, etc.
-
-IF FUNCTIONAL / BA / PRODUCT ROLE:
-- Focus on:
-  • requirements gathering
-  • stakeholder interaction
-  • business impact
-  • process improvements
-  • tools like Jira, SQL, dashboards, etc.
-
-DO NOT force technical language into non-technical roles.
-DO NOT force business language into technical roles.
-
-Always match how the role actually operates.
+- Highlight 2–3 of the most relevant things the candidate has done
+- Prefer MOST RECENT ROLE when relevant
+- Show ownership (built, designed, implemented)
+- Use specific systems, tools, or platforms
+- Explain WHY that experience matters for this role (naturally, not forced)
 
 ========================
-🔴 WRITING STYLE (MOST IMPORTANT)
+WHAT TO AVOID
 ========================
-Write like this:
-
-- Focus on what the candidate actually DID (not what they “have experience in”)
-- Show ownership (built, led, supported, improved, worked directly with)
-- Explain things in plain language (not buzzwords)
-- Make it easy to picture what they worked on
-- Use subtle selling, not exaggerated claims
-
-The best summaries:
-- Feel specific and grounded
-- Do not try to sound impressive — they sound real
-- Show ownership and hands-on work
-- Make the reader think: “this person has already done this”
-
-========================
-🚫 DO NOT DO THIS
-========================
-- Do NOT restate the job description
-- Do NOT say “aligns with”, “fits well”, “perfect fit”
-- Do NOT use phrases like:
+DO NOT:
+- Use “this directly translates”
+- Repeat or restate the job description
+- Copy resume bullets without adding insight
+- List too many tools in one sentence
+- Use generic phrases like:
+  "strong background"
+  "highly experienced"
   "positions them uniquely"
   "exceptionally well-prepared"
-  "strong background in"
-- Do NOT list too many tools in one sentence
-- Do NOT sound like a performance review
+  "fits well" / "aligns with"
+
+If any appear → rewrite.
 
 ========================
-🔴 HOW TO STRUCTURE IT (LOOSE GUIDANCE)
+WRITING APPROACH
 ========================
+- Go deeper on fewer things (not everything)
+- Explain what they built and how it works
+- Make it feel obvious they’ve done similar work before
+- Final sentence should clearly state what they will step in and do
 
-Sentence 1:
-- Who they are + years of experience + general domain
-
-Sentence 2:
-- Most relevant recent work (what they actually worked on)
-
-Sentence 3:
-- Go one level deeper on that work OR show ownership
-
-GOOD STYLE EXAMPLE:
-“He’s not just supporting reporting — he’s working directly with stakeholders to define requirements and translate them into usable data outputs.”
-
-Sentence 4:
-- Add another relevant capability (tools, systems, workflows, collaboration, etc.)
-
-Sentence 5 (optional):
-- Close with a grounded, realistic impact statement
+Ask yourself before writing:
+“What has this person already done that makes this job easy for them?”
 
 ========================
-🧠 THINK LIKE THIS
-========================
-Before writing, ask:
-
-“What has this person already done that is very similar to this job?”
-
-Then write the summary around that.
-
-========================
-🟡 CONTEXT USAGE
+CONTEXT PRIORITY
 ========================
 - Prioritize manager notes if provided
-- Still include key keywords from the JD (for MSP search)
-- Do NOT copy the JD — include keywords naturally
+- Include key technical keywords from the JD (for MSP search)
+- Emphasize hands-on execution
 
 ========================
-🟢 SKILLS SECTION RULES
+SKILLS SECTION
 ========================
 - EXACTLY 4 items
-- Each must be:
-  • specific
-  • directly supported by the resume or interview answers
-  • relevant to the role type (technical vs functional)
+- Highly relevant + keyword-rich
+- Use only tools explicitly mentioned in resume/Q&A/notes
 
-FORMAT:
+Format:
 "Skill Area (Tool1, Tool2, Tool3, Tool4)"
 
-========================
-🟢 SKILLS ACCURACY RULES
-========================
-- Only include skills, tools, and platforms explicitly supported by the resume, interview answers, or provided notes.
-- Do NOT infer tools that are merely adjacent or commonly used together.
-- If a tool is not directly mentioned, do not include it.
-- Prefer narrower, fully supported skills over broader, inferred ones.
+Years format:
+"X+ years, current" OR "X+ years, 2025"
 
 ========================
-🟢 YEARS ACCURACY RULES
+SKILLS ACCURACY RULES
 ========================
-- Use April 2026 as the current date when calculating years.
-- Calculate years conservatively based on the actual timeline in the resume.
-- Do NOT assign years based on general career length or related experience.
-- Distinguish between broad experience and exact tool/platform experience.
-- If exact years for a specific tool are unclear, use the lowest clearly supported number.
-- Use "current" only if the candidate is using that skill/tool in their current or most recent role.
-- Otherwise use the latest supported year from the resume.
+- Only include tools explicitly supported by the resume or Q&A
+- Do NOT infer or assume related tools
+- Prefer narrower, accurate skills over broader guesses
 
 ========================
-🧠 FINAL CHECK
+YEARS ACCURACY RULES
+========================
+- Use April 2026 as the current date
+- Calculate years conservatively from actual timeline
+- Do NOT base years on overall experience
+- Match years to the specific tool/skill (not domain)
+- Use "current" only if used in most recent role
+- If unclear → use the lowest supported estimate
+
+========================
+FINAL VALIDATION (REQUIRED)
 ========================
 Before output:
 
-- Does this sound like a real recruiter wrote it?
-- Does it clearly describe what the candidate actually did?
-- Is it tailored to the type of role (technical vs functional)?
-- Is it easy to understand and not overloaded?
-- Does it avoid generic phrasing?
-- Are all skills/tools explicitly supported?
-- Are years reasonable and conservative?
+- Sounds like a real recruiter (not AI)?
+- No job description repetition?
+- Focuses on real work (not vague claims)?
+- Clear why candidate will succeed?
+- Not overloaded with tools?
+- All tools in skills are explicitly supported?
+- Years are conservative and based on April 2026?
 
-If not → rewrite internally.
+If ANY fail → rewrite.
 
 ========================
-🔵 OUTPUT FORMAT
+OUTPUT FORMAT (STRICT)
 ========================
 Return ONLY valid JSON:
 
