@@ -456,180 +456,120 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 if Job_Description_Notes_etc.strip():
                     try:
                         summary_prompt = f"""
-You are a senior technical recruiter writing a Fieldglass submission summary.
+                You are an elite, no-nonsense Senior Technical Recruiter writing an executive submission summary for a Fieldglass portal. 
+                The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed.
 
-Your task: explain clearly and convincingly why this candidate will succeed in THIS role using their real experience.
+                ========================
+                THE NARRATIVE BLUEPRINT (4 Sentences Max)
+                ========================
+                Follow this exact structure for the SUMMARY:
+                - Sentence 1: The Anchor. Who are they and what is their dominant, most relevant expertise? (Use their FIRST NAME only).
+                - Sentence 2: The Heavy Lift. What is the most complex/relevant project they recently delivered? (Focus on ownership: built, architected, delivered).
+                - Sentence 3: The Tech Stack. How did they do it? (Mention specific tools, volume, or scale that align with the Job Description).
+                - Sentence 4: The Closer. Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
 
-========================
-CORE OBJECTIVE
-========================
-This is NOT a resume summary.
+                ========================
+                STYLE & TONE RULES (STRICT)
+                ========================
+                - Write like a human pitching to a colleague. Confident, direct, and factual.
+                - SHOW, DON'T TELL. 
+                  🔴 Bad: "John's background in AWS makes him a great fit for this role."
+                  🟢 Good: "Because John spent the last three years building highly available data lakes in AWS, he can immediately step in to optimize your current infrastructure."
+                - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely," "exceptionally well-prepared," "fits well," "aligns with."
+                - Do NOT use transition crutches: "Additionally," "Furthermore," "Moreover."
+                - Do NOT repeat or restate the job description.
 
-Write like a recruiter making a case:
-- What has this person already done?
-- Why does that make this role easy for them?
+                ========================
+                EXAMPLE OF A PERFECT SUMMARY
+                ========================
+                "Sarah is a senior data engineer specializing in cloud-native data migrations within heavily regulated financial environments. Most recently, she led the end-to-end migration of a legacy on-prem data warehouse to AWS, reducing reporting latency by 40%. She architected automated ETL pipelines using Python, PySpark, and Apache Airflow to process 5TB of daily transaction data. Because she has already successfully navigated complex data governance structures using the exact tech stack required for this project, she will be able to drive immediate value for the engineering team."
 
-Every sentence must reflect real work, real systems, and real ownership.
+                ========================
+                🔴 Q&A USAGE RULES (CRITICAL)
+                ========================
+                - The resume is the PRIMARY source of truth for experience.
+                - The technical interview Q&A is SECONDARY and should only be used to:
+                  • clarify depth
+                  • add supporting detail
+                  • reinforce experience already shown in the resume
 
-========================
-STYLE RULES
-========================
-- 4–5 sentences total
-- Use ONLY the candidate’s FIRST NAME
-- Natural, confident, human tone (not robotic or templated)
-- Vary sentence structure
-- Focus on clarity over sounding “impressive”
+                DO NOT:
+                - Base the summary primarily on Q&A responses.
+                - Introduce tools, systems, or concepts that are only mentioned in Q&A but not supported by the resume.
+                - Overweight theoretical or idealized answers from Q&A.
 
-========================
-WHAT TO DO
-========================
-- Highlight 2–3 of the most relevant things the candidate has done
-- Prefer MOST RECENT ROLE when relevant
-- Show ownership (built, designed, implemented)
-- Use specific systems, tools, or platforms
-- Explain WHY that experience matters for this role (naturally, not forced)
+                If there is any conflict: 👉 prioritize the resume over Q&A.
+                The summary should reflect what the candidate has DONE, not just what they can describe.
 
-========================
-WHAT TO AVOID
-========================
-DO NOT:
-- Use “this directly translates”
-- Repeat or restate the job description
-- Copy resume bullets without adding insight
-- List too many tools in one sentence
-- Use generic phrases like:
-  "strong background"
-  "highly experienced"
-  "positions them uniquely"
-  "exceptionally well-prepared"
-  "fits well" / "aligns with"
+                ========================
+                SKILLS SECTION
+                ========================
+                - EXACTLY 4 items
+                - Highly relevant + keyword-rich
+                - Use only tools explicitly mentioned in resume/Q&A/notes
 
-If any appear → rewrite.
+                Format:
+                "Skill Area (Tool1, Tool2, Tool3, Tool4)"
 
-========================
-WRITING APPROACH
-========================
-- Go deeper on fewer things (not everything)
-- Explain what they built and how it works
-- Make it feel obvious they’ve done similar work before
-- Final sentence should clearly state what they will step in and do
+                Years format:
+                "X+ years, current" OR "X+ years, 2025"
 
-Ask yourself before writing:
-“What has this person already done that makes this job easy for them?”
+                ========================
+                SKILLS ACCURACY RULES
+                ========================
+                - Only include tools explicitly supported by the resume or Q&A
+                - Do NOT infer or assume related tools
+                - Prefer narrower, accurate skills over broader guesses
 
-========================
-CONTEXT PRIORITY
-========================
-- Prioritize manager notes if provided
-- Include key technical keywords from the JD (for MSP search)
-- Emphasize hands-on execution
+                ========================
+                YEARS ACCURACY RULES
+                ========================
+                - Use April 2026 as the current date
+                - Calculate years conservatively from actual timeline
+                - Do NOT base years on overall experience
+                - Match years to the specific tool/skill (not domain)
+                - Use "current" only if used in most recent role
+                - If unclear → use the lowest supported estimate
 
-========================
-🔴 Q&A USAGE RULES (CRITICAL)
-========================
-- The resume is the PRIMARY source of truth for experience.
-- The technical interview Q&A is SECONDARY and should only be used to:
-  • clarify depth
-  • add supporting detail
-  • reinforce experience already shown in the resume
+                ========================
+                OUTPUT FORMAT (STRICT)
+                ========================
+                Return ONLY valid JSON:
 
-DO NOT:
-- Base the summary primarily on Q&A responses
-- Introduce tools, systems, or concepts that are only mentioned in Q&A but not supported by the resume
-- Overweight theoretical or idealized answers from Q&A
+                {{
+                  "SUMMARY": "4 sentence summary following the blueprint",
+                  "SKILL1": "Skill Area (tools)",
+                  "YEARS1": "X+ years, current",
+                  "SKILL2": "Skill Area (tools)",
+                  "YEARS2": "X+ years, current",
+                  "SKILL3": "Skill Area (tools)",
+                  "YEARS3": "X+ years, current",
+                  "SKILL4": "Skill Area (tools)",
+                  "YEARS4": "X+ years, current"
+                }}
 
-If there is any conflict:
-👉 prioritize the resume over Q&A
+                ========================
+                INPUT DATA
+                ========================
 
-The summary should reflect what the candidate has DONE, not just what they can describe.
+                Job Description / Notes:
+                {Job_Description_Notes_etc}
 
-- Only use Q&A details if they clearly reinforce or expand on something already present in the resume.
-- If a concept appears only in Q&A and not in the resume, do not include it.
+                Technical Interview Q&A:
+                Q1: {Question_1}
+                A1: {Answer_1}
+                Q2: {Question_2}
+                A2: {Answer_2}
+                Q3: {Question_3}
+                A3: {Answer_3}
+                Q4: {Question_4}
+                A4: {Answer_4}
+                Q5: {Question_5}
+                A5: {Answer_5}
 
-========================
-SKILLS SECTION
-========================
-- EXACTLY 4 items
-- Highly relevant + keyword-rich
-- Use only tools explicitly mentioned in resume/Q&A/notes
-
-Format:
-"Skill Area (Tool1, Tool2, Tool3, Tool4)"
-
-Years format:
-"X+ years, current" OR "X+ years, 2025"
-
-========================
-SKILLS ACCURACY RULES
-========================
-- Only include tools explicitly supported by the resume or Q&A
-- Do NOT infer or assume related tools
-- Prefer narrower, accurate skills over broader guesses
-
-========================
-YEARS ACCURACY RULES
-========================
-- Use April 2026 as the current date
-- Calculate years conservatively from actual timeline
-- Do NOT base years on overall experience
-- Match years to the specific tool/skill (not domain)
-- Use "current" only if used in most recent role
-- If unclear → use the lowest supported estimate
-
-========================
-FINAL VALIDATION (REQUIRED)
-========================
-Before output:
-
-- Sounds like a real recruiter (not AI)?
-- No job description repetition?
-- Focuses on real work (not vague claims)?
-- Clear why candidate will succeed?
-- Not overloaded with tools?
-- All tools in skills are explicitly supported?
-- Years are conservative and based on April 2026?
-
-If ANY fail → rewrite.
-
-========================
-OUTPUT FORMAT (STRICT)
-========================
-Return ONLY valid JSON:
-
-{{
-  "SUMMARY": "4-5 sentence summary",
-  "SKILL1": "Skill Area (tools)",
-  "YEARS1": "X+ years, current",
-  "SKILL2": "Skill Area (tools)",
-  "YEARS2": "X+ years, current",
-  "SKILL3": "Skill Area (tools)",
-  "YEARS3": "X+ years, current",
-  "SKILL4": "Skill Area (tools)",
-  "YEARS4": "X+ years, current"
-}}
-
-========================
-INPUT DATA
-========================
-
-Job Description / Notes:
-{Job_Description_Notes_etc}
-
-Technical Interview Q&A:
-Q1: {Question_1}
-A1: {Answer_1}
-Q2: {Question_2}
-A2: {Answer_2}
-Q3: {Question_3}
-A3: {Answer_3}
-Q4: {Question_4}
-A4: {Answer_4}
-Q5: {Question_5}
-A5: {Answer_5}
-
-Resume:
-{raw_text}
-"""
+                Resume:
+                {raw_text}
+                """
                         summary_response = summary_model.generate_content(summary_prompt, generation_config={"response_mime_type": "application/json"})
                         summary_data = repair_and_load_json(summary_response.text)
 
