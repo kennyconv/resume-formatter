@@ -534,7 +534,7 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 ========================
                 🧠 FINAL TUNING & POLISH LAYER (CRITICAL)
                 ========================
-                Before outputting the JSON, evaluate your drafted SUMMARY against these 6 checks:
+                Before outputting the JSON, evaluate your drafted SUMMARY and SKILLS against these 6 checks:
                 1. SIMPLIFIED: Are there run-on sentences? Are there unnecessary filler words?
                 2. HUMAN TONE: Are there generic claims ("highly experienced", "exceptional fit")?
                 3. TOOL DENSITY: Does any single sentence list more than 3 tools? 
@@ -542,7 +542,7 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 5. THE PITCH: Does it sound like a natural, confident recruiter speaking out loud?
                 6. SKILL ACCURACY: Look strictly at the 4 Skills you listed. Did you include ANY tools that appear in the Job Description but do NOT appear in the candidate's Resume or Q&A? If yes, remove them immediately.
 
-                If the summary fails ANY of these checks, you must internally rewrite and tighten the sentences BEFORE generating the final JSON output.
+                If the summary or skills fail ANY of these checks, you must internally rewrite and tighten them BEFORE generating the final JSON output.
 
                 ========================
                 OUTPUT FORMAT (STRICT)
