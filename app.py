@@ -162,9 +162,21 @@ def extract_text(file_path):
         elif ext in ['.docx', '.doc']:
             doc = docx.Document(file_path)
             for section in doc.sections:
-                for p in section.header.paragraphs:
-                    if p.text.strip():
-                        text_parts.append(p.text)
+                # Group all 3 possible Word headers together
+                headers = [section.header, section.first_page_header, section.even_page_header]
+                
+                for hdr in headers:
+                    if hdr: # If the header exists
+                        # 1. Check for standard paragraphs
+                        for p in hdr.paragraphs:
+                            if p.text.strip():
+                                text_parts.append(p.text)
+                        # 2. Check for hidden tables
+                        for table in hdr.tables:
+                            for row in table.rows:
+                                for cell in row.cells:
+                                    if cell.text.strip():
+                                        text_parts.append(cell.text)
             for para in doc.paragraphs:
                 if para.text.strip():
                     text_parts.append(para.text)
