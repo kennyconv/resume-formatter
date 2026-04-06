@@ -463,7 +463,7 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 THE NARRATIVE BLUEPRINT (4 Sentences Max)
                 ========================
                 Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
-                - Sentence 1: The Anchor (Authority). Who are they, how many years of experience do they have, and what is their dominant expertise that solves the core need of the Job Description? (Use their FIRST NAME only. Format: "[First Name] is a [Title] with [X]+ years of experience [active verb]...").
+                - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the core need of the Job Description? (Calculate their total overall years in their specific profession/industry, combining past relevant roles. Use their FIRST NAME only. Format: "[First Name] is a [Title] with [X]+ years of experience [active verb]...").
                 - Sentence 2: The Alignment (The Hook). What is the most impressive, relevant project they recently delivered that proves they can handle this specific job? (Do not just list a project; frame it as a direct 1:1 match for the manager's current challenge. Focus on ownership and domain scale. E.g., "Most recently, she delivered an external-facing platform with the exact latency constraints required for this team.")
                 - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter? (Weave the specific tools/methodologies into an "Execution Statement" that highlights the complexity, scale, or business impact. DO NOT write a comma-separated list of tools. E.g., "By engineering PySpark pipelines across Glue and EMR, she orchestrated TB-scale workflows that eliminated bottlenecks and ensured 99% reliability." DO NOT repeat verbs from Sentence 2).
                 - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role? (Do NOT start with "Because" or "With." Use a strong, direct structure like: "[First Name]'s success in [X] makes them an immediate asset for [Y]." Note: Do NOT use the word "your". Refer to the work as "this team," "this project," or "the application".)
@@ -540,7 +540,7 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 3. TOOL DENSITY: Does any single sentence list more than 3 tools? 
                 4. NO REPETITION: Did you repeat the same verbs (e.g., "delivered", "built") or concepts across sentences?
                 5. THE PITCH: Does it sound like a natural, confident recruiter speaking out loud?
-                6. SKILL ACCURACY: Look strictly at the 4 Skills you listed. Did you include ANY tools that appear in the Job Description but do NOT appear in the candidate's Resume or Q&A? If yes, remove them immediately.
+                6. ANTI-HALLUCINATION (CTRL+F) CHECK: You are strictly forbidden from "inferring" or "translating" tools. If the Job Description asks for "AWS" or "SageMaker", but the resume only says "cloud" or "serverless", YOU CANNOT LIST AWS OR SAGEMAKER. Look at the 4 skills you drafted. If you cannot explicitly "CTRL+F" and find the exact tool name in the candidate's resume/Q&A, DELETE IT immediately.
 
                 If the summary or skills fail ANY of these checks, you must internally rewrite and tighten them BEFORE generating the final JSON output.
 
