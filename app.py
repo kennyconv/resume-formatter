@@ -462,11 +462,11 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 ========================
                 THE NARRATIVE BLUEPRINT (4 Sentences Max)
                 ========================
-                Follow this exact structure for the SUMMARY:
-                - Sentence 1: The Anchor. Who are they, how many years of experience do they have, and what is their dominant, most relevant expertise? (Use their FIRST NAME only. Format: "[First Name] is a [Title] with [X]+ years of experience [designing / architecting / specializing in / building]...").
-                - Sentence 2: The Heavy Lift. What is the most complex/relevant project they recently delivered? (Focus on ownership: built, architected, delivered).
-                - Sentence 3: The Tech Stack. How did they do it? (Mention specific tools, volume, or scale that align with the Job Description. DO NOT repeat tools or verbs used in Sentence 2).
-                - Sentence 4: The Closer. Based on their past execution, what specific value will they deliver on Day 1 in THIS new role? (Do NOT start with "Because" or "With." Use a strong, direct structure like: "[First Name]'s success in [X] makes them an immediate asset for [Y]." Note: Do NOT use the word "your". Refer to the work as "this team," "this project," or "the application".)
+                Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
+                - Sentence 1: The Anchor (Authority). Who are they, how many years of experience do they have, and what is their dominant expertise that solves the core need of the Job Description? (Use their FIRST NAME only. Format: "[First Name] is a [Title] with [X]+ years of experience [active verb]...").
+                - Sentence 2: The Alignment (The Hook). What is the most impressive, relevant project they recently delivered that proves they can handle this specific job? (Do not just list a project; frame it as a direct 1:1 match for the manager's current challenge. Focus on ownership and domain scale. E.g., "Most recently, she delivered an external-facing platform with the exact latency constraints required for this team.")
+                - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter? (Weave the specific tools/methodologies into an "Execution Statement" that highlights the complexity, scale, or business impact. DO NOT write a comma-separated list of tools. E.g., "By engineering PySpark pipelines across Glue and EMR, she orchestrated TB-scale workflows that eliminated bottlenecks and ensured 99% reliability." DO NOT repeat verbs from Sentence 2).
+                - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role? (Do NOT start with "Because" or "With." Use a strong, direct structure like: "[First Name]'s success in [X] makes them an immediate asset for [Y]." Note: Do NOT use the word "your". Refer to the work as "this team," "this project," or "the application".)
 
                 ========================
                 STYLE & TONE RULES (STRICT)
@@ -482,7 +482,7 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 ========================
                 EXAMPLE OF A PERFECT SUMMARY
                 ========================
-                "Sarah is a senior data engineer with 8+ years of experience architecting cloud-native data migrations within heavily regulated financial environments. Most recently, she led the end-to-end migration of a legacy on-prem data warehouse to AWS, reducing reporting latency by 40%. She built automated ETL pipelines using Python, PySpark, and Apache Airflow to process 5TB of daily transaction data. Sarah's success in navigating complex data governance structures makes her an immediate asset for driving this AWS migration."
+                "Sarah is a senior data engineer with 8+ years of experience architecting cloud-native data migrations within heavily regulated financial environments. Most recently, she led the end-to-end migration of a legacy on-prem data warehouse to AWS, directly mirroring the scale and compliance rigor required for this team's current cloud initiative. By engineering automated ETL pipelines with Python, PySpark, and Apache Airflow, she processed 5TB of daily transaction data and reduced reporting latency by 40%. Sarah's success in navigating complex data governance structures makes her an immediate asset for driving this AWS migration."
 
                 ========================
                 🔴 Q&A USAGE RULES (CRITICAL)
@@ -582,7 +582,7 @@ if st.button("🚀 Generate Submission Document", type="primary"):
 
                 Resume:
                 {raw_text}
-                """
+"""
                         summary_response = summary_model.generate_content(summary_prompt, generation_config={"response_mime_type": "application/json"})
                         summary_data = repair_and_load_json(summary_response.text)
 
