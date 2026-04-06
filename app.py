@@ -414,11 +414,11 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 Return a valid JSON object ONLY.
 
                 RULES:
-                1. Name: Pull from top/header (Title Case).
-                2. Contractor: Agency is Company, Client is Title.
+                1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
+                2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line. (e.g., If the resume says "DUPONT, DELAWARE TCS", you must output exactly "DUPONT").
                 3. Education: Extract School and Degree.
                 4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
-                   - For 'Environment', extract any tools/tech listed at the end of the role (e.g., "Environment: Python, AWS"). If none, leave blank "". Do not include this in the Bullets.
+                    - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
 
                 JSON Structure:
                 {{
