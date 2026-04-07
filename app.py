@@ -474,11 +474,13 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 ========================
                 THE NARRATIVE BLUEPRINT (4 Sentences Max)
                 ========================
-                Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
-                - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the core need of the Job Description? (Calculate their total overall years in their specific profession/industry, combining past relevant roles. Use their FIRST NAME only. Format: "[First Name] is a [Title] with [X]+ years of experience [active verb]...").
-                - Sentence 2: The Alignment (The Hook). What is the most impressive, relevant project they recently delivered that proves they can handle this specific job? (Do not just list a project; frame it as a direct 1:1 match for the manager's current challenge. Focus on ownership and domain scale. E.g., "Most recently, she delivered an external-facing platform with the exact latency constraints required for this team.")
-                - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter? (Weave the specific tools/methodologies into an "Execution Statement" that highlights the complexity, scale, or business impact. DO NOT write a comma-separated list of tools. E.g., "By engineering PySpark pipelines across Glue and EMR, she orchestrated TB-scale workflows that eliminated bottlenecks and ensured 99% reliability." DO NOT repeat verbs from Sentence 2).
-                - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role? (Do NOT start with "Because" or "With." Use a strong, direct structure like: "[First Name]'s success in [X] makes them an immediate asset for [Y]." Note: Do NOT use the word "your". Refer to the work as "this team," "this project," or "the application".)
+                Before writing, secretly analyze the Job Description to identify BOTH the primary technical focus AND any secondary technical requirements. Follow this exact structure for the SUMMARY:
+                
+                - Sentence 1: The Anchor (The Title Hack). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise? (Calculate their total overall years. Use their FIRST NAME only. You MUST use the exact job title requested in the JD if the candidate's history loosely supports it. Format: "[First Name] is a [Exact Title from JD] with [X]+ years of experience [active verb]...").
+                - Sentence 2 & 3: The Alignment & Proof (High-Density Alignment). Do NOT just pick the project with the biggest numbers. You MUST highlight the specific project(s) from their resume/Q&A that utilize the HIGHEST DENSITY of the exact tools requested in the JD. 
+                  * If the JD has two technical pillars (e.g., MLOps AND Data Engineering), you must weave tools from BOTH pillars into these sentences to prove comprehensive alignment. 
+                  * Use the phrase "...directly mirroring the need for [insert JD requirement]..."
+                - Sentence 4: The Closer (The Plagiarized ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role? (Use a strong, direct structure like: "[First Name]'s success in [X] makes them an immediate asset for [Plagiarize the exact business goal/wording from the JD]." Note: Do NOT use the word "your". Refer to the work as "this team," "this project," or "the application".)
 
                 ========================
                 STYLE & TONE RULES (STRICT)
@@ -514,17 +516,18 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 The summary should reflect what the candidate has DONE, not just what they can describe.
 
                 ========================
-                SKILLS SECTION
+                SKILLS SECTION (JD Pillar Mapping)
                 ========================
                 - EXACTLY 4 items
-                - Highly relevant + keyword-rich
+                - JD Pillar Mapping: Create exactly 3 to 4 skill buckets. The titles of these buckets MUST directly reflect the core technical pillars asked for in the JD. 
+                - JD Keyword Prioritization: You must actively hunt for the specific tools listed in the JD (e.g., SageMaker, Spark, Airflow) and group them prominently into these buckets.
                 - Use only tools explicitly mentioned in resume/Q&A/notes
 
                 Format:
                 "Skill Area (Tool1, Tool2, Tool3, Tool4)"
 
                 Years format:
-                "X+ years, current" OR "X+ years, 2025"
+                "X+ years, current" OR "X+ years, 2026"
 
                 ========================
                 SKILLS ACCURACY RULES
@@ -594,7 +597,7 @@ if st.button("🚀 Generate Submission Document", type="primary"):
 
                 Resume:
                 {raw_text}
-"""
+        """
                         summary_response = summary_model.generate_content(summary_prompt, generation_config={"response_mime_type": "application/json"})
                         summary_data = repair_and_load_json(summary_response.text)
 
