@@ -475,7 +475,7 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 THE NARRATIVE BLUEPRINT (4 Sentences Max)
                 ========================
                 Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
-                - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the core need of the Job Description? (Calculate their total overall years in their specific profession/industry, combining past relevant roles. Use their FIRST NAME only. Format: "[First Name] is a [Title] with [X]+ years of experience [active verb]...").
+                - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the core need of the Job Description? (Calculate their total overall years. Use their FIRST NAME only. **You MUST use the exact job title requested in the JD if the candidate's history support it.** Format: "[First Name] is a [Exact Title from JD] with [X]+ years of experience [active verb]...").
                 - Sentence 2: The Alignment (The Hook). What is the most impressive, relevant project they recently delivered that proves they can handle this specific job? (Do not just list a project; frame it as a direct 1:1 match for the manager's current challenge. Focus on ownership and domain scale. E.g., "Most recently, she delivered an external-facing platform with the exact latency constraints required for this team.")
                 - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter? (Weave the specific tools/methodologies into an "Execution Statement" that highlights the complexity, scale, or business impact. DO NOT write a comma-separated list of tools. E.g., "By engineering PySpark pipelines across Glue and EMR, she orchestrated TB-scale workflows that eliminated bottlenecks and ensured 99% reliability." DO NOT repeat verbs from Sentence 2).
                 - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role? (Do NOT start with "Because" or "With." Use a strong, direct structure like: "[First Name]'s success in [X] makes them an immediate asset for [Y]." Note: Do NOT use the word "your". Refer to the work as "this team," "this project," or "the application".)
@@ -534,14 +534,13 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 - Prefer narrower, accurate skills over broader guesses
 
                 ========================
-                YEARS ACCURACY RULES
+                YEARS ACCURACY RULES (REALISTIC RECRUITER MODE)
                 ========================
-                - Use April 2026 as the current date
-                - Calculate years conservatively from actual timeline
-                - Do NOT base years on overall experience
-                - Match years to the specific tool/skill (not domain)
-                - Use "current" only if used in most recent role
-                - If unclear → use the lowest supported estimate
+                - Use April 2026 as the current date.
+                - Calculate years based on total progressive experience in that SKILL DOMAIN, but DO NOT blindly apply their maximum total years to every single bucket.
+                - Foundational skills (e.g., Python, SQL, general engineering) should get their maximum total years (e.g., 7+).
+                - Advanced/Specialized tools (e.g., SageMaker, Kubernetes, Cloud Architecture) should realistically be calculated at 1-2 years less than their maximum total experience (e.g., 5+ or 6+) unless the resume proves otherwise. 
+                - Default to "current" if they are still working in this general technical field. Do NOT use past years (e.g., "2022"). Always bridge past experience to their current tenure.
 
                 ========================
                 🧠 FINAL TUNING & POLISH LAYER (CRITICAL)
