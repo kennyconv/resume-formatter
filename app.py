@@ -478,7 +478,8 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 
                 - Sentence 1: The Anchor (The Title Hack). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise? (Calculate their total overall years. Use their FIRST NAME only. You MUST use the exact job title requested in the JD if the candidate's history loosely supports it. Format: "[First Name] is a [Exact Title from JD] with [X]+ years of experience [active verb]...").
                 - Sentence 2 & 3: The Alignment & Proof (High-Density Alignment). Do NOT just pick the project with the biggest numbers. You MUST highlight the specific project(s) from their resume/Q&A that utilize the HIGHEST DENSITY of the exact tools requested in the JD. 
-                  * If the JD has two technical pillars (e.g., MLOps AND Data Engineering), you must weave tools from BOTH pillars into these sentences to prove comprehensive alignment. 
+                  * If the JD has two technical pillars (e.g., MLOps AND Data Engineering), you MUST seamlessly weave them together into a flowing narrative. (e.g., "Leveraging [Pillar 1 tools] for [action], alongside his deep background building [Pillar 2 tools]..."). 
+                  * Do NOT write clunky, separate sentences like "He did X. He also did Y."
                   * Use the phrase "...directly mirroring the need for [insert JD requirement]..."
                 - Sentence 4: The Closer (The Plagiarized ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role? (Use a strong, direct structure like: "[First Name]'s success in [X] makes them an immediate asset for [Plagiarize the exact business goal/wording from the JD]." Note: Do NOT use the word "your". Refer to the work as "this team," "this project," or "the application".)
 
@@ -537,14 +538,12 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 - Prefer narrower, accurate skills over broader guesses
 
                 ========================
-                YEARS ACCURACY RULES
+                YEARS ACCURACY RULES (RECRUITER MODE)
                 ========================
-                - Use April 2026 as the current date
-                - Calculate years conservatively from actual timeline
-                - Do NOT base years on overall experience
-                - Match years to the specific tool/skill (not domain)
-                - Use "current" only if used in most recent role
-                - If unclear → use the lowest supported estimate
+                - Use April 2026 as the current date.
+                - Calculate years based on their total progressive experience in that SKILL DOMAIN, not just the strict tenure of a single job. (e.g., If they have 7 years of ML/Data experience, the skill buckets should reflect 6-7+ years, even if a specific tool was only used in recent roles).
+                - Default to "current" if the candidate is still actively working in this general technical field or industry, even if the specific tool was used in a previous project.
+                - Do NOT use past years (e.g., "2022"). Always bridge their past experience to their current tenure if they are still in the same profession.
 
                 ========================
                 🧠 FINAL TUNING & POLISH LAYER (CRITICAL)
