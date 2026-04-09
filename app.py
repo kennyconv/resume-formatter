@@ -1,5 +1,6 @@
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import docx
 from docx.text.paragraph import Paragraph
 from docx.shared import Pt
@@ -406,9 +407,7 @@ if st.button("🚀 Generate Submission Document", type="primary"):
 
                 raw_text = extract_text(resume_path)
                 
-                genai.configure(api_key=API_KEY)
-                extract_model = genai.GenerativeModel('gemini-2.5-flash')
-                summary_model = genai.GenerativeModel('gemini-2.5-flash')
+                client = genai.Client(api_key=API_KEY)
 
                 prompt = f"""
                 Return a valid JSON object ONLY.
@@ -430,7 +429,11 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 RESUME: {raw_text}
                 """
 
-                response = extract_model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+                response = client.models.generate_content(
+    model='gemini-2.5-flash',
+    contents=prompt,
+    config={'response_mime_type': 'application/json'}
+)
                 data = repair_and_load_json(response.text)
 
                 name = data.get('FullName', '').title()
@@ -594,7 +597,11 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 Resume:
                 {raw_text}
         """
-                        summary_response = summary_model.generate_content(summary_prompt, generation_config={"response_mime_type": "application/json"})
+                        summary_response = client.models.generate_content(
+    model='gemini-2.5-flash',
+    contents=summary_prompt,
+    config={'response_mime_type': 'application/json'}
+)
                         summary_data = repair_and_load_json(summary_response.text)
 
                         mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
