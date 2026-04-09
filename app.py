@@ -9,6 +9,7 @@ import json
 import re
 import os
 import copy
+import time
 
 # ====================================================================
 # --- PRELOADED TEMPLATE SETTING ---
@@ -599,13 +600,27 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 Resume:
                 {raw_text}
         """
-                        summary_response = client.models.generate_content(
-                            model='gemini-2.5-flash',
-                            contents=summary_prompt,
-                            config=types.GenerateContentConfig(
-                                response_mime_type="application/json"
-                            )
-                        )
+                        # We give the server a 2-second breather between the Extraction and Summary calls
+                        time.sleep(2) 
+                        
+                        # Attempt the call up to 3 times
+                        for attempt in range(3):
+                            try:
+                                summary_response = client.models.generate_content(
+                                    model='gemini-2.5-flash',
+                                    contents=summary_prompt,
+                                    config=types.GenerateContentConfig(
+                                        response_mime_type="application/json"
+                                    )
+                                )
+                                break # If it succeeds, break out of the retry loop
+                            except Exception as api_e:
+                                if "503" in str(api_e) and attempt < 2:
+                                    time.sleep(3) # Wait 3 seconds and try again
+                                    continue
+                                else:
+                                    raise api_e # If it fails 3 times, throw the error
+
                         summary_data = repair_and_load_json(summary_response.text)
 
                         mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
