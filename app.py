@@ -430,9 +430,11 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 """
 
                 response = client.models.generate_content(
-                    model='gemini-2.5-flash',
+                    model='gemini-2.0-flash',
                     contents=prompt,
-                    config={'response_mime_type': 'application/json'}
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json"
+                    )
                 )
                 data = repair_and_load_json(response.text)
 
@@ -598,9 +600,11 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 {raw_text}
         """
                         summary_response = client.models.generate_content(
-                            model='gemini-2.5-flash',
+                            model='gemini-2.0-flash',
                             contents=summary_prompt,
-                            config={'response_mime_type': 'application/json'}
+                            config=types.GenerateContentConfig(
+                                response_mime_type="application/json"
+                            )
                         )
                         summary_data = repair_and_load_json(summary_response.text)
 
