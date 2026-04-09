@@ -543,17 +543,17 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 - Default to "current" if they are still working in this general technical field. Do NOT use past years (e.g., "2022"). Always bridge past experience to their current tenure.
 
                 ========================
-                🧠 FINAL TUNING & POLISH LAYER (CRITICAL)
+                🧠 FINAL POLISH CHECKLIST (ONE PASS ONLY)
                 ========================
                 Before outputting the JSON, evaluate your drafted SUMMARY and SKILLS against these 6 checks:
-                1. SIMPLIFIED: Are there run-on sentences? Are there unnecessary filler words?
-                2. HUMAN TONE: Are there generic claims ("highly experienced", "exceptional fit")?
-                3. TOOL DENSITY: Does any single sentence list more than 3 tools? 
-                4. NO REPETITION: Did you repeat the same verbs (e.g., "delivered", "built") or concepts across sentences?
-                5. THE PITCH: Does it sound like a natural, confident recruiter speaking out loud?
-                6. ANTI-HALLUCINATION (CTRL+F) CHECK: You are strictly forbidden from "inferring" or "translating" tools. If the Job Description asks for "AWS" or "SageMaker", but the resume only says "cloud" or "serverless", YOU CANNOT LIST AWS OR SAGEMAKER. Look at the 4 skills you drafted. If you cannot explicitly "CTRL+F" and find the exact tool name in the candidate's resume/Q&A, DELETE IT immediately.
+                1. SIMPLIFIED: No run-on sentences or unnecessary filler.
+                2. HUMAN TONE: No generic claims like "highly experienced."
+                3. TOOL DENSITY: Maximum 3 tools per sentence.
+                4. NO REPETITION: Do not repeat verbs or concepts across sentences.
+                5. THE PITCH: Ensure a natural, confident recruiter tone.
+                6. ANTI-HALLUCINATION (CTRL+F): If a tool name is not explicitly in the resume/Q&A, DELETE IT.
 
-                If the summary or skills fail ANY of these checks, you must internally rewrite and tighten them BEFORE generating the final JSON output.
+                Output only the final, polished JSON.
 
                 ========================
                 OUTPUT FORMAT (STRICT)
