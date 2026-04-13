@@ -408,11 +408,11 @@ if st.button("🚀 Generate Submission Document", type="primary"):
 
                 raw_text = extract_text(resume_path)
                 
-# Test A: Force the app to use the standard web protocol (REST) instead of gRPC
-client = genai.Client(
-    api_key=API_KEY, 
-    http_options=types.HttpOptions(api_version='v1')
-)
+                # Test A: Force the app to use the standard web protocol (REST) instead of gRPC
+                client = genai.Client(
+                    api_key=API_KEY, 
+                    http_options=types.HttpOptions(api_version='v1')
+                )
 
                 prompt = f"""
                 Return a valid JSON object ONLY.
