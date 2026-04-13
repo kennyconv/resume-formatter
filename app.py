@@ -411,7 +411,7 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 # Test A: Force the app to use the standard web protocol (REST) instead of gRPC
                 client = genai.Client(
                     api_key=API_KEY, 
-                    http_options=types.HttpOptions(api_version='v1')
+                    http_options=types.HttpOptions(api_version='v1beta')
                 )
 
                 prompt = f"""
