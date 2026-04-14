@@ -163,6 +163,21 @@ def extract_text(file_path):
                     text_parts.append(content)
         elif ext in ['.docx', '.doc']:
             doc = docx.Document(file_path)
+            
+            # ==========================================
+            # --- NEW: THE TEXT BOX HACK ---
+            # Search the raw XML for text boxes and add them to the top
+            text_box_found = False
+            for node in doc.element.xpath('//w:txbxContent//w:t'):
+                if node.text and node.text.strip():
+                    text_parts.append(node.text.strip())
+                    text_box_found = True
+            
+            # Add a separator if we actually found text box content
+            if text_box_found:
+                text_parts.append("--- END OF TEXT BOXES ---")
+            # ==========================================
+
             for section in doc.sections:
                 # Group all 3 possible Word headers together
                 headers = [section.header, section.first_page_header, section.even_page_header]
