@@ -493,6 +493,7 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 - Write like a human pitching to a colleague. Confident, direct, and factual.
                 - TECH MATCHING: Strictly align the tools you highlight with the JD. If the JD asks for AWS, highlight AWS. Do not highlight competing tech (like Azure or GCP) just because it's prominent in the resume, unless it is their only experience.
                 - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
+                - LEADERSHIP VERBS: Use high-authority active verbs (e.g., 'Engineered', 'Optimized', 'Architected', 'Spearheaded') instead of passive verbs like 'Assisted', 'Collaborated', or 'Helped'.
                 - SHOW, DON'T TELL. 
                   🔴 Bad: "John's background in AWS makes him a great fit for this role."
                   🟢 Good: "Because John spent the last three years building highly available data lakes in AWS, he can immediately step in to optimize your current infrastructure."
