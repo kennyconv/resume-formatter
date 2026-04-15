@@ -293,10 +293,24 @@ def delete_paragraph(paragraph):
     paragraph._p = paragraph._element = None
 
 def process_word_doc(temp_path, mapping, out_path):
-    doc = docx.Document(temp_path)
-    
-    # --- NEW EDUCATION TABLE LOGIC ---
-    # Check if the AI extracted ANY schools at all
+    doc = docx.Document(temp_path)
+    
+    # --- NEW CERTIFICATIONS TABLE LOGIC ---
+    # If no certifications, delete the entire table containing the {{Certifications}} tag
+    if not mapping.get("Certifications") or not str(mapping.get("Certifications")).strip():
+        tables_to_delete = []
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if "{{Certifications}}" in cell.text:
+                        if table not in tables_to_delete:
+                            tables_to_delete.append(table)
+        for table in tables_to_delete:
+            table._element.getparent().remove(table._element)
+    # --------------------------------------
+
+    # --- NEW EDUCATION TABLE LOGIC ---
+    # Check if the AI extracted ANY schools at all
     has_any_education = bool(mapping.get("School1") or mapping.get("School2") or mapping.get("School3"))
     
     for table in doc.tables:
@@ -314,7 +328,7 @@ def process_word_doc(temp_path, mapping, out_path):
     # ---------------------------------
 
     paras_to_remove = []
-    kill_keys = ['Company', 'Title', 'Bullets', 'Dates', 'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'A1', 'A2', 'A3', 'A4', 'A5', 'Summary', 'Skill', 'Years']
+    kill_keys = ['Company', 'Title', 'Bullets', 'Dates', 'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'A1', 'A2', 'A3', 'A4', 'A5', 'Summary', 'Skill', 'Years', 'Certifications']
 
     for p in list(doc.paragraphs):
         for key, value in mapping.items():
@@ -435,10 +449,12 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
                     - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
                     - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
+                5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
 
                 JSON Structure:
                 {{
                     "FullName": "",
+                    "Certifications": "",
                     "Education": [{{"School": "", "Degree": ""}}],
                     "Experience": [{{"Company": "", "Title": "", "Bullets": [], "Environment": "", "Dates": ""}}]
                 }}
@@ -458,6 +474,7 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 name = data.get('FullName', '').title()
                 mapping = {
                     "FullName": name, "Location": Current_Location_City_ST, "Remote": Remote_or_Onsite,
+                    "Certifications": data.get("Certifications", ""),
                     "FormerFM": Former_FM, "Links": LinkedIn_GitHub_Portfolio_Link,
                     "Q1": Question_1, "A1": Answer_1, "Q2": Question_2, "A2": Answer_2,
                     "Q3": Question_3, "A3": Answer_3, "Q4": Question_4, "A4": Answer_4, "Q5": Question_5, "A5": Answer_5,
