@@ -293,23 +293,23 @@ def delete_paragraph(paragraph):
     paragraph._p = paragraph._element = None
 
 def process_word_doc(temp_path, mapping, out_path):
-    doc = docx.Document(temp_path)
-    
-    # --- NEW CERTIFICATIONS TABLE LOGIC ---
-    # If no certifications, delete the entire table containing the {{Certifications}} tag
-    if not mapping.get("Certifications") or not str(mapping.get("Certifications")).strip():
-        tables_to_delete = []
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    if "{{Certifications}}" in cell.text:
-                        if table not in tables_to_delete:
-                            tables_to_delete.append(table)
-        for table in tables_to_delete:
-            table._element.getparent().remove(table._element)
-    # --------------------------------------
+    doc = docx.Document(temp_path)
+    
+    # --- NEW CERTIFICATIONS TABLE LOGIC ---
+    # If no certifications, delete the entire table containing the {{Certifications}} tag
+    if not mapping.get("Certifications") or not str(mapping.get("Certifications")).strip():
+        tables_to_delete = []
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if "{{Certifications}}" in cell.text:
+                        if table not in tables_to_delete:
+                            tables_to_delete.append(table)
+        for table in tables_to_delete:
+            table._element.getparent().remove(table._element)
+    # --------------------------------------
 
-    # --- NEW EDUCATION TABLE LOGIC ---
+    # --- NEW EDUCATION TABLE LOGIC ---
     # Check if the AI extracted ANY schools at all
     has_any_education = bool(mapping.get("School1") or mapping.get("School2") or mapping.get("School3"))
     
