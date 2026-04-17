@@ -579,11 +579,12 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 "X+ years, current" OR "X+ years, 2026"
 
                 ========================
-                SKILLS ACCURACY RULES
+                🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
                 ========================
-                - Only include tools explicitly supported by the resume or Q&A
-                - Do NOT infer or assume related tools
-                - Prefer narrower, accurate skills over broader guesses
+                1. THE RESUME IS THE ONLY SOURCE OF TRUTH. You are strictly forbidden from copying a skill, tool, or technology from the Job Description and assigning it to the candidate unless it physically appears in their Resume or Q&A.
+                2. DO NOT INFER OR ASSUME. If the JD asks for "Redshift" and the resume only says "AWS", you MUST NOT write "Redshift" under any circumstances. 
+                3. DO NOT INFLATE TO MATCH THE JD. If the candidate lacks a requested skill, omit it completely. It is better to have an incomplete match than a fabricated one.
+                4. FACT AUDIT: Before outputting the final JSON, you must verify every single tool mentioned in your SUMMARY and SKILLS. If a tool exists in the JD but not in the Resume/Q&A, you must delete it from your output.
 
                 ========================
                 YEARS ACCURACY RULES (REALISTIC RECRUITER MODE)
@@ -603,8 +604,7 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 3. TOOL DENSITY: Maximum 3 tools per sentence.
                 4. NO REPETITION: Do not repeat verbs or concepts across sentences.
                 5. THE PITCH: Ensure a natural, confident recruiter tone.
-                6. ANTI-HALLUCINATION (CTRL+F): If a tool name is not explicitly in the resume/Q&A, DELETE IT.
-                7. CURRENT JOB: Did you explicitly name their most recent employer in Sentence 2?
+                6. CURRENT JOB: Did you explicitly name their most recent employer in Sentence 2?
 
                 Output only the final, polished JSON.
 
