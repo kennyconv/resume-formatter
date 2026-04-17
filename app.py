@@ -457,14 +457,28 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 RESUME: {raw_text}
                 """
 
-                response = client.models.generate_content(
-                    model='gemini-2.5-flash',
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json"
-                    )
-                )
-                data = repair_and_load_json(response.text)
+                # --- SMART RETRY & FALLBACK FOR EXTRACTION ---
+                models_to_try = ['gemini-2.5-flash', 'gemini-3-flash-preview']
+                data = {}
+                
+                for attempt in range(4):
+                    current_model = models_to_try[0] if attempt < 2 else models_to_try[1]
+                    try:
+                        response = client.models.generate_content(
+                            model=current_model,
+                            contents=prompt,
+                            config=types.GenerateContentConfig(
+                                response_mime_type="application/json"
+                            )
+                        )
+                        data = repair_and_load_json(response.text)
+                        break
+                    except Exception as e:
+                        if "503" in str(e) and attempt < 3:
+                            time.sleep(2 ** (attempt + 1))
+                            continue
+                        else:
+                            raise e
 
                 name = data.get('FullName', '').title()
                 mapping = {
@@ -635,25 +649,27 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                         # We give the server a 2-second breather between the Extraction and Summary calls
                         time.sleep(2) 
                         
-                        # Attempt the call up to 3 times
-                        for attempt in range(3):
+                        # --- SMART RETRY & FALLBACK FOR SUMMARY ---
+                        summary_data = {}
+                        
+                        for attempt in range(4):
+                            current_model = models_to_try[0] if attempt < 2 else models_to_try[1]
                             try:
                                 summary_response = client.models.generate_content(
-                                    model='gemini-2.5-flash',
+                                    model=current_model,
                                     contents=summary_prompt,
                                     config=types.GenerateContentConfig(
                                         response_mime_type="application/json"
                                     )
                                 )
-                                break # If it succeeds, break out of the retry loop
+                                summary_data = repair_and_load_json(summary_response.text)
+                                break
                             except Exception as api_e:
-                                if "503" in str(api_e) and attempt < 2:
-                                    time.sleep(3) # Wait 3 seconds and try again
+                                if "503" in str(api_e) and attempt < 3:
+                                    time.sleep(2 ** (attempt + 1))
                                     continue
                                 else:
-                                    raise api_e # If it fails 3 times, throw the error
-
-                        summary_data = repair_and_load_json(summary_response.text)
+                                    raise api_e
 
                         mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
                         mapping["SKILL1"] = summary_data.get("SKILL1", "")
