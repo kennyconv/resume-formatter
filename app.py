@@ -458,11 +458,24 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                 """
 
                 # --- SMART RETRY & FALLBACK FOR EXTRACTION ---
-                models_to_try = ['gemini-2.5-flash', 'gemini-3-flash-preview']
+                models_to_try = [
+                    'gemini-2.5-flash', 
+                    'gemini-3-flash-preview', 
+                    'gemini-3.1-flash-lite-preview', 
+                    'gemini-pro-latest'
+                ]
                 data = {}
                 
-                for attempt in range(4):
-                    current_model = models_to_try[0] if attempt < 2 else models_to_try[1]
+                for attempt in range(6):
+                    if attempt == 0:
+                        current_model = models_to_try[0]
+                    elif attempt in [1, 2]:
+                        current_model = models_to_try[1]
+                    elif attempt in [3, 4]:
+                        current_model = models_to_try[2]
+                    else:
+                        current_model = models_to_try[3]
+                    
                     try:
                         response = client.models.generate_content(
                             model=current_model,
@@ -474,8 +487,8 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                         data = repair_and_load_json(response.text)
                         break
                     except Exception as e:
-                        if "503" in str(e) and attempt < 3:
-                            time.sleep(2 ** (attempt + 1))
+                        if "503" in str(e) and attempt < 5:
+                            time.sleep(2 ** ((attempt % 2) + 1))
                             continue
                         else:
                             raise e
@@ -652,8 +665,16 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                         # --- SMART RETRY & FALLBACK FOR SUMMARY ---
                         summary_data = {}
                         
-                        for attempt in range(4):
-                            current_model = models_to_try[0] if attempt < 2 else models_to_try[1]
+                        for attempt in range(6):
+                            if attempt == 0:
+                                current_model = models_to_try[0]
+                            elif attempt in [1, 2]:
+                                current_model = models_to_try[1]
+                            elif attempt in [3, 4]:
+                                current_model = models_to_try[2]
+                            else:
+                                current_model = models_to_try[3]
+                            
                             try:
                                 summary_response = client.models.generate_content(
                                     model=current_model,
@@ -665,8 +686,8 @@ if st.button("🚀 Generate Submission Document", type="primary"):
                                 summary_data = repair_and_load_json(summary_response.text)
                                 break
                             except Exception as api_e:
-                                if "503" in str(api_e) and attempt < 3:
-                                    time.sleep(2 ** (attempt + 1))
+                                if "503" in str(api_e) and attempt < 5:
+                                    time.sleep(2 ** ((attempt % 2) + 1))
                                     continue
                                 else:
                                     raise api_e
