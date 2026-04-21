@@ -224,7 +224,8 @@ def process_word_doc(temp_path, mapping, out_path):
             table._tbl.remove(row._tr)
             
     paras_to_remove = []
-    kill_keys = ['Company', 'Title', 'Bullets', 'Dates', 'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'A1', 'A2', 'A3', 'A4', 'A5', 'Summary', 'Skill', 'Years', 'Certifications']
+    # Updated kill_keys with 'Certification', 'School', and 'Responsible'
+    kill_keys = ['Company', 'Title', 'Bullets', 'Dates', 'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'A1', 'A2', 'A3', 'A4', 'A5', 'Summary', 'Skill', 'Years', 'Certification', 'School', 'Responsible']
     for p in list(doc.paragraphs):
         for key, value in mapping.items():
             tag = f"{{{{{key}}}}}"
@@ -651,10 +652,10 @@ def fannie_mae_app():
 
 
 # ====================================================================
-# --- 🔵 CLIENT APP 2: PERATON (Duplicate to be edited later) 🔵 ---
+# --- 🔵 CLIENT APP 2: PERATON 🔵 ---
 # ====================================================================
 def peraton_app():
-    TEMPLATE_FILENAME = "Template.docx"  # You can change this later to a Peraton template
+    TEMPLATE_FILENAME = "Peraton_Template.docx"
     st.title("📄 Peraton Precision Extractor")
 
     with st.sidebar:
@@ -718,19 +719,20 @@ def peraton_app():
 
                     RULES:
                     1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
-                    2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line. (e.g., If the resume says "DUPONT, DELAWARE TCS", you must output exactly "DUPONT").
+                    2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
                     3. Education: Extract School and Degree.
-                    4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
-                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
-                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
-                    5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
+                    4. Experience: Company, Title, Responsible, Bullets (LIST), Environment (String, optional), Dates.
+                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
+                        - For 'Responsible', write exactly 1 sentence summarizing what the candidate was responsible for at this specific job, based on their bullets.
+                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role.
+                    5. Certifications: Extract active certifications into an ARRAY of strings. Do not include classes or courses taken. Keep it strictly to the certification name.
 
                     JSON Structure:
                     {{
                         "FullName": "",
-                        "Certifications": "",
+                        "Certifications": [],
                         "Education": [{{"School": "", "Degree": ""}}],
-                        "Experience": [{{"Company": "", "Title": "", "Bullets": [], "Environment": "", "Dates": ""}}]
+                        "Experience": [{{"Company": "", "Title": "", "Responsible": "", "Bullets": [], "Environment": "", "Dates": ""}}]
                     }}
 
                     RESUME: {raw_text}
@@ -771,16 +773,29 @@ def peraton_app():
                             else:
                                 raise e
 
-                    name = data.get('FullName', '').title()
+                    name = data.get('FullName', '').title().strip()
+                    name_parts = name.split(' ', 1)
+                    first_name = name_parts[0] if len(name_parts) > 0 else ""
+                    last_name = name_parts[1] if len(name_parts) > 1 else ""
+
                     mapping = {
-                        "FullName": name, "Location": Current_Location_City_ST, "Remote": Remote_or_Onsite,
-                        "Certifications": data.get("Certifications", ""),
+                        "Firstname": first_name, "Lastname": last_name, 
+                        "Location": Current_Location_City_ST, "Remote": Remote_or_Onsite,
                         "FormerFM": Former_FM, "Links": LinkedIn_GitHub_Portfolio_Link,
                         "Q1": Question_1, "A1": Answer_1, "Q2": Question_2, "A2": Answer_2,
                         "Q3": Question_3, "A3": Answer_3, "Q4": Question_4, "A4": Answer_4, "Q5": Question_5, "A5": Answer_5,
-                        "SUMMARY": "", "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
-                        "SKILL3": "", "YEARS3": "", "SKILL4": "", "YEARS4": ""
+                        "SUMMARY": "", 
+                        "SUMMARY1": "", "SUMMARY2": "", "SUMMARY3": "", "SUMMARY4": "", "SUMMARY5": "",
+                        "CERTIFICATION1": "", "CERTIFICATION2": "", "CERTIFICATION3": "", "CERTIFICATION4": "",
+                        "SKILL1": "", "SKILL2": "", "SKILL3": "", "SKILL4": ""
                     }
+
+                    # Handle Certifications Array
+                    certs = data.get("Certifications", [])
+                    if isinstance(certs, str): 
+                        certs = [c.strip() for c in certs.split(',') if c.strip()]
+                    for i in range(1, 5):
+                        mapping[f"CERTIFICATION{i}"] = certs[i-1] if i <= len(certs) else ""
 
                     edu = data.get('Education', [])
                     for i in range(1, 4):
@@ -794,12 +809,14 @@ def peraton_app():
                             raw_title = exp[i-1].get('Title', '')
                             clean_title = re.sub(r'\s*\(.*$', '', raw_title).strip()
                             mapping[f"Title{i}"] = clean_title
+                            mapping[f"RESPONSIBLE{i}"] = exp[i-1].get('Responsible', '')
                             mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
                             mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
                             mapping[f"Dates{i}"] = standardize_dates(exp[i-1].get('Dates', ''))
                         else:
                             mapping[f"Company{i}"] = ""
                             mapping[f"Title{i}"] = ""
+                            mapping[f"RESPONSIBLE{i}"] = ""
                             mapping[f"Bullets{i}"] = ""
                             mapping[f"Environment{i}"] = ""
                             mapping[f"Dates{i}"] = ""
@@ -811,32 +828,38 @@ def peraton_app():
                             Your goal is to make an evidence-based business case for why this candidate will succeed, strictly following Peraton's specific submission guidelines.
 
                             ========================
+                            OVERALL SUMMARY RULES (STRICT)
+                            ========================
+                            You must output the "SUMMARY" field as a single paragraph of 150 words or less.
+                            - It must highlight exactly why they are the best candidate for this specific position.
+                            - You MUST explicitly state their total number of years of professional experience.
+                            - Be sure the paragraph seamlessly highlights the specific skills required for the position.
+
+                            ========================
                             SUMMARY OF QUALIFICATIONS RULES (STRICT)
                             ========================
-                            You must output the "SUMMARY" field as a single string formatted as a bulleted list (use the bullet character '• ' for each new line).
+                            You must output EXACTLY 5 distinct strings mapped to "SUMMARY1" through "SUMMARY5".
                             - TAILOR TO THE JD: Only include qualifications specifically tailored to the position being applied for. Omit irrelevant history.
-                            - ACTION VERBS: Start EVERY bullet point with a strong action verb (e.g., Engineered, Managed, Architected, Developed).
-                            - QUANTIFY EVERYTHING: You MUST substantiate/quantify each bullet point with a number derived from the resume/Q&A (e.g., number of systems, applications, users, bandwidth, endpoints, data scale, or team size). 
-                            - PRIORITIZATION: Place the most relevant bullet points to the JD at the very top.
-                            - LENGTH: Generate exactly 3 to 5 highly impactful bullet points. Format them with newlines like so: "• Engineered [X]... \n• Managed [Y]..."
+                            - ACTION VERBS: Start EVERY point with a strong action verb (e.g., Engineered, Managed, Architected).
+                            - QUANTIFY EVERYTHING: You MUST substantiate/quantify each point with a number derived from the resume/Q&A (e.g., number of systems, applications, users, bandwidth, endpoints, data scale, or team size). 
+                            - PRIORITIZATION: Place the most relevant points first.
+                            - You MUST provide all 5 bullets. Do not leave any blank. 
+                            - DO NOT include the physical bullet character (•) in the text. The Word document template will apply the bullet automatically.
 
                             ========================
                             TECHNICAL SKILLS RULES (STRICT)
                             ========================
-                            - ONLY include technical skills and tools that are directly relevant to the position being applied for.
+                            - ONLY include technical skills and tools directly relevant to the position being applied for.
                             - DO NOT include basic/universal skills (e.g., MS Word, Excel, PowerPoint, Outlook).
-                            - Divide the relevant skills into exactly 4 logical buckets. 
+                            - Divide the relevant skills into exactly 4 logical buckets mapped to SKILL1 through SKILL4. 
 
                             Format:
                             "Skill Area (Tool1, Tool2, Tool3, Tool4)"
 
-                            Years format:
-                            "X+ years, current" OR "X+ years, 2026"
-
                             ========================
                             🔴 Q&A USAGE RULES (CRITICAL)
                             ========================
-                            - The resume is the PRIMARY source of truth for experience.
+                            - The resume is the PRIMARY source of truth.
                             - The technical interview Q&A is SECONDARY and should only be used to clarify depth or extract quantifiable metrics (numbers/scale) to support the Summary bullets.
                             - If there is any conflict: 👉 prioritize the resume over Q&A.
 
@@ -844,9 +867,8 @@ def peraton_app():
                             🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
                             ========================
                             1. THE RESUME IS THE ONLY SOURCE OF TRUTH. You are strictly forbidden from copying a skill, tool, or technology from the Job Description and assigning it to the candidate unless it physically appears in their Resume or Q&A.
-                            2. DO NOT INFER OR ASSUME. If the JD asks for "Redshift" and the resume only says "AWS", you MUST NOT write "Redshift" under any circumstances. 
-                            3. DO NOT INFLATE TO MATCH THE JD. If the candidate lacks a requested skill, omit it completely.
-                            4. FACT AUDIT: Before outputting the final JSON, verify every tool and NUMBER you used. If a metric/number doesn't exist in the resume/Q&A, do not invent one. 
+                            2. DO NOT INFER OR ASSUME.
+                            3. FACT AUDIT: Before outputting the final JSON, verify every tool and NUMBER you used. If a metric/number doesn't exist in the resume/Q&A, do not invent one. 
 
                             ========================
                             OUTPUT FORMAT (STRICT)
@@ -854,15 +876,16 @@ def peraton_app():
                             Return ONLY valid JSON:
 
                             {{
-                              "SUMMARY": "• Action verb and quantified metric... \n• Action verb and quantified metric... \n• Action verb and quantified metric...",
+                              "SUMMARY": "150 word paragraph highlighting fit and total years of experience...",
+                              "SUMMARY1": "Engineered [X] resulting in [Y]...",
+                              "SUMMARY2": "Architected [X] for [Y] users...",
+                              "SUMMARY3": "Managed [X] endpoints...",
+                              "SUMMARY4": "Developed [X] applications...",
+                              "SUMMARY5": "Optimized [X] systems...",
                               "SKILL1": "Skill Area (tools)",
-                              "YEARS1": "X+ years, current",
                               "SKILL2": "Skill Area (tools)",
-                              "YEARS2": "X+ years, current",
                               "SKILL3": "Skill Area (tools)",
-                              "YEARS3": "X+ years, current",
-                              "SKILL4": "Skill Area (tools)",
-                              "YEARS4": "X+ years, current"
+                              "SKILL4": "Skill Area (tools)"
                             }}
 
                             ========================
@@ -917,14 +940,17 @@ def peraton_app():
                                         raise api_e
 
                             mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
+                            mapping["SUMMARY1"] = summary_data.get("SUMMARY1", "")
+                            mapping["SUMMARY2"] = summary_data.get("SUMMARY2", "")
+                            mapping["SUMMARY3"] = summary_data.get("SUMMARY3", "")
+                            mapping["SUMMARY4"] = summary_data.get("SUMMARY4", "")
+                            mapping["SUMMARY5"] = summary_data.get("SUMMARY5", "")
+                            
                             mapping["SKILL1"] = summary_data.get("SKILL1", "")
-                            mapping["YEARS1"] = summary_data.get("YEARS1", "")
                             mapping["SKILL2"] = summary_data.get("SKILL2", "")
-                            mapping["YEARS2"] = summary_data.get("YEARS2", "")
                             mapping["SKILL3"] = summary_data.get("SKILL3", "")
-                            mapping["YEARS3"] = summary_data.get("YEARS3", "")
                             mapping["SKILL4"] = summary_data.get("SKILL4", "")
-                            mapping["YEARS4"] = summary_data.get("YEARS4", "")
+
                         except Exception as e:
                             st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
 
