@@ -667,15 +667,6 @@ def peraton_app():
             API_KEY = st.text_input("Gemini API Key", type="password")
             st.info("Paste your Gemini API key here to run the tool.")
 
-    st.header("📋 Candidate Information")
-    col1, col2 = st.columns(2)
-    with col1:
-        Current_Location_City_ST = st.text_input("Current Location (City, ST)", key="per_loc")
-        Remote_or_Onsite = st.selectbox("Remote or Onsite", ["Remote", "Onsite"], index=1, key="per_rem")
-    with col2:
-        Former_FM = st.selectbox("Former FM", ["Y - Per CRC, this candidate is eligible for rehire", "N"], index=1, key="per_form")
-        LinkedIn_GitHub_Portfolio_Link = st.text_input("LinkedIn/GitHub/Portfolio Link", key="per_link")
-
     st.header("🎤 Supplier Technical Interview Results")
     qa_col1, qa_col2 = st.columns(2)
     with qa_col1:
@@ -780,8 +771,6 @@ def peraton_app():
 
                     mapping = {
                         "Firstname": first_name, "Lastname": last_name, 
-                        "Location": Current_Location_City_ST, "Remote": Remote_or_Onsite,
-                        "FormerFM": Former_FM, "Links": LinkedIn_GitHub_Portfolio_Link,
                         "Q1": Question_1, "A1": Answer_1, "Q2": Question_2, "A2": Answer_2,
                         "Q3": Question_3, "A3": Answer_3, "Q4": Question_4, "A4": Answer_4, "Q5": Question_5, "A5": Answer_5,
                         "SUMMARY": "", 
