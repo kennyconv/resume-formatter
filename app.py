@@ -84,6 +84,17 @@ def standardize_dates(date_str):
             date_str = re.sub(full, short, date_str, flags=re.IGNORECASE)
     return date_str
 
+def format_peraton_dates(date_str):
+    """Enforces MM/YYYY to MM/YYYY or Present for Peraton"""
+    if not date_str:
+        return ""
+    # Swap common hyphens/dashes to the required " to "
+    date_str = re.sub(r'\s*[-–—]\s*', ' to ', date_str)
+    # Ensure "Present" or "Current" is properly formatted
+    date_str = re.sub(r'(?i)present', 'Present', date_str)
+    date_str = re.sub(r'(?i)current', 'Present', date_str)
+    return date_str.strip()
+
 def extract_text(file_path):
     text_parts = []
     ext = os.path.splitext(file_path)[1].lower()
@@ -703,7 +714,7 @@ def peraton_app():
         Question_4 = st.text_input("Question 4", key="per_q4")
         Question_5 = st.text_input("Question 5", key="per_q5")
     with qa_col2:
-        Answer_1 = st.text_area("Answer 1", height=68, key="per_a1")
+        Answer_1 = text_area("Answer 1", height=68, key="per_a1")
         Answer_2 = st.text_area("Answer 2", height=68, key="per_a2")
         Answer_3 = st.text_area("Answer 3", height=68, key="per_a3")
         Answer_4 = st.text_area("Answer 4", height=68, key="per_a4")
@@ -743,6 +754,7 @@ def peraton_app():
                         - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
                         - For 'Responsible', write exactly 1 sentence summarizing what the candidate was responsible for at this specific job, based on their bullets. Do NOT use the candidate's name or pronouns (he/she). Start the sentence with the exact words "Responsible for ".
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role.
+                        - For 'Dates', you MUST format the dates strictly as "MM/YYYY to MM/YYYY" (e.g., "10/2019 to 07/2024") or "MM/YYYY to Present" if it is their current position. Convert all months to their 2-digit number.
                     5. Certifications: Extract active certifications into an ARRAY of strings. Do not include classes or courses taken. Keep it strictly to the certification name.
 
                     JSON Structure:
@@ -828,7 +840,9 @@ def peraton_app():
                             mapping[f"RESPONSIBLE{i}"] = exp[i-1].get('Responsible', '')
                             mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
                             mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
-                            mapping[f"Dates{i}"] = standardize_dates(exp[i-1].get('Dates', ''))
+                            
+                            # USE NEW PERATON DATE FORMATTER HERE
+                            mapping[f"Dates{i}"] = format_peraton_dates(exp[i-1].get('Dates', ''))
                         else:
                             mapping[f"Company{i}"] = ""
                             mapping[f"Title{i}"] = ""
