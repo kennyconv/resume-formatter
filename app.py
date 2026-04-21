@@ -734,7 +734,7 @@ def peraton_app():
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Responsible, Bullets (LIST), Environment (String, optional), Dates.
                         - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
-                        - For 'Responsible', write exactly 1 sentence summarizing what the candidate was responsible for at this specific job, based on their bullets.
+                        - For 'Responsible', write exactly 1 sentence summarizing what the candidate was responsible for at this specific job, based on their bullets. Do NOT use the candidate's name or pronouns (he/she). Start the sentence with the exact words "Responsible for ".
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role.
                     5. Certifications: Extract active certifications into an ARRAY of strings. Do not include classes or courses taken. Keep it strictly to the certification name.
 
@@ -840,6 +840,7 @@ def peraton_app():
                             OVERALL SUMMARY RULES (STRICT)
                             ========================
                             You must output the "SUMMARY" field as a single paragraph of 150 words or less.
+                            - FIRST PERSON: You MUST write this summary entirely in the 1st person perspective (e.g., "I am a Data Analyst with...", "My background includes..."). Do NOT use the candidate's name or 3rd person pronouns (he/she/they).
                             - It must highlight exactly why they are the best candidate for this specific position.
                             - You MUST explicitly state their total number of years of professional experience.
                             - Be sure the paragraph seamlessly highlights the specific skills required for the position.
