@@ -199,6 +199,10 @@ def delete_paragraph(paragraph):
 
 def process_word_doc(temp_path, mapping, out_path):
     doc = docx.Document(temp_path)
+    
+    # Check if this is the Peraton tool
+    is_peraton = "CERTIFICATION1" in mapping
+
     if not mapping.get("Certifications") or not str(mapping.get("Certifications")).strip():
         tables_to_delete = []
         for table in doc.tables:
@@ -209,6 +213,19 @@ def process_word_doc(temp_path, mapping, out_path):
                             tables_to_delete.append(table)
         for table in tables_to_delete:
             table._element.getparent().remove(table._element)
+            
+    # --- PERATON TWEAK 1: Remove "Certifications" Header if empty ---
+    if is_peraton and not mapping.get("CERTIFICATION1"):
+        for p in list(doc.paragraphs):
+            if p.text.strip() == "Certifications":
+                delete_paragraph(p)
+                
+    # --- PERATON TWEAK 2: Space before Relevant Professional Experience ---
+    if is_peraton:
+        for p in list(doc.paragraphs):
+            if "Relevant Professional Experience" in p.text:
+                p.insert_paragraph_before("")
+                break # Only do it once
             
     has_any_education = bool(mapping.get("School1") or mapping.get("School2") or mapping.get("School3"))
     for table in doc.tables:
@@ -268,14 +285,17 @@ def process_word_doc(temp_path, mapping, out_path):
                                 n_run.font.name = 'Times New Roman'
                                 n_run.font.size = Pt(12)
                                 curr_p = env_p
-                        spacer = curr_p.insert_paragraph_before("")
-                        curr_p._p.addnext(spacer._p)
-                        try:
-                            spacer.style = doc.styles['Normal']
-                        except:
-                            pass
-                        spacer.paragraph_format.space_after = Pt(0)
-                        spacer.paragraph_format.space_before = Pt(0)
+                        
+                        # --- PERATON TWEAK 3: Disable auto-spacer for Peraton ---
+                        if not is_peraton:
+                            spacer = curr_p.insert_paragraph_before("")
+                            curr_p._p.addnext(spacer._p)
+                            try:
+                                spacer.style = doc.styles['Normal']
+                            except:
+                                pass
+                            spacer.paragraph_format.space_after = Pt(0)
+                            spacer.paragraph_format.space_before = Pt(0)
                     else:
                         is_answer = key in ['A1', 'A2', 'A3', 'A4', 'A5']
                         is_question = key in ['Q1', 'Q2', 'Q3', 'Q4', 'Q5']
