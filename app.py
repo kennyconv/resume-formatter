@@ -214,11 +214,18 @@ def process_word_doc(temp_path, mapping, out_path):
         for table in tables_to_delete:
             table._element.getparent().remove(table._element)
             
-    # --- PERATON TWEAK 1: Remove "Certifications" Header if empty ---
+    # --- PERATON TWEAK 1: Remove "Certifications" Header & Fix Spacing ---
     if is_peraton and not mapping.get("CERTIFICATION1"):
-        for p in list(doc.paragraphs):
+        paras = list(doc.paragraphs)
+        for i, p in enumerate(paras):
             if p.text.strip() == "Certifications":
                 delete_paragraph(p)
+                # To prevent a double-space gap, delete the empty line above it if it exists
+                if i > 0 and not paras[i-1].text.strip():
+                    try:
+                        delete_paragraph(paras[i-1])
+                    except:
+                        pass
                 
     # --- PERATON TWEAK 2: Space before Relevant Professional Experience ---
     if is_peraton:
