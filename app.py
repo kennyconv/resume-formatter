@@ -687,7 +687,7 @@ def peraton_app():
         Answer_1 = st.text_area("Answer 1", height=68, key="per_a1")
         Answer_2 = st.text_area("Answer 2", height=68, key="per_a2")
         Answer_3 = st.text_area("Answer 3", height=68, key="per_a3")
-        Answer_4 = text_area("Answer 4", height=68, key="per_a4")
+        Answer_4 = st.text_area("Answer 4", height=68, key="per_a4")
         Answer_5 = st.text_area("Answer 5", height=68, key="per_a5")
 
     st.header("📝 Job Description & Notes")
