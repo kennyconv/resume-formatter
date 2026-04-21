@@ -807,61 +807,25 @@ def peraton_app():
                     if Job_Description_Notes_etc.strip():
                         try:
                             summary_prompt = f"""
-                            You are an elite, no-nonsense Senior Technical Recruiter writing an executive submission summary for a Fieldglass portal. 
-                            The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed.
+                            You are an elite, no-nonsense Senior Technical Recruiter writing an executive submission summary for a Peraton Fieldglass portal. 
+                            Your goal is to make an evidence-based business case for why this candidate will succeed, strictly following Peraton's specific submission guidelines.
 
                             ========================
-                            THE NARRATIVE BLUEPRINT (4 Sentences Max)
+                            SUMMARY OF QUALIFICATIONS RULES (STRICT)
                             ========================
-                            Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
-                            - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description? (Calculate their total overall years. Use their FIRST NAME only. You MUST use the exact job title requested in the JD if the candidate's history support it. Avoid generic fluff; use specific technical keywords from the JD).
-                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job? (Do not skip their current job just to find a better keyword match 5 years ago. Frame it as a direct 1:1 match for the manager's current challenge).
-                            - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter? (Weave the specific tools/methodologies into an "Execution Statement" that highlights the complexity, scale, or business impact. DO NOT write a comma-separated list of tools. E.g., "By engineering PySpark pipelines across Glue and EMR, she orchestrated TB-scale workflows that eliminated bottlenecks and ensured 99% reliability." DO NOT repeat verbs from Sentence 2).
-                            - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role? (Do NOT start with "Because" or "With." Use a strong, direct structure like: "[First Name]'s success in [X] makes them an immediate asset for [Y]." Note: Refer to the work as "this team," "this project," or "the application". Do NOT mention the physical location/city).
+                            You must output the "SUMMARY" field as a single string formatted as a bulleted list (use the bullet character '• ' for each new line).
+                            - TAILOR TO THE JD: Only include qualifications specifically tailored to the position being applied for. Omit irrelevant history.
+                            - ACTION VERBS: Start EVERY bullet point with a strong action verb (e.g., Engineered, Managed, Architected, Developed).
+                            - QUANTIFY EVERYTHING: You MUST substantiate/quantify each bullet point with a number derived from the resume/Q&A (e.g., number of systems, applications, users, bandwidth, endpoints, data scale, or team size). 
+                            - PRIORITIZATION: Place the most relevant bullet points to the JD at the very top.
+                            - LENGTH: Generate exactly 3 to 5 highly impactful bullet points. Format them with newlines like so: "• Engineered [X]... \n• Managed [Y]..."
 
                             ========================
-                            STYLE & TONE RULES (STRICT)
+                            TECHNICAL SKILLS RULES (STRICT)
                             ========================
-                            - Write like a human pitching to a colleague. Confident, direct, and factual.
-                            - TECH MATCHING: Strictly align the tools you highlight with the JD. If the JD asks for AWS, highlight AWS. Do not highlight competing tech (like Azure or GCP) just because it's prominent in the resume, unless it is their only experience.
-                            - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
-                            - LEADERSHIP VERBS: Use high-authority active verbs (e.g., 'Engineered', 'Optimized', 'Architected', 'Spearheaded') instead of passive verbs like 'Assisted', 'Collaborated', or 'Helped'.
-                            - SHOW, DON'T TELL. 
-                              🔴 Bad: "John's background in AWS makes him a great fit for this role."
-                              🟢 Good: "Because John spent the last three years building highly available data lakes in AWS, he can immediately step in to optimize your current infrastructure."
-                            - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely," "exceptionally well-prepared," "fits well," "aligns with," "enterprise-grade platforms."
-                            - Do NOT use transition crutches: "Additionally," "Furthermore," "Moreover."
-                            - Do NOT repeat or restate the job description.
-
-                            ========================
-                            EXAMPLE OF A PERFECT SUMMARY
-                            ========================
-                            "Sarah is a senior data engineer with 8+ years of experience architecting cloud-native data migrations within heavily regulated financial environments. Most recently at Capital One, she led the end-to-end migration of a legacy on-prem data warehouse to AWS, directly mirroring the scale and compliance rigor required for this team's current cloud initiative. By engineering automated ETL pipelines with Python, PySpark, and Apache Airflow, she processed 5TB of daily transaction data and reduced reporting latency by 40%. Sarah's success in navigating complex data governance structures makes her an immediate asset for driving this AWS migration."
-
-                            ========================
-                            🔴 Q&A USAGE RULES (CRITICAL)
-                            ========================
-                            - The resume is the PRIMARY source of truth for experience.
-                            - The technical interview Q&A is SECONDARY and should only be used to:
-                              • clarify depth
-                              • add supporting detail
-                              • reinforce experience already shown in the resume
-
-                            DO NOT:
-                            - Base the summary primarily on Q&A responses.
-                            - Introduce tools, systems, or concepts that are only mentioned in Q&A but not supported by the resume.
-                            - Overweight theoretical or idealized answers from Q&A.
-
-                            If there is any conflict: 👉 prioritize the resume over Q&A.
-                            The summary should reflect what the candidate has DONE, not just what they can describe.
-
-                            ========================
-                            SKILLS SECTION
-                            ========================
-                            - EXACTLY 4 items
-                            - Prioritize the specific "Must-Have" technologies AND methodologies (e.g., Agile, Data Governance) requested in the JD.
-                            - Highly relevant + keyword-rich
-                            - Use only tools explicitly mentioned in resume/Q&A/notes
+                            - ONLY include technical skills and tools that are directly relevant to the position being applied for.
+                            - DO NOT include basic/universal skills (e.g., MS Word, Excel, PowerPoint, Outlook).
+                            - Divide the relevant skills into exactly 4 logical buckets. 
 
                             Format:
                             "Skill Area (Tool1, Tool2, Tool3, Tool4)"
@@ -870,34 +834,19 @@ def peraton_app():
                             "X+ years, current" OR "X+ years, 2026"
 
                             ========================
+                            🔴 Q&A USAGE RULES (CRITICAL)
+                            ========================
+                            - The resume is the PRIMARY source of truth for experience.
+                            - The technical interview Q&A is SECONDARY and should only be used to clarify depth or extract quantifiable metrics (numbers/scale) to support the Summary bullets.
+                            - If there is any conflict: 👉 prioritize the resume over Q&A.
+
+                            ========================
                             🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
                             ========================
                             1. THE RESUME IS THE ONLY SOURCE OF TRUTH. You are strictly forbidden from copying a skill, tool, or technology from the Job Description and assigning it to the candidate unless it physically appears in their Resume or Q&A.
                             2. DO NOT INFER OR ASSUME. If the JD asks for "Redshift" and the resume only says "AWS", you MUST NOT write "Redshift" under any circumstances. 
-                            3. DO NOT INFLATE TO MATCH THE JD. If the candidate lacks a requested skill, omit it completely. It is better to have an incomplete match than a fabricated one.
-                            4. FACT AUDIT: Before outputting the final JSON, you must verify every single tool mentioned in your SUMMARY and SKILLS. If a tool exists in the JD but not in the Resume/Q&A, you must delete it from your output.
-
-                            ========================
-                            YEARS ACCURACY RULES (REALISTIC RECRUITER MODE)
-                            ========================
-                            - Use April 2026 as the current date.
-                            - Calculate years based on total progressive experience in that SKILL DOMAIN, but DO NOT blindly apply their maximum total years to every single bucket.
-                            - Foundational skills (e.g., Python, SQL, general engineering) should get their maximum total years (e.g., 7+).
-                            - Advanced/Specialized tools (e.g., SageMaker, Kubernetes, Cloud Architecture) should realistically be calculated at 1-2 years less than their maximum total experience (e.g., 5+ or 6+) unless the resume proves otherwise. 
-                            - Default to "current" if they are still working in this general technical field. Do NOT use past years (e.g., "2022"). Always bridge past experience to their current tenure.
-
-                            ========================
-                            🧠 FINAL POLISH CHECKLIST (ONE PASS ONLY)
-                            ========================
-                            Before outputting the JSON, evaluate your drafted SUMMARY and SKILLS against these 7 checks:
-                            1. SIMPLIFIED: No run-on sentences or unnecessary filler.
-                            2. HUMAN TONE: No generic claims like "highly experienced."
-                            3. TOOL DENSITY: Maximum 3 tools per sentence.
-                            4. NO REPETITION: Do not repeat verbs or concepts across sentences.
-                            5. THE PITCH: Ensure a natural, confident recruiter tone.
-                            6. CURRENT JOB: Did you explicitly name their most recent employer in Sentence 2?
-
-                            Output only the final, polished JSON.
+                            3. DO NOT INFLATE TO MATCH THE JD. If the candidate lacks a requested skill, omit it completely.
+                            4. FACT AUDIT: Before outputting the final JSON, verify every tool and NUMBER you used. If a metric/number doesn't exist in the resume/Q&A, do not invent one. 
 
                             ========================
                             OUTPUT FORMAT (STRICT)
@@ -905,7 +854,7 @@ def peraton_app():
                             Return ONLY valid JSON:
 
                             {{
-                              "SUMMARY": "4 sentence summary following the blueprint",
+                              "SUMMARY": "• Action verb and quantified metric... \n• Action verb and quantified metric... \n• Action verb and quantified metric...",
                               "SKILL1": "Skill Area (tools)",
                               "YEARS1": "X+ years, current",
                               "SKILL2": "Skill Area (tools)",
