@@ -714,7 +714,7 @@ def peraton_app():
         Question_4 = st.text_input("Question 4", key="per_q4")
         Question_5 = st.text_input("Question 5", key="per_q5")
     with qa_col2:
-        Answer_1 = text_area("Answer 1", height=68, key="per_a1")
+        Answer_1 = st.text_area("Answer 1", height=68, key="per_a1")
         Answer_2 = st.text_area("Answer 2", height=68, key="per_a2")
         Answer_3 = st.text_area("Answer 3", height=68, key="per_a3")
         Answer_4 = st.text_area("Answer 4", height=68, key="per_a4")
