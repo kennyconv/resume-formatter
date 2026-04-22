@@ -16,7 +16,7 @@ import subprocess
 # --- STREAMLIT UI & PASSWORD LOGIC ---
 # ====================================================================
 
-st.set_page_config(page_title="Precision Extractor Hub", layout="wide")
+st.set_page_config(page_title="Resume Formatter", layout="wide")
 
 # --- CUSTOM CSS FOR INPUT BOXES ---
 st.markdown(
@@ -403,7 +403,7 @@ def process_word_doc(temp_path, mapping, out_path):
 # ====================================================================
 def fannie_mae_app():
     TEMPLATE_FILENAME = "Template.docx"
-    st.title("📄 Fannie Mae Precision Extractor")
+    st.title("Fannie Mae Precision Extractor")
 
     with st.sidebar:
         st.header("🔑 API Configuration")
@@ -755,7 +755,7 @@ def fannie_mae_app():
 # ====================================================================
 def peraton_app():
     TEMPLATE_FILENAME = "Peraton_Template.docx"
-    st.title("📄 Peraton Precision Extractor")
+    st.title("Peraton Precision Extractor")
 
     with st.sidebar:
         st.header("🔑 API Configuration")
@@ -1074,7 +1074,7 @@ def peraton_app():
 # ====================================================================
 def capital_one_app():
     TEMPLATE_FILENAME = "CapitalOne_Template.docx"
-    st.title("📄 Capital One Precision Extractor")
+    st.title("Capital One Precision Extractor")
 
     with st.sidebar:
         st.header("🔑 API Configuration")
@@ -1443,7 +1443,7 @@ def capital_one_app():
 # ====================================================================
 def adusa_app():
     TEMPLATE_FILENAME = "ADUSA_Template.docx"
-    st.title("📄 ADUSA Precision Extractor")
+    st.title("ADUSA Precision Extractor")
 
     with st.sidebar:
         st.header("🔑 API Configuration")
@@ -1781,7 +1781,7 @@ def adusa_app():
 # ====================================================================
 def cbre_app():
     TEMPLATE_FILENAME = "CBRE_Template.docx"
-    st.title("📄 CBRE Precision Extractor")
+    st.title("CBRE Precision Extractor")
 
     with st.sidebar:
         st.header("🔑 API Configuration")
@@ -2120,7 +2120,7 @@ def cbre_app():
 # ====================================================================
 def bnsf_app():
     TEMPLATE_FILENAME = "BNSF_Template.docx"
-    st.title("📄 BNSF Precision Extractor")
+    st.title("BNSF Precision Extractor")
 
     with st.sidebar:
         st.header("🔑 API Configuration")
@@ -2464,7 +2464,7 @@ def bnsf_app():
 # ====================================================================
 def dallas_generic_app():
     TEMPLATE_FILENAME = "DallasGeneric_Template.docx"
-    st.title("📄 Dallas Generic Precision Extractor")
+    st.title("Dallas Generic Precision Extractor")
 
     with st.sidebar:
         st.header("🔑 API Configuration")
@@ -2790,7 +2790,7 @@ def dallas_generic_app():
 # --- MAIN ROUTING LOGIC (The Dropdown Page) ---
 # ====================================================================
 
-st.title("🏢 Precision Extractor Hub")
+st.title("Resume Formatter")
 st.markdown("Please select your client account below to access the customized formatter.")
 
 client_selection = st.selectbox(
