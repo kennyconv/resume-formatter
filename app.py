@@ -18,6 +18,24 @@ import subprocess
 
 st.set_page_config(page_title="Precision Extractor Hub", layout="wide")
 
+# --- CUSTOM CSS FOR INPUT BOXES ---
+st.markdown(
+    """
+    <style>
+    /* Add a visible outline and subtle background shading to all inputs, text areas, and dropdowns */
+    div[data-baseweb="input"], 
+    div[data-baseweb="base-input"], 
+    div[data-baseweb="select"] {
+        border: 1px solid #7c7c8c !important; /* Gray border */
+        background-color: rgba(128, 128, 128, 0.1) !important; /* Slight transparent shading */
+        border-radius: 6px !important; /* Smooth rounded corners */
+    }
+    </style>
+    """, 
+    unsafe_allow_html=True
+)
+# ----------------------------------
+
 def check_password():
     """Returns `True` if the user entered the correct password."""
     def password_entered():
