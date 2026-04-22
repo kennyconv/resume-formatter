@@ -1037,10 +1037,37 @@ def capital_one_app():
     col1, col2 = st.columns(2)
     with col1:
         Current_Location_City_ST = st.text_input("Current Location (City, ST)", key="co_loc")
-        Remote_or_Onsite = st.selectbox("Remote or Onsite", ["Remote", "Onsite"], index=1, key="co_rem")
+        
+        # --- NEW REMOTE/HYBRID LOGIC ---
+        Remote_or_Onsite = st.selectbox("Remote or Onsite/Hybrid", ["Remote", "Onsite/Hybrid"], index=0, key="co_rem")
+        co_location_name = ""
+        if Remote_or_Onsite == "Onsite/Hybrid":
+            co_location_name = st.text_input("Location Name (e.g., HQ2)", key="co_loc_name")
+            
+        # --- NEW START DATE LOGIC ---
+        co_start = st.text_input("Availability to Start", key="co_start")
+
     with col2:
-        Former_FM = st.selectbox("Former FM", ["Y - Per CRC, this candidate is eligible for rehire", "N"], index=1, key="co_form")
+        # --- NEW FORMER CAPITAL ONE LOGIC ---
+        Former_CO = st.selectbox("Former Capital One", ["Y", "N"], index=1, key="co_form")
+        co_mgr = ""
+        co_dates = ""
+        if Former_CO == "Y":
+            co_mgr = st.text_input("Manager Name", key="co_mgr")
+            co_dates = st.text_input("Dates Worked", key="co_dates")
+            
         LinkedIn_GitHub_Portfolio_Link = st.text_input("LinkedIn/GitHub/Portfolio Link", key="co_link")
+
+    # Mapping logic variables based on above inputs
+    if Remote_or_Onsite == "Onsite/Hybrid" and co_location_name.strip():
+        remote_val = f"Onsite/Hybrid - {co_location_name.strip()}"
+    else:
+        remote_val = Remote_or_Onsite
+        
+    if Former_CO == "Y":
+        former_co_val = f"Y - {co_mgr.strip()}, {co_dates.strip()}"
+    else:
+        former_co_val = "N"
 
     st.header("🎤 Supplier Technical Interview Results")
     qa_col1, qa_col2 = st.columns(2)
@@ -1139,13 +1166,17 @@ def capital_one_app():
                                 raise e
 
                     name = data.get('FullName', '').title()
+                    
+                    # Mapping updated for Capital One specifically
                     mapping = {
-                        "FullName": name, "Location": Current_Location_City_ST, "Remote": Remote_or_Onsite,
+                        "FullName": name, "Location": Current_Location_City_ST, "Remote": remote_val,
+                        "Start": co_start,
                         "Certifications": data.get("Certifications", ""),
-                        "FormerFM": Former_FM, "Links": LinkedIn_GitHub_Portfolio_Link,
+                        "FormerCapitalOne": former_co_val, "Links": LinkedIn_GitHub_Portfolio_Link,
                         "Q1": Question_1, "A1": Answer_1, "Q2": Question_2, "A2": Answer_2,
                         "Q3": Question_3, "A3": Answer_3, "Q4": Question_4, "A4": Answer_4, "Q5": Question_5, "A5": Answer_5,
-                        "SUMMARY": "", "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
+                        "SUMMARY1": "", "SUMMARY2": "", "SUMMARY3": "", "SUMMARY4": "", 
+                        "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
                         "SKILL3": "", "YEARS3": "", "SKILL4": "", "YEARS4": ""
                     }
 
@@ -1178,13 +1209,15 @@ def capital_one_app():
                             The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed.
 
                             ========================
-                            THE NARRATIVE BLUEPRINT (4 Sentences Max)
+                            THE NARRATIVE BLUEPRINT (4 Bullet Points)
                             ========================
-                            Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
-                            - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
-                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
-                            - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter?
-                            - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
+                            Generate exactly 4 distinct bullet points mapped to SUMMARY1 through SUMMARY4. 
+                            CRITICAL RULE: DO NOT use the candidate's name or 3rd person pronouns (he/she/they) in ANY of the bullet points. Start each bullet with a strong action verb or direct statement.
+                            
+                            - SUMMARY1 (The Anchor): What is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
+                            - SUMMARY2 (The Alignment): Explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
+                            - SUMMARY3 (The Execution & Impact): How did they build it, and why does it matter? Weave specific tools/methodologies into an "Execution Statement" that highlights complexity, scale, or business impact.
+                            - SUMMARY4 (The Closer): Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
 
                             ========================
                             STYLE & TONE RULES (STRICT)
@@ -1225,7 +1258,10 @@ def capital_one_app():
                             Return ONLY valid JSON:
 
                             {{
-                              "SUMMARY": "4 sentence summary following the blueprint",
+                              "SUMMARY1": "Bullet 1 following the blueprint",
+                              "SUMMARY2": "Bullet 2 following the blueprint",
+                              "SUMMARY3": "Bullet 3 following the blueprint",
+                              "SUMMARY4": "Bullet 4 following the blueprint",
                               "SKILL1": "Skill Area (tools)",
                               "YEARS1": "X+ years, current",
                               "SKILL2": "Skill Area (tools)",
@@ -1287,7 +1323,10 @@ def capital_one_app():
                                     else:
                                         raise api_e
 
-                            mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
+                            mapping["SUMMARY1"] = summary_data.get("SUMMARY1", "")
+                            mapping["SUMMARY2"] = summary_data.get("SUMMARY2", "")
+                            mapping["SUMMARY3"] = summary_data.get("SUMMARY3", "")
+                            mapping["SUMMARY4"] = summary_data.get("SUMMARY4", "")
                             mapping["SKILL1"] = summary_data.get("SKILL1", "")
                             mapping["YEARS1"] = summary_data.get("YEARS1", "")
                             mapping["SKILL2"] = summary_data.get("SKILL2", "")
