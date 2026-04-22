@@ -269,7 +269,7 @@ def process_word_doc(temp_path, mapping, out_path):
             
     paras_to_remove = []
     # Updated kill_keys with 'Certification', 'School', and 'Responsible'
-    kill_keys = ['Company', 'Title', 'Bullets', 'Dates', 'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'A1', 'A2', 'A3', 'A4', 'A5', 'Summary', 'Skill', 'Years', 'Certification', 'School', 'Responsible']
+    kill_keys = ['Company', 'Title', 'Bullets', 'Dates', 'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'A1', 'A2', 'A3', 'A4', 'A5', 'Summary', 'Skill', 'Years', 'Certification', 'School', 'Responsible', 'BillRate', 'WorkStatus']
     for p in list(doc.paragraphs):
         for key, value in mapping.items():
             tag = f"{{{{{key}}}}}"
@@ -1048,7 +1048,7 @@ def capital_one_app():
         co_start = st.text_input("Availability to Start", key="co_start")
 
     with col2:
-        # --- NEW FORMER CAPITAL ONE LOGIC ---
+        # --- NEW FORMER EMPLOYEE LOGIC ---
         Former_CO = st.selectbox("Former Capital One", ["Y", "N"], index=1, key="co_form")
         co_mgr = ""
         co_dates = ""
@@ -1167,7 +1167,6 @@ def capital_one_app():
 
                     name = data.get('FullName', '').title()
                     
-                    # Mapping updated for Capital One specifically
                     mapping = {
                         "FullName": name, "Location": Current_Location_City_ST, "Remote": remote_val,
                         "Start": co_start,
@@ -1381,10 +1380,32 @@ def adusa_app():
     col1, col2 = st.columns(2)
     with col1:
         Current_Location_City_ST = st.text_input("Current Location (City, ST)", key="ad_loc")
-        Remote_or_Onsite = st.selectbox("Remote or Onsite", ["Remote", "Onsite"], index=1, key="ad_rem")
+        
+        Remote_or_Onsite = st.selectbox("Remote or Onsite/Hybrid", ["Remote", "Onsite/Hybrid"], index=0, key="ad_rem")
+        ad_location_name = ""
+        if Remote_or_Onsite == "Onsite/Hybrid":
+            ad_location_name = st.text_input("Location Name (e.g., HQ2)", key="ad_loc_name")
+            
+        ad_start = st.text_input("Availability to Start", key="ad_start")
+
     with col2:
-        Former_FM = st.selectbox("Former FM", ["Y - Per CRC, this candidate is eligible for rehire", "N"], index=1, key="ad_form")
-        LinkedIn_GitHub_Portfolio_Link = st.text_input("LinkedIn/GitHub/Portfolio Link", key="ad_link")
+        Former_ADUSA = st.selectbox("Former ADUSA", ["Y", "N"], index=1, key="ad_form")
+        ad_mgr = ""
+        ad_dates = ""
+        if Former_ADUSA == "Y":
+            ad_mgr = st.text_input("Manager Name", key="ad_mgr")
+            ad_dates = st.text_input("Dates Worked", key="ad_dates")
+        # LinkedIn Removed for ADUSA
+
+    if Remote_or_Onsite == "Onsite/Hybrid" and ad_location_name.strip():
+        remote_val = f"Onsite/Hybrid - {ad_location_name.strip()}"
+    else:
+        remote_val = Remote_or_Onsite
+        
+    if Former_ADUSA == "Y":
+        former_adusa_val = f"Y - {ad_mgr.strip()}, {ad_dates.strip()}"
+    else:
+        former_adusa_val = "N"
 
     st.header("🎤 Supplier Technical Interview Results")
     qa_col1, qa_col2 = st.columns(2)
@@ -1483,13 +1504,16 @@ def adusa_app():
                                 raise e
 
                     name = data.get('FullName', '').title()
+                    
                     mapping = {
-                        "FullName": name, "Location": Current_Location_City_ST, "Remote": Remote_or_Onsite,
+                        "FullName": name, "Location": Current_Location_City_ST, "Remote": remote_val,
+                        "Start": ad_start,
                         "Certifications": data.get("Certifications", ""),
-                        "FormerFM": Former_FM, "Links": LinkedIn_GitHub_Portfolio_Link,
+                        "FormerADUSA": former_adusa_val, 
                         "Q1": Question_1, "A1": Answer_1, "Q2": Question_2, "A2": Answer_2,
                         "Q3": Question_3, "A3": Answer_3, "Q4": Question_4, "A4": Answer_4, "Q5": Question_5, "A5": Answer_5,
-                        "SUMMARY": "", "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
+                        "SUMMARY1": "", "SUMMARY2": "", "SUMMARY3": "", "SUMMARY4": "", 
+                        "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
                         "SKILL3": "", "YEARS3": "", "SKILL4": "", "YEARS4": ""
                     }
 
@@ -1522,13 +1546,15 @@ def adusa_app():
                             The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed.
 
                             ========================
-                            THE NARRATIVE BLUEPRINT (4 Sentences Max)
+                            THE NARRATIVE BLUEPRINT (4 Bullet Points)
                             ========================
-                            Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
-                            - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
-                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
-                            - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter?
-                            - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
+                            Generate exactly 4 distinct bullet points mapped to SUMMARY1 through SUMMARY4. 
+                            CRITICAL RULE: DO NOT use the candidate's name or 3rd person pronouns (he/she/they) in ANY of the bullet points. Start each bullet with a strong action verb or direct statement.
+                            
+                            - SUMMARY1 (The Anchor): What is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
+                            - SUMMARY2 (The Alignment): Explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
+                            - SUMMARY3 (The Execution & Impact): How did they build it, and why does it matter? Weave specific tools/methodologies into an "Execution Statement" that highlights complexity, scale, or business impact.
+                            - SUMMARY4 (The Closer): Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
 
                             ========================
                             STYLE & TONE RULES (STRICT)
@@ -1569,7 +1595,10 @@ def adusa_app():
                             Return ONLY valid JSON:
 
                             {{
-                              "SUMMARY": "4 sentence summary following the blueprint",
+                              "SUMMARY1": "Bullet 1 following the blueprint",
+                              "SUMMARY2": "Bullet 2 following the blueprint",
+                              "SUMMARY3": "Bullet 3 following the blueprint",
+                              "SUMMARY4": "Bullet 4 following the blueprint",
                               "SKILL1": "Skill Area (tools)",
                               "YEARS1": "X+ years, current",
                               "SKILL2": "Skill Area (tools)",
@@ -1631,7 +1660,10 @@ def adusa_app():
                                     else:
                                         raise api_e
 
-                            mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
+                            mapping["SUMMARY1"] = summary_data.get("SUMMARY1", "")
+                            mapping["SUMMARY2"] = summary_data.get("SUMMARY2", "")
+                            mapping["SUMMARY3"] = summary_data.get("SUMMARY3", "")
+                            mapping["SUMMARY4"] = summary_data.get("SUMMARY4", "")
                             mapping["SKILL1"] = summary_data.get("SKILL1", "")
                             mapping["YEARS1"] = summary_data.get("YEARS1", "")
                             mapping["SKILL2"] = summary_data.get("SKILL2", "")
@@ -1686,10 +1718,33 @@ def cbre_app():
     col1, col2 = st.columns(2)
     with col1:
         Current_Location_City_ST = st.text_input("Current Location (City, ST)", key="cb_loc")
-        Remote_or_Onsite = st.selectbox("Remote or Onsite", ["Remote", "Onsite"], index=1, key="cb_rem")
+        
+        Remote_or_Onsite = st.selectbox("Remote or Onsite/Hybrid", ["Remote", "Onsite/Hybrid"], index=0, key="cb_rem")
+        cb_location_name = ""
+        if Remote_or_Onsite == "Onsite/Hybrid":
+            cb_location_name = st.text_input("Location Name (e.g., HQ2)", key="cb_loc_name")
+            
+        cb_start = st.text_input("Availability to Start", key="cb_start")
+
     with col2:
-        Former_FM = st.selectbox("Former FM", ["Y - Per CRC, this candidate is eligible for rehire", "N"], index=1, key="cb_form")
+        Former_CBRE = st.selectbox("Former CBRE", ["Y", "N"], index=1, key="cb_form")
+        cb_mgr = ""
+        cb_dates = ""
+        if Former_CBRE == "Y":
+            cb_mgr = st.text_input("Manager Name", key="cb_mgr")
+            cb_dates = st.text_input("Dates Worked", key="cb_dates")
+            
         LinkedIn_GitHub_Portfolio_Link = st.text_input("LinkedIn/GitHub/Portfolio Link", key="cb_link")
+
+    if Remote_or_Onsite == "Onsite/Hybrid" and cb_location_name.strip():
+        remote_val = f"Onsite/Hybrid - {cb_location_name.strip()}"
+    else:
+        remote_val = Remote_or_Onsite
+        
+    if Former_CBRE == "Y":
+        former_cbre_val = f"Y - {cb_mgr.strip()}, {cb_dates.strip()}"
+    else:
+        former_cbre_val = "N"
 
     st.header("🎤 Supplier Technical Interview Results")
     qa_col1, qa_col2 = st.columns(2)
@@ -1788,13 +1843,16 @@ def cbre_app():
                                 raise e
 
                     name = data.get('FullName', '').title()
+                    
                     mapping = {
-                        "FullName": name, "Location": Current_Location_City_ST, "Remote": Remote_or_Onsite,
+                        "FullName": name, "Location": Current_Location_City_ST, "Remote": remote_val,
+                        "Start": cb_start,
                         "Certifications": data.get("Certifications", ""),
-                        "FormerFM": Former_FM, "Links": LinkedIn_GitHub_Portfolio_Link,
+                        "FormerCBRE": former_cbre_val, "Links": LinkedIn_GitHub_Portfolio_Link,
                         "Q1": Question_1, "A1": Answer_1, "Q2": Question_2, "A2": Answer_2,
                         "Q3": Question_3, "A3": Answer_3, "Q4": Question_4, "A4": Answer_4, "Q5": Question_5, "A5": Answer_5,
-                        "SUMMARY": "", "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
+                        "SUMMARY1": "", "SUMMARY2": "", "SUMMARY3": "", "SUMMARY4": "", 
+                        "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
                         "SKILL3": "", "YEARS3": "", "SKILL4": "", "YEARS4": ""
                     }
 
@@ -1827,13 +1885,15 @@ def cbre_app():
                             The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed.
 
                             ========================
-                            THE NARRATIVE BLUEPRINT (4 Sentences Max)
+                            THE NARRATIVE BLUEPRINT (4 Bullet Points)
                             ========================
-                            Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
-                            - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
-                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
-                            - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter?
-                            - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
+                            Generate exactly 4 distinct bullet points mapped to SUMMARY1 through SUMMARY4. 
+                            CRITICAL RULE: DO NOT use the candidate's name or 3rd person pronouns (he/she/they) in ANY of the bullet points. Start each bullet with a strong action verb or direct statement.
+                            
+                            - SUMMARY1 (The Anchor): What is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
+                            - SUMMARY2 (The Alignment): Explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
+                            - SUMMARY3 (The Execution & Impact): How did they build it, and why does it matter? Weave specific tools/methodologies into an "Execution Statement" that highlights complexity, scale, or business impact.
+                            - SUMMARY4 (The Closer): Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
 
                             ========================
                             STYLE & TONE RULES (STRICT)
@@ -1874,7 +1934,10 @@ def cbre_app():
                             Return ONLY valid JSON:
 
                             {{
-                              "SUMMARY": "4 sentence summary following the blueprint",
+                              "SUMMARY1": "Bullet 1 following the blueprint",
+                              "SUMMARY2": "Bullet 2 following the blueprint",
+                              "SUMMARY3": "Bullet 3 following the blueprint",
+                              "SUMMARY4": "Bullet 4 following the blueprint",
                               "SKILL1": "Skill Area (tools)",
                               "YEARS1": "X+ years, current",
                               "SKILL2": "Skill Area (tools)",
@@ -1936,7 +1999,10 @@ def cbre_app():
                                     else:
                                         raise api_e
 
-                            mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
+                            mapping["SUMMARY1"] = summary_data.get("SUMMARY1", "")
+                            mapping["SUMMARY2"] = summary_data.get("SUMMARY2", "")
+                            mapping["SUMMARY3"] = summary_data.get("SUMMARY3", "")
+                            mapping["SUMMARY4"] = summary_data.get("SUMMARY4", "")
                             mapping["SKILL1"] = summary_data.get("SKILL1", "")
                             mapping["YEARS1"] = summary_data.get("YEARS1", "")
                             mapping["SKILL2"] = summary_data.get("SKILL2", "")
@@ -1991,10 +2057,37 @@ def bnsf_app():
     col1, col2 = st.columns(2)
     with col1:
         Current_Location_City_ST = st.text_input("Current Location (City, ST)", key="bn_loc")
-        Remote_or_Onsite = st.selectbox("Remote or Onsite", ["Remote", "Onsite"], index=1, key="bn_rem")
+        
+        Remote_or_Onsite = st.selectbox("Remote or Onsite/Hybrid", ["Remote", "Onsite/Hybrid"], index=0, key="bn_rem")
+        bn_location_name = ""
+        if Remote_or_Onsite == "Onsite/Hybrid":
+            bn_location_name = st.text_input("Location Name (e.g., HQ2)", key="bn_loc_name")
+            
+        bn_start = st.text_input("Availability to Start", key="bn_start")
+        
+        # --- NEW BNSF SPECIFIC FIELDS ---
+        Bill_Rate = st.text_input("Bill Rate", key="bn_rate")
+        Work_Status = st.selectbox("Work Status", ["USC", "GC", "Visa"], index=0, key="bn_status")
+
     with col2:
-        Former_FM = st.selectbox("Former FM", ["Y - Per CRC, this candidate is eligible for rehire", "N"], index=1, key="bn_form")
+        Former_BNSF = st.selectbox("Former BNSF", ["Y", "N"], index=1, key="bn_form")
+        bn_mgr = ""
+        bn_dates = ""
+        if Former_BNSF == "Y":
+            bn_mgr = st.text_input("Manager Name", key="bn_mgr")
+            bn_dates = st.text_input("Dates Worked", key="bn_dates")
+            
         LinkedIn_GitHub_Portfolio_Link = st.text_input("LinkedIn/GitHub/Portfolio Link", key="bn_link")
+
+    if Remote_or_Onsite == "Onsite/Hybrid" and bn_location_name.strip():
+        remote_val = f"Onsite/Hybrid - {bn_location_name.strip()}"
+    else:
+        remote_val = Remote_or_Onsite
+        
+    if Former_BNSF == "Y":
+        former_bnsf_val = f"Y - {bn_mgr.strip()}, {bn_dates.strip()}"
+    else:
+        former_bnsf_val = "N"
 
     st.header("🎤 Supplier Technical Interview Results")
     qa_col1, qa_col2 = st.columns(2)
@@ -2093,13 +2186,17 @@ def bnsf_app():
                                 raise e
 
                     name = data.get('FullName', '').title()
+                    
                     mapping = {
-                        "FullName": name, "Location": Current_Location_City_ST, "Remote": Remote_or_Onsite,
+                        "FullName": name, "Location": Current_Location_City_ST, "Remote": remote_val,
+                        "Start": bn_start,
                         "Certifications": data.get("Certifications", ""),
-                        "FormerFM": Former_FM, "Links": LinkedIn_GitHub_Portfolio_Link,
+                        "FormerBNSF": former_bnsf_val, "Links": LinkedIn_GitHub_Portfolio_Link,
+                        "BillRate": Bill_Rate, "WorkStatus": Work_Status,
                         "Q1": Question_1, "A1": Answer_1, "Q2": Question_2, "A2": Answer_2,
                         "Q3": Question_3, "A3": Answer_3, "Q4": Question_4, "A4": Answer_4, "Q5": Question_5, "A5": Answer_5,
-                        "SUMMARY": "", "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
+                        "SUMMARY1": "", "SUMMARY2": "", "SUMMARY3": "", "SUMMARY4": "", 
+                        "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
                         "SKILL3": "", "YEARS3": "", "SKILL4": "", "YEARS4": ""
                     }
 
@@ -2132,13 +2229,15 @@ def bnsf_app():
                             The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed.
 
                             ========================
-                            THE NARRATIVE BLUEPRINT (4 Sentences Max)
+                            THE NARRATIVE BLUEPRINT (4 Bullet Points)
                             ========================
-                            Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
-                            - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
-                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
-                            - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter?
-                            - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
+                            Generate exactly 4 distinct bullet points mapped to SUMMARY1 through SUMMARY4. 
+                            CRITICAL RULE: DO NOT use the candidate's name or 3rd person pronouns (he/she/they) in ANY of the bullet points. Start each bullet with a strong action verb or direct statement.
+                            
+                            - SUMMARY1 (The Anchor): What is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
+                            - SUMMARY2 (The Alignment): Explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
+                            - SUMMARY3 (The Execution & Impact): How did they build it, and why does it matter? Weave specific tools/methodologies into an "Execution Statement" that highlights complexity, scale, or business impact.
+                            - SUMMARY4 (The Closer): Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
 
                             ========================
                             STYLE & TONE RULES (STRICT)
@@ -2179,7 +2278,10 @@ def bnsf_app():
                             Return ONLY valid JSON:
 
                             {{
-                              "SUMMARY": "4 sentence summary following the blueprint",
+                              "SUMMARY1": "Bullet 1 following the blueprint",
+                              "SUMMARY2": "Bullet 2 following the blueprint",
+                              "SUMMARY3": "Bullet 3 following the blueprint",
+                              "SUMMARY4": "Bullet 4 following the blueprint",
                               "SKILL1": "Skill Area (tools)",
                               "YEARS1": "X+ years, current",
                               "SKILL2": "Skill Area (tools)",
@@ -2241,7 +2343,10 @@ def bnsf_app():
                                     else:
                                         raise api_e
 
-                            mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
+                            mapping["SUMMARY1"] = summary_data.get("SUMMARY1", "")
+                            mapping["SUMMARY2"] = summary_data.get("SUMMARY2", "")
+                            mapping["SUMMARY3"] = summary_data.get("SUMMARY3", "")
+                            mapping["SUMMARY4"] = summary_data.get("SUMMARY4", "")
                             mapping["SKILL1"] = summary_data.get("SKILL1", "")
                             mapping["YEARS1"] = summary_data.get("YEARS1", "")
                             mapping["SKILL2"] = summary_data.get("SKILL2", "")
@@ -2296,10 +2401,32 @@ def dallas_generic_app():
     col1, col2 = st.columns(2)
     with col1:
         Current_Location_City_ST = st.text_input("Current Location (City, ST)", key="dg_loc")
-        Remote_or_Onsite = st.selectbox("Remote or Onsite", ["Remote", "Onsite"], index=1, key="dg_rem")
+        
+        Remote_or_Onsite = st.selectbox("Remote or Onsite/Hybrid", ["Remote", "Onsite/Hybrid"], index=0, key="dg_rem")
+        dg_location_name = ""
+        if Remote_or_Onsite == "Onsite/Hybrid":
+            dg_location_name = st.text_input("Location Name (e.g., HQ2)", key="dg_loc_name")
+            
+        dg_start = st.text_input("Availability to Start", key="dg_start")
+
     with col2:
-        Former_FM = st.selectbox("Former FM", ["Y - Per CRC, this candidate is eligible for rehire", "N"], index=1, key="dg_form")
-        LinkedIn_GitHub_Portfolio_Link = st.text_input("LinkedIn/GitHub/Portfolio Link", key="dg_link")
+        Former_Dallas = st.selectbox("Former Dallas Generic", ["Y", "N"], index=1, key="dg_form")
+        dg_mgr = ""
+        dg_dates = ""
+        if Former_Dallas == "Y":
+            dg_mgr = st.text_input("Manager Name", key="dg_mgr")
+            dg_dates = st.text_input("Dates Worked", key="dg_dates")
+        # LinkedIn Removed for Dallas Generic
+
+    if Remote_or_Onsite == "Onsite/Hybrid" and dg_location_name.strip():
+        remote_val = f"Onsite/Hybrid - {dg_location_name.strip()}"
+    else:
+        remote_val = Remote_or_Onsite
+        
+    if Former_Dallas == "Y":
+        former_dallas_val = f"Y - {dg_mgr.strip()}, {dg_dates.strip()}"
+    else:
+        former_dallas_val = "N"
 
     st.header("🎤 Supplier Technical Interview Results")
     qa_col1, qa_col2 = st.columns(2)
@@ -2398,13 +2525,16 @@ def dallas_generic_app():
                                 raise e
 
                     name = data.get('FullName', '').title()
+                    
                     mapping = {
-                        "FullName": name, "Location": Current_Location_City_ST, "Remote": Remote_or_Onsite,
+                        "FullName": name, "Location": Current_Location_City_ST, "Remote": remote_val,
+                        "Start": dg_start,
                         "Certifications": data.get("Certifications", ""),
-                        "FormerFM": Former_FM, "Links": LinkedIn_GitHub_Portfolio_Link,
+                        "FormerDallasGeneric": former_dallas_val, 
                         "Q1": Question_1, "A1": Answer_1, "Q2": Question_2, "A2": Answer_2,
                         "Q3": Question_3, "A3": Answer_3, "Q4": Question_4, "A4": Answer_4, "Q5": Question_5, "A5": Answer_5,
-                        "SUMMARY": "", "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
+                        "SUMMARY1": "", "SUMMARY2": "", "SUMMARY3": "", "SUMMARY4": "", 
+                        "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
                         "SKILL3": "", "YEARS3": "", "SKILL4": "", "YEARS4": ""
                     }
 
@@ -2437,13 +2567,15 @@ def dallas_generic_app():
                             The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed.
 
                             ========================
-                            THE NARRATIVE BLUEPRINT (4 Sentences Max)
+                            THE NARRATIVE BLUEPRINT (4 Bullet Points)
                             ========================
-                            Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
-                            - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
-                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
-                            - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter?
-                            - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
+                            Generate exactly 4 distinct bullet points mapped to SUMMARY1 through SUMMARY4. 
+                            CRITICAL RULE: DO NOT use the candidate's name or 3rd person pronouns (he/she/they) in ANY of the bullet points. Start each bullet with a strong action verb or direct statement.
+                            
+                            - SUMMARY1 (The Anchor): What is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
+                            - SUMMARY2 (The Alignment): Explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
+                            - SUMMARY3 (The Execution & Impact): How did they build it, and why does it matter? Weave specific tools/methodologies into an "Execution Statement" that highlights complexity, scale, or business impact.
+                            - SUMMARY4 (The Closer): Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
 
                             ========================
                             STYLE & TONE RULES (STRICT)
@@ -2484,7 +2616,10 @@ def dallas_generic_app():
                             Return ONLY valid JSON:
 
                             {{
-                              "SUMMARY": "4 sentence summary following the blueprint",
+                              "SUMMARY1": "Bullet 1 following the blueprint",
+                              "SUMMARY2": "Bullet 2 following the blueprint",
+                              "SUMMARY3": "Bullet 3 following the blueprint",
+                              "SUMMARY4": "Bullet 4 following the blueprint",
                               "SKILL1": "Skill Area (tools)",
                               "YEARS1": "X+ years, current",
                               "SKILL2": "Skill Area (tools)",
@@ -2546,7 +2681,10 @@ def dallas_generic_app():
                                     else:
                                         raise api_e
 
-                            mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
+                            mapping["SUMMARY1"] = summary_data.get("SUMMARY1", "")
+                            mapping["SUMMARY2"] = summary_data.get("SUMMARY2", "")
+                            mapping["SUMMARY3"] = summary_data.get("SUMMARY3", "")
+                            mapping["SUMMARY4"] = summary_data.get("SUMMARY4", "")
                             mapping["SKILL1"] = summary_data.get("SKILL1", "")
                             mapping["YEARS1"] = summary_data.get("YEARS1", "")
                             mapping["SKILL2"] = summary_data.get("SKILL2", "")
