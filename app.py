@@ -2410,23 +2410,12 @@ def dallas_generic_app():
         dg_start = st.text_input("Availability to Start", key="dg_start")
 
     with col2:
-        Former_Dallas = st.selectbox("Former Dallas Generic", ["Y", "N"], index=1, key="dg_form")
-        dg_mgr = ""
-        dg_dates = ""
-        if Former_Dallas == "Y":
-            dg_mgr = st.text_input("Manager Name", key="dg_mgr")
-            dg_dates = st.text_input("Dates Worked", key="dg_dates")
-        # LinkedIn Removed for Dallas Generic
+        LinkedIn_GitHub_Portfolio_Link = st.text_input("LinkedIn/GitHub/Portfolio Link", key="dg_link")
 
     if Remote_or_Onsite == "Onsite/Hybrid" and dg_location_name.strip():
         remote_val = f"Onsite/Hybrid - {dg_location_name.strip()}"
     else:
         remote_val = Remote_or_Onsite
-        
-    if Former_Dallas == "Y":
-        former_dallas_val = f"Y - {dg_mgr.strip()}, {dg_dates.strip()}"
-    else:
-        former_dallas_val = "N"
 
     st.header("🎤 Supplier Technical Interview Results")
     qa_col1, qa_col2 = st.columns(2)
@@ -2530,7 +2519,7 @@ def dallas_generic_app():
                         "FullName": name, "Location": Current_Location_City_ST, "Remote": remote_val,
                         "Start": dg_start,
                         "Certifications": data.get("Certifications", ""),
-                        "FormerDallasGeneric": former_dallas_val, 
+                        "Links": LinkedIn_GitHub_Portfolio_Link, 
                         "Q1": Question_1, "A1": Answer_1, "Q2": Question_2, "A2": Answer_2,
                         "Q3": Question_3, "A3": Answer_3, "Q4": Question_4, "A4": Answer_4, "Q5": Question_5, "A5": Answer_5,
                         "SUMMARY1": "", "SUMMARY2": "", "SUMMARY3": "", "SUMMARY4": "", 
