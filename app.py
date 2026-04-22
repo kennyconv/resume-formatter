@@ -157,7 +157,7 @@ def repair_and_load_json(raw_text):
             st.warning(f"⚠️ Minor Error: AI formatting glitch on this resume. Bypassing crash... ({e})")
             return {}
 
-def replace_tag_safely(p, tag, value, unbold=False, force_bold=False):
+def replace_tag_safely(p, tag, value, unbold=False, force_bold=False, font_name=None):
     if tag.lower() not in p.text.lower():
         return False
     replaced = False
@@ -169,6 +169,8 @@ def replace_tag_safely(p, tag, value, unbold=False, force_bold=False):
                 run.font.bold = False
             if force_bold:
                 run.font.bold = True
+            if font_name:
+                run.font.name = font_name
             replaced = True
     if not replaced:
         full_text = p.text
@@ -180,11 +182,13 @@ def replace_tag_safely(p, tag, value, unbold=False, force_bold=False):
                 p.runs[0].font.bold = False
             if force_bold:
                 p.runs[0].font.bold = True
+            if font_name:
+                p.runs[0].font.name = font_name
             for i in range(1, len(p.runs)):
                 p.runs[i].text = ""
     return True
 
-def insert_bullet_line_after(paragraph, text):
+def insert_bullet_line_after(paragraph, text, font_name=None):
     new_p_xml = copy.deepcopy(paragraph._p)
     paragraph._p.addnext(new_p_xml)
     new_p = Paragraph(new_p_xml, paragraph._parent)
@@ -198,7 +202,10 @@ def insert_bullet_line_after(paragraph, text):
         if ref_font.color and ref_font.color.rgb:
             new_run.font.color.rgb = ref_font.color.rgb
         new_run.font.size = ref_font.size
-        new_run.font.name = ref_font.name
+        if font_name:
+            new_run.font.name = font_name
+        else:
+            new_run.font.name = ref_font.name
     else:
         new_p.add_run(text)
     return new_p
@@ -213,6 +220,8 @@ def process_word_doc(temp_path, mapping, out_path):
     
     # Check if this is the Peraton tool
     is_peraton = "CERTIFICATION1" in mapping
+    target_font = 'Calibri' if is_peraton else None
+    env_font = 'Calibri' if is_peraton else 'Times New Roman'
 
     if not mapping.get("Certifications") or not str(mapping.get("Certifications")).strip():
         tables_to_delete = []
@@ -270,17 +279,17 @@ def process_word_doc(temp_path, mapping, out_path):
                         if p not in paras_to_remove:
                             paras_to_remove.append(p)
                     else:
-                        replace_tag_safely(p, tag, "")
+                        replace_tag_safely(p, tag, "", font_name=target_font)
                 else:
                     if "Bullets" in key:
                         for run in p.runs:
                             if '\n' in run.text:
                                 run.text = run.text.replace('\n', '')
                         lines = str(value).split('\n')
-                        replace_tag_safely(p, tag, lines[0])
+                        replace_tag_safely(p, tag, lines[0], font_name=target_font)
                         curr_p = p
                         for line in lines[1:]:
-                            curr_p = insert_bullet_line_after(curr_p, line)
+                            curr_p = insert_bullet_line_after(curr_p, line, font_name=target_font)
                         num_match = re.search(r'\d+', key)
                         if num_match:
                             env_val = mapping.get(f"Environment{num_match.group()}")
@@ -296,11 +305,11 @@ def process_word_doc(temp_path, mapping, out_path):
                                 clean_env = re.sub(r'^Environment\s*:\s*', '', str(env_val).strip(), flags=re.IGNORECASE)
                                 b_run = env_p.add_run("Environment: ")
                                 b_run.bold = True
-                                b_run.font.name = 'Times New Roman'
+                                b_run.font.name = env_font
                                 b_run.font.size = Pt(12)
                                 n_run = env_p.add_run(clean_env)
                                 n_run.bold = False
-                                n_run.font.name = 'Times New Roman'
+                                n_run.font.name = env_font
                                 n_run.font.size = Pt(12)
                                 curr_p = env_p
                         
@@ -317,7 +326,7 @@ def process_word_doc(temp_path, mapping, out_path):
                     else:
                         is_answer = key in ['A1', 'A2', 'A3', 'A4', 'A5']
                         is_question = key in ['Q1', 'Q2', 'Q3', 'Q4', 'Q5']
-                        replace_tag_safely(p, tag, str(value).strip(), unbold=is_answer, force_bold=is_question)
+                        replace_tag_safely(p, tag, str(value).strip(), unbold=is_answer, force_bold=is_question, font_name=target_font)
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
@@ -327,7 +336,7 @@ def process_word_doc(temp_path, mapping, out_path):
                         if tag.lower() in p.text.lower():
                             is_answer = key in ['A1', 'A2', 'A3', 'A4', 'A5']
                             is_question = key in ['Q1', 'Q2', 'Q3', 'Q4', 'Q5']
-                            replace_tag_safely(p, tag, str(value) if value else "", unbold=is_answer, force_bold=is_question)
+                            replace_tag_safely(p, tag, str(value) if value else "", unbold=is_answer, force_bold=is_question, font_name=target_font)
     for p in paras_to_remove:
         try:
             delete_paragraph(p)
@@ -1009,13 +1018,1541 @@ def peraton_app():
 
 
 # ====================================================================
+# --- 🟢 CLIENT APP 3: CAPITAL ONE 🟢 ---
+# ====================================================================
+def capital_one_app():
+    TEMPLATE_FILENAME = "CapitalOne_Template.docx"
+    st.title("📄 Capital One Precision Extractor")
+
+    with st.sidebar:
+        st.header("🔑 API Configuration")
+        if "API_KEY" in st.secrets:
+            API_KEY = st.secrets["API_KEY"]
+            st.success("✅ API Key loaded from Secrets")
+        else:
+            API_KEY = st.text_input("Gemini API Key", type="password")
+            st.info("Paste your Gemini API key here to run the tool.")
+
+    st.header("📋 Candidate Information")
+    col1, col2 = st.columns(2)
+    with col1:
+        Current_Location_City_ST = st.text_input("Current Location (City, ST)", key="co_loc")
+        Remote_or_Onsite = st.selectbox("Remote or Onsite", ["Remote", "Onsite"], index=1, key="co_rem")
+    with col2:
+        Former_FM = st.selectbox("Former FM", ["Y - Per CRC, this candidate is eligible for rehire", "N"], index=1, key="co_form")
+        LinkedIn_GitHub_Portfolio_Link = st.text_input("LinkedIn/GitHub/Portfolio Link", key="co_link")
+
+    st.header("🎤 Supplier Technical Interview Results")
+    qa_col1, qa_col2 = st.columns(2)
+    with qa_col1:
+        Question_1 = st.text_input("Question 1", key="co_q1")
+        Question_2 = st.text_input("Question 2", key="co_q2")
+        Question_3 = st.text_input("Question 3", key="co_q3")
+        Question_4 = st.text_input("Question 4", key="co_q4")
+        Question_5 = st.text_input("Question 5", key="co_q5")
+    with qa_col2:
+        Answer_1 = st.text_area("Answer 1", height=68, key="co_a1")
+        Answer_2 = st.text_area("Answer 2", height=68, key="co_a2")
+        Answer_3 = st.text_area("Answer 3", height=68, key="co_a3")
+        Answer_4 = st.text_area("Answer 4", height=68, key="co_a4")
+        Answer_5 = st.text_area("Answer 5", height=68, key="co_a5")
+
+    st.header("📝 Job Description & Notes")
+    Job_Description_Notes_etc = st.text_area("Paste JD, Manager Notes, etc. here:", height=200, key="co_jd")
+
+    st.header("📂 File Uploads")
+    resume_file = st.file_uploader("📤 Upload the candidate's resume...", type=['pdf', 'docx', 'doc'], key="co_res")
+
+    if st.button("🚀 Generate Capital One Submission", type="primary"):
+        if not API_KEY:
+            st.error("❌ Error: Please enter your Gemini API Key in the sidebar.")
+        elif not resume_file:
+            st.error("❌ Error: Please upload a resume.")
+        elif not os.path.exists(TEMPLATE_FILENAME):
+            st.error(f"❌ Error: The preloaded template '{TEMPLATE_FILENAME}' was not found. Please make sure it is uploaded to your GitHub repository.")
+        else:
+            with st.spinner("Processing document and querying AI..."):
+                try:
+                    resume_path = f"temp_{resume_file.name}"
+                    with open(resume_path, "wb") as f:
+                        f.write(resume_file.getbuffer())
+
+                    raw_text = extract_text(resume_path)
+                    client = genai.Client(api_key=API_KEY)
+
+                    prompt = f"""
+                    Return a valid JSON object ONLY.
+
+                    RULES:
+                    1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
+                    2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
+                    3. Education: Extract School and Degree.
+                    4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
+                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
+                    5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
+
+                    JSON Structure:
+                    {{
+                        "FullName": "",
+                        "Certifications": "",
+                        "Education": [{{"School": "", "Degree": ""}}],
+                        "Experience": [{{"Company": "", "Title": "", "Bullets": [], "Environment": "", "Dates": ""}}]
+                    }}
+
+                    RESUME: {raw_text}
+                    """
+
+                    models_to_try = [
+                        'gemini-2.5-flash', 
+                        'gemini-3-flash-preview', 
+                        'gemini-3.1-flash-lite-preview', 
+                        'gemini-pro-latest'
+                    ]
+                    data = {}
+                    
+                    for attempt in range(6):
+                        if attempt == 0:
+                            current_model = models_to_try[0]
+                        elif attempt in [1, 2]:
+                            current_model = models_to_try[1]
+                        elif attempt in [3, 4]:
+                            current_model = models_to_try[2]
+                        else:
+                            current_model = models_to_try[3]
+                        
+                        try:
+                            response = client.models.generate_content(
+                                model=current_model,
+                                contents=prompt,
+                                config=types.GenerateContentConfig(
+                                    response_mime_type="application/json"
+                                )
+                            )
+                            data = repair_and_load_json(response.text)
+                            break
+                        except Exception as e:
+                            if "503" in str(e) and attempt < 5:
+                                time.sleep(2 ** ((attempt % 2) + 1))
+                                continue
+                            else:
+                                raise e
+
+                    name = data.get('FullName', '').title()
+                    mapping = {
+                        "FullName": name, "Location": Current_Location_City_ST, "Remote": Remote_or_Onsite,
+                        "Certifications": data.get("Certifications", ""),
+                        "FormerFM": Former_FM, "Links": LinkedIn_GitHub_Portfolio_Link,
+                        "Q1": Question_1, "A1": Answer_1, "Q2": Question_2, "A2": Answer_2,
+                        "Q3": Question_3, "A3": Answer_3, "Q4": Question_4, "A4": Answer_4, "Q5": Question_5, "A5": Answer_5,
+                        "SUMMARY": "", "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
+                        "SKILL3": "", "YEARS3": "", "SKILL4": "", "YEARS4": ""
+                    }
+
+                    edu = data.get('Education', [])
+                    for i in range(1, 4):
+                        mapping[f"School{i}"] = clean_school(edu[i-1].get('School', '')) if i <= len(edu) else ""
+                        mapping[f"Degree{i}"] = edu[i-1].get('Degree', '') if i <= len(edu) else ""
+
+                    exp = data.get('Experience', [])
+                    for i in range(1, 8):
+                        if i <= len(exp):
+                            mapping[f"Company{i}"] = exp[i-1].get('Company', '')
+                            raw_title = exp[i-1].get('Title', '')
+                            clean_title = re.sub(r'\s*\(.*$', '', raw_title).strip()
+                            mapping[f"Title{i}"] = clean_title
+                            mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
+                            mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
+                            mapping[f"Dates{i}"] = standardize_dates(exp[i-1].get('Dates', ''))
+                        else:
+                            mapping[f"Company{i}"] = ""
+                            mapping[f"Title{i}"] = ""
+                            mapping[f"Bullets{i}"] = ""
+                            mapping[f"Environment{i}"] = ""
+                            mapping[f"Dates{i}"] = ""
+
+                    if Job_Description_Notes_etc.strip():
+                        try:
+                            summary_prompt = f"""
+                            You are an elite, no-nonsense Senior Technical Recruiter writing an executive submission summary for a Fieldglass portal. 
+                            The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed.
+
+                            ========================
+                            THE NARRATIVE BLUEPRINT (4 Sentences Max)
+                            ========================
+                            Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
+                            - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
+                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
+                            - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter?
+                            - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
+
+                            ========================
+                            STYLE & TONE RULES (STRICT)
+                            ========================
+                            - Write like a human pitching to a colleague. Confident, direct, and factual.
+                            - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
+                            - LEADERSHIP VERBS: Use high-authority active verbs (e.g., 'Engineered', 'Optimized', 'Architected', 'Spearheaded').
+                            - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely."
+                            - Do NOT repeat or restate the job description.
+
+                            ========================
+                            🔴 Q&A USAGE RULES (CRITICAL)
+                            ========================
+                            - The resume is the PRIMARY source of truth for experience.
+                            - The technical interview Q&A is SECONDARY.
+                            If there is any conflict: 👉 prioritize the resume over Q&A.
+
+                            ========================
+                            SKILLS SECTION
+                            ========================
+                            - EXACTLY 4 items
+                            - Prioritize the specific "Must-Have" technologies.
+                            - Use only tools explicitly mentioned in resume/Q&A/notes
+                            Format: "Skill Area (Tool1, Tool2, Tool3, Tool4)"
+                            Years format: "X+ years, current" OR "X+ years, 2026"
+
+                            ========================
+                            🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
+                            ========================
+                            1. THE RESUME IS THE ONLY SOURCE OF TRUTH. You are strictly forbidden from copying a skill, tool, or technology from the Job Description and assigning it to the candidate unless it physically appears in their Resume or Q&A.
+                            2. DO NOT INFER OR ASSUME. 
+                            3. DO NOT INFLATE TO MATCH THE JD. 
+                            4. FACT AUDIT: Before outputting the final JSON, verify every single tool.
+
+                            ========================
+                            OUTPUT FORMAT (STRICT)
+                            ========================
+                            Return ONLY valid JSON:
+
+                            {{
+                              "SUMMARY": "4 sentence summary following the blueprint",
+                              "SKILL1": "Skill Area (tools)",
+                              "YEARS1": "X+ years, current",
+                              "SKILL2": "Skill Area (tools)",
+                              "YEARS2": "X+ years, current",
+                              "SKILL3": "Skill Area (tools)",
+                              "YEARS3": "X+ years, current",
+                              "SKILL4": "Skill Area (tools)",
+                              "YEARS4": "X+ years, current"
+                            }}
+
+                            ========================
+                            INPUT DATA
+                            ========================
+                            Job Description / Notes:
+                            {Job_Description_Notes_etc}
+
+                            Technical Interview Q&A:
+                            Q1: {Question_1}
+                            A1: {Answer_1}
+                            Q2: {Question_2}
+                            A2: {Answer_2}
+                            Q3: {Question_3}
+                            A3: {Answer_3}
+                            Q4: {Question_4}
+                            A4: {Answer_4}
+                            Q5: {Question_5}
+                            A5: {Answer_5}
+
+                            Resume:
+                            {raw_text}
+                            """
+                            time.sleep(2) 
+                            summary_data = {}
+                            
+                            for attempt in range(6):
+                                if attempt == 0:
+                                    current_model = models_to_try[0]
+                                elif attempt in [1, 2]:
+                                    current_model = models_to_try[1]
+                                elif attempt in [3, 4]:
+                                    current_model = models_to_try[2]
+                                else:
+                                    current_model = models_to_try[3]
+                                
+                                try:
+                                    summary_response = client.models.generate_content(
+                                        model=current_model,
+                                        contents=summary_prompt,
+                                        config=types.GenerateContentConfig(
+                                            response_mime_type="application/json"
+                                        )
+                                    )
+                                    summary_data = repair_and_load_json(summary_response.text)
+                                    break
+                                except Exception as api_e:
+                                    if "503" in str(api_e) and attempt < 5:
+                                        time.sleep(2 ** ((attempt % 2) + 1))
+                                        continue
+                                    else:
+                                        raise api_e
+
+                            mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
+                            mapping["SKILL1"] = summary_data.get("SKILL1", "")
+                            mapping["YEARS1"] = summary_data.get("YEARS1", "")
+                            mapping["SKILL2"] = summary_data.get("SKILL2", "")
+                            mapping["YEARS2"] = summary_data.get("YEARS2", "")
+                            mapping["SKILL3"] = summary_data.get("SKILL3", "")
+                            mapping["YEARS3"] = summary_data.get("YEARS3", "")
+                            mapping["SKILL4"] = summary_data.get("SKILL4", "")
+                            mapping["YEARS4"] = summary_data.get("YEARS4", "")
+                        except Exception as e:
+                            st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
+
+                    out_file = f"Submission_CapitalOne_{name.replace(' ', '_')}.docx"
+                    process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
+                    
+                    with open(out_file, "rb") as file:
+                        btn = st.download_button(
+                            label="⬇️ Download Generated Document",
+                            data=file,
+                            file_name=out_file,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            type="primary"
+                        )
+                    
+                    st.success(f"✅ Success! Document is ready for download.")
+
+                    try:
+                        os.remove(resume_path)
+                    except:
+                        pass
+
+                except Exception as e:
+                    st.error(f"❌ Process Failed: {str(e)}")
+
+
+# ====================================================================
+# --- 🟣 CLIENT APP 4: ADUSA 🟣 ---
+# ====================================================================
+def adusa_app():
+    TEMPLATE_FILENAME = "ADUSA_Template.docx"
+    st.title("📄 ADUSA Precision Extractor")
+
+    with st.sidebar:
+        st.header("🔑 API Configuration")
+        if "API_KEY" in st.secrets:
+            API_KEY = st.secrets["API_KEY"]
+            st.success("✅ API Key loaded from Secrets")
+        else:
+            API_KEY = st.text_input("Gemini API Key", type="password")
+            st.info("Paste your Gemini API key here to run the tool.")
+
+    st.header("📋 Candidate Information")
+    col1, col2 = st.columns(2)
+    with col1:
+        Current_Location_City_ST = st.text_input("Current Location (City, ST)", key="ad_loc")
+        Remote_or_Onsite = st.selectbox("Remote or Onsite", ["Remote", "Onsite"], index=1, key="ad_rem")
+    with col2:
+        Former_FM = st.selectbox("Former FM", ["Y - Per CRC, this candidate is eligible for rehire", "N"], index=1, key="ad_form")
+        LinkedIn_GitHub_Portfolio_Link = st.text_input("LinkedIn/GitHub/Portfolio Link", key="ad_link")
+
+    st.header("🎤 Supplier Technical Interview Results")
+    qa_col1, qa_col2 = st.columns(2)
+    with qa_col1:
+        Question_1 = st.text_input("Question 1", key="ad_q1")
+        Question_2 = st.text_input("Question 2", key="ad_q2")
+        Question_3 = st.text_input("Question 3", key="ad_q3")
+        Question_4 = st.text_input("Question 4", key="ad_q4")
+        Question_5 = st.text_input("Question 5", key="ad_q5")
+    with qa_col2:
+        Answer_1 = st.text_area("Answer 1", height=68, key="ad_a1")
+        Answer_2 = st.text_area("Answer 2", height=68, key="ad_a2")
+        Answer_3 = st.text_area("Answer 3", height=68, key="ad_a3")
+        Answer_4 = st.text_area("Answer 4", height=68, key="ad_a4")
+        Answer_5 = st.text_area("Answer 5", height=68, key="ad_a5")
+
+    st.header("📝 Job Description & Notes")
+    Job_Description_Notes_etc = st.text_area("Paste JD, Manager Notes, etc. here:", height=200, key="ad_jd")
+
+    st.header("📂 File Uploads")
+    resume_file = st.file_uploader("📤 Upload the candidate's resume...", type=['pdf', 'docx', 'doc'], key="ad_res")
+
+    if st.button("🚀 Generate ADUSA Submission", type="primary"):
+        if not API_KEY:
+            st.error("❌ Error: Please enter your Gemini API Key in the sidebar.")
+        elif not resume_file:
+            st.error("❌ Error: Please upload a resume.")
+        elif not os.path.exists(TEMPLATE_FILENAME):
+            st.error(f"❌ Error: The preloaded template '{TEMPLATE_FILENAME}' was not found. Please make sure it is uploaded to your GitHub repository.")
+        else:
+            with st.spinner("Processing document and querying AI..."):
+                try:
+                    resume_path = f"temp_{resume_file.name}"
+                    with open(resume_path, "wb") as f:
+                        f.write(resume_file.getbuffer())
+
+                    raw_text = extract_text(resume_path)
+                    client = genai.Client(api_key=API_KEY)
+
+                    prompt = f"""
+                    Return a valid JSON object ONLY.
+
+                    RULES:
+                    1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
+                    2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
+                    3. Education: Extract School and Degree.
+                    4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
+                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
+                    5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
+
+                    JSON Structure:
+                    {{
+                        "FullName": "",
+                        "Certifications": "",
+                        "Education": [{{"School": "", "Degree": ""}}],
+                        "Experience": [{{"Company": "", "Title": "", "Bullets": [], "Environment": "", "Dates": ""}}]
+                    }}
+
+                    RESUME: {raw_text}
+                    """
+
+                    models_to_try = [
+                        'gemini-2.5-flash', 
+                        'gemini-3-flash-preview', 
+                        'gemini-3.1-flash-lite-preview', 
+                        'gemini-pro-latest'
+                    ]
+                    data = {}
+                    
+                    for attempt in range(6):
+                        if attempt == 0:
+                            current_model = models_to_try[0]
+                        elif attempt in [1, 2]:
+                            current_model = models_to_try[1]
+                        elif attempt in [3, 4]:
+                            current_model = models_to_try[2]
+                        else:
+                            current_model = models_to_try[3]
+                        
+                        try:
+                            response = client.models.generate_content(
+                                model=current_model,
+                                contents=prompt,
+                                config=types.GenerateContentConfig(
+                                    response_mime_type="application/json"
+                                )
+                            )
+                            data = repair_and_load_json(response.text)
+                            break
+                        except Exception as e:
+                            if "503" in str(e) and attempt < 5:
+                                time.sleep(2 ** ((attempt % 2) + 1))
+                                continue
+                            else:
+                                raise e
+
+                    name = data.get('FullName', '').title()
+                    mapping = {
+                        "FullName": name, "Location": Current_Location_City_ST, "Remote": Remote_or_Onsite,
+                        "Certifications": data.get("Certifications", ""),
+                        "FormerFM": Former_FM, "Links": LinkedIn_GitHub_Portfolio_Link,
+                        "Q1": Question_1, "A1": Answer_1, "Q2": Question_2, "A2": Answer_2,
+                        "Q3": Question_3, "A3": Answer_3, "Q4": Question_4, "A4": Answer_4, "Q5": Question_5, "A5": Answer_5,
+                        "SUMMARY": "", "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
+                        "SKILL3": "", "YEARS3": "", "SKILL4": "", "YEARS4": ""
+                    }
+
+                    edu = data.get('Education', [])
+                    for i in range(1, 4):
+                        mapping[f"School{i}"] = clean_school(edu[i-1].get('School', '')) if i <= len(edu) else ""
+                        mapping[f"Degree{i}"] = edu[i-1].get('Degree', '') if i <= len(edu) else ""
+
+                    exp = data.get('Experience', [])
+                    for i in range(1, 8):
+                        if i <= len(exp):
+                            mapping[f"Company{i}"] = exp[i-1].get('Company', '')
+                            raw_title = exp[i-1].get('Title', '')
+                            clean_title = re.sub(r'\s*\(.*$', '', raw_title).strip()
+                            mapping[f"Title{i}"] = clean_title
+                            mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
+                            mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
+                            mapping[f"Dates{i}"] = standardize_dates(exp[i-1].get('Dates', ''))
+                        else:
+                            mapping[f"Company{i}"] = ""
+                            mapping[f"Title{i}"] = ""
+                            mapping[f"Bullets{i}"] = ""
+                            mapping[f"Environment{i}"] = ""
+                            mapping[f"Dates{i}"] = ""
+
+                    if Job_Description_Notes_etc.strip():
+                        try:
+                            summary_prompt = f"""
+                            You are an elite, no-nonsense Senior Technical Recruiter writing an executive submission summary for a Fieldglass portal. 
+                            The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed.
+
+                            ========================
+                            THE NARRATIVE BLUEPRINT (4 Sentences Max)
+                            ========================
+                            Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
+                            - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
+                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
+                            - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter?
+                            - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
+
+                            ========================
+                            STYLE & TONE RULES (STRICT)
+                            ========================
+                            - Write like a human pitching to a colleague. Confident, direct, and factual.
+                            - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
+                            - LEADERSHIP VERBS: Use high-authority active verbs (e.g., 'Engineered', 'Optimized', 'Architected', 'Spearheaded').
+                            - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely."
+                            - Do NOT repeat or restate the job description.
+
+                            ========================
+                            🔴 Q&A USAGE RULES (CRITICAL)
+                            ========================
+                            - The resume is the PRIMARY source of truth for experience.
+                            - The technical interview Q&A is SECONDARY.
+                            If there is any conflict: 👉 prioritize the resume over Q&A.
+
+                            ========================
+                            SKILLS SECTION
+                            ========================
+                            - EXACTLY 4 items
+                            - Prioritize the specific "Must-Have" technologies.
+                            - Use only tools explicitly mentioned in resume/Q&A/notes
+                            Format: "Skill Area (Tool1, Tool2, Tool3, Tool4)"
+                            Years format: "X+ years, current" OR "X+ years, 2026"
+
+                            ========================
+                            🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
+                            ========================
+                            1. THE RESUME IS THE ONLY SOURCE OF TRUTH. You are strictly forbidden from copying a skill, tool, or technology from the Job Description and assigning it to the candidate unless it physically appears in their Resume or Q&A.
+                            2. DO NOT INFER OR ASSUME. 
+                            3. DO NOT INFLATE TO MATCH THE JD. 
+                            4. FACT AUDIT: Before outputting the final JSON, verify every single tool.
+
+                            ========================
+                            OUTPUT FORMAT (STRICT)
+                            ========================
+                            Return ONLY valid JSON:
+
+                            {{
+                              "SUMMARY": "4 sentence summary following the blueprint",
+                              "SKILL1": "Skill Area (tools)",
+                              "YEARS1": "X+ years, current",
+                              "SKILL2": "Skill Area (tools)",
+                              "YEARS2": "X+ years, current",
+                              "SKILL3": "Skill Area (tools)",
+                              "YEARS3": "X+ years, current",
+                              "SKILL4": "Skill Area (tools)",
+                              "YEARS4": "X+ years, current"
+                            }}
+
+                            ========================
+                            INPUT DATA
+                            ========================
+                            Job Description / Notes:
+                            {Job_Description_Notes_etc}
+
+                            Technical Interview Q&A:
+                            Q1: {Question_1}
+                            A1: {Answer_1}
+                            Q2: {Question_2}
+                            A2: {Answer_2}
+                            Q3: {Question_3}
+                            A3: {Answer_3}
+                            Q4: {Question_4}
+                            A4: {Answer_4}
+                            Q5: {Question_5}
+                            A5: {Answer_5}
+
+                            Resume:
+                            {raw_text}
+                            """
+                            time.sleep(2) 
+                            summary_data = {}
+                            
+                            for attempt in range(6):
+                                if attempt == 0:
+                                    current_model = models_to_try[0]
+                                elif attempt in [1, 2]:
+                                    current_model = models_to_try[1]
+                                elif attempt in [3, 4]:
+                                    current_model = models_to_try[2]
+                                else:
+                                    current_model = models_to_try[3]
+                                
+                                try:
+                                    summary_response = client.models.generate_content(
+                                        model=current_model,
+                                        contents=summary_prompt,
+                                        config=types.GenerateContentConfig(
+                                            response_mime_type="application/json"
+                                        )
+                                    )
+                                    summary_data = repair_and_load_json(summary_response.text)
+                                    break
+                                except Exception as api_e:
+                                    if "503" in str(api_e) and attempt < 5:
+                                        time.sleep(2 ** ((attempt % 2) + 1))
+                                        continue
+                                    else:
+                                        raise api_e
+
+                            mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
+                            mapping["SKILL1"] = summary_data.get("SKILL1", "")
+                            mapping["YEARS1"] = summary_data.get("YEARS1", "")
+                            mapping["SKILL2"] = summary_data.get("SKILL2", "")
+                            mapping["YEARS2"] = summary_data.get("YEARS2", "")
+                            mapping["SKILL3"] = summary_data.get("SKILL3", "")
+                            mapping["YEARS3"] = summary_data.get("YEARS3", "")
+                            mapping["SKILL4"] = summary_data.get("SKILL4", "")
+                            mapping["YEARS4"] = summary_data.get("YEARS4", "")
+                        except Exception as e:
+                            st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
+
+                    out_file = f"Submission_ADUSA_{name.replace(' ', '_')}.docx"
+                    process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
+                    
+                    with open(out_file, "rb") as file:
+                        btn = st.download_button(
+                            label="⬇️ Download Generated Document",
+                            data=file,
+                            file_name=out_file,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            type="primary"
+                        )
+                    
+                    st.success(f"✅ Success! Document is ready for download.")
+
+                    try:
+                        os.remove(resume_path)
+                    except:
+                        pass
+
+                except Exception as e:
+                    st.error(f"❌ Process Failed: {str(e)}")
+
+
+# ====================================================================
+# --- 🟡 CLIENT APP 5: CBRE 🟡 ---
+# ====================================================================
+def cbre_app():
+    TEMPLATE_FILENAME = "CBRE_Template.docx"
+    st.title("📄 CBRE Precision Extractor")
+
+    with st.sidebar:
+        st.header("🔑 API Configuration")
+        if "API_KEY" in st.secrets:
+            API_KEY = st.secrets["API_KEY"]
+            st.success("✅ API Key loaded from Secrets")
+        else:
+            API_KEY = st.text_input("Gemini API Key", type="password")
+            st.info("Paste your Gemini API key here to run the tool.")
+
+    st.header("📋 Candidate Information")
+    col1, col2 = st.columns(2)
+    with col1:
+        Current_Location_City_ST = st.text_input("Current Location (City, ST)", key="cb_loc")
+        Remote_or_Onsite = st.selectbox("Remote or Onsite", ["Remote", "Onsite"], index=1, key="cb_rem")
+    with col2:
+        Former_FM = st.selectbox("Former FM", ["Y - Per CRC, this candidate is eligible for rehire", "N"], index=1, key="cb_form")
+        LinkedIn_GitHub_Portfolio_Link = st.text_input("LinkedIn/GitHub/Portfolio Link", key="cb_link")
+
+    st.header("🎤 Supplier Technical Interview Results")
+    qa_col1, qa_col2 = st.columns(2)
+    with qa_col1:
+        Question_1 = st.text_input("Question 1", key="cb_q1")
+        Question_2 = st.text_input("Question 2", key="cb_q2")
+        Question_3 = st.text_input("Question 3", key="cb_q3")
+        Question_4 = st.text_input("Question 4", key="cb_q4")
+        Question_5 = st.text_input("Question 5", key="cb_q5")
+    with qa_col2:
+        Answer_1 = st.text_area("Answer 1", height=68, key="cb_a1")
+        Answer_2 = st.text_area("Answer 2", height=68, key="cb_a2")
+        Answer_3 = st.text_area("Answer 3", height=68, key="cb_a3")
+        Answer_4 = st.text_area("Answer 4", height=68, key="cb_a4")
+        Answer_5 = st.text_area("Answer 5", height=68, key="cb_a5")
+
+    st.header("📝 Job Description & Notes")
+    Job_Description_Notes_etc = st.text_area("Paste JD, Manager Notes, etc. here:", height=200, key="cb_jd")
+
+    st.header("📂 File Uploads")
+    resume_file = st.file_uploader("📤 Upload the candidate's resume...", type=['pdf', 'docx', 'doc'], key="cb_res")
+
+    if st.button("🚀 Generate CBRE Submission", type="primary"):
+        if not API_KEY:
+            st.error("❌ Error: Please enter your Gemini API Key in the sidebar.")
+        elif not resume_file:
+            st.error("❌ Error: Please upload a resume.")
+        elif not os.path.exists(TEMPLATE_FILENAME):
+            st.error(f"❌ Error: The preloaded template '{TEMPLATE_FILENAME}' was not found. Please make sure it is uploaded to your GitHub repository.")
+        else:
+            with st.spinner("Processing document and querying AI..."):
+                try:
+                    resume_path = f"temp_{resume_file.name}"
+                    with open(resume_path, "wb") as f:
+                        f.write(resume_file.getbuffer())
+
+                    raw_text = extract_text(resume_path)
+                    client = genai.Client(api_key=API_KEY)
+
+                    prompt = f"""
+                    Return a valid JSON object ONLY.
+
+                    RULES:
+                    1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
+                    2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
+                    3. Education: Extract School and Degree.
+                    4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
+                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
+                    5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
+
+                    JSON Structure:
+                    {{
+                        "FullName": "",
+                        "Certifications": "",
+                        "Education": [{{"School": "", "Degree": ""}}],
+                        "Experience": [{{"Company": "", "Title": "", "Bullets": [], "Environment": "", "Dates": ""}}]
+                    }}
+
+                    RESUME: {raw_text}
+                    """
+
+                    models_to_try = [
+                        'gemini-2.5-flash', 
+                        'gemini-3-flash-preview', 
+                        'gemini-3.1-flash-lite-preview', 
+                        'gemini-pro-latest'
+                    ]
+                    data = {}
+                    
+                    for attempt in range(6):
+                        if attempt == 0:
+                            current_model = models_to_try[0]
+                        elif attempt in [1, 2]:
+                            current_model = models_to_try[1]
+                        elif attempt in [3, 4]:
+                            current_model = models_to_try[2]
+                        else:
+                            current_model = models_to_try[3]
+                        
+                        try:
+                            response = client.models.generate_content(
+                                model=current_model,
+                                contents=prompt,
+                                config=types.GenerateContentConfig(
+                                    response_mime_type="application/json"
+                                )
+                            )
+                            data = repair_and_load_json(response.text)
+                            break
+                        except Exception as e:
+                            if "503" in str(e) and attempt < 5:
+                                time.sleep(2 ** ((attempt % 2) + 1))
+                                continue
+                            else:
+                                raise e
+
+                    name = data.get('FullName', '').title()
+                    mapping = {
+                        "FullName": name, "Location": Current_Location_City_ST, "Remote": Remote_or_Onsite,
+                        "Certifications": data.get("Certifications", ""),
+                        "FormerFM": Former_FM, "Links": LinkedIn_GitHub_Portfolio_Link,
+                        "Q1": Question_1, "A1": Answer_1, "Q2": Question_2, "A2": Answer_2,
+                        "Q3": Question_3, "A3": Answer_3, "Q4": Question_4, "A4": Answer_4, "Q5": Question_5, "A5": Answer_5,
+                        "SUMMARY": "", "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
+                        "SKILL3": "", "YEARS3": "", "SKILL4": "", "YEARS4": ""
+                    }
+
+                    edu = data.get('Education', [])
+                    for i in range(1, 4):
+                        mapping[f"School{i}"] = clean_school(edu[i-1].get('School', '')) if i <= len(edu) else ""
+                        mapping[f"Degree{i}"] = edu[i-1].get('Degree', '') if i <= len(edu) else ""
+
+                    exp = data.get('Experience', [])
+                    for i in range(1, 8):
+                        if i <= len(exp):
+                            mapping[f"Company{i}"] = exp[i-1].get('Company', '')
+                            raw_title = exp[i-1].get('Title', '')
+                            clean_title = re.sub(r'\s*\(.*$', '', raw_title).strip()
+                            mapping[f"Title{i}"] = clean_title
+                            mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
+                            mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
+                            mapping[f"Dates{i}"] = standardize_dates(exp[i-1].get('Dates', ''))
+                        else:
+                            mapping[f"Company{i}"] = ""
+                            mapping[f"Title{i}"] = ""
+                            mapping[f"Bullets{i}"] = ""
+                            mapping[f"Environment{i}"] = ""
+                            mapping[f"Dates{i}"] = ""
+
+                    if Job_Description_Notes_etc.strip():
+                        try:
+                            summary_prompt = f"""
+                            You are an elite, no-nonsense Senior Technical Recruiter writing an executive submission summary for a Fieldglass portal. 
+                            The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed.
+
+                            ========================
+                            THE NARRATIVE BLUEPRINT (4 Sentences Max)
+                            ========================
+                            Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
+                            - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
+                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
+                            - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter?
+                            - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
+
+                            ========================
+                            STYLE & TONE RULES (STRICT)
+                            ========================
+                            - Write like a human pitching to a colleague. Confident, direct, and factual.
+                            - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
+                            - LEADERSHIP VERBS: Use high-authority active verbs (e.g., 'Engineered', 'Optimized', 'Architected', 'Spearheaded').
+                            - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely."
+                            - Do NOT repeat or restate the job description.
+
+                            ========================
+                            🔴 Q&A USAGE RULES (CRITICAL)
+                            ========================
+                            - The resume is the PRIMARY source of truth for experience.
+                            - The technical interview Q&A is SECONDARY.
+                            If there is any conflict: 👉 prioritize the resume over Q&A.
+
+                            ========================
+                            SKILLS SECTION
+                            ========================
+                            - EXACTLY 4 items
+                            - Prioritize the specific "Must-Have" technologies.
+                            - Use only tools explicitly mentioned in resume/Q&A/notes
+                            Format: "Skill Area (Tool1, Tool2, Tool3, Tool4)"
+                            Years format: "X+ years, current" OR "X+ years, 2026"
+
+                            ========================
+                            🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
+                            ========================
+                            1. THE RESUME IS THE ONLY SOURCE OF TRUTH. You are strictly forbidden from copying a skill, tool, or technology from the Job Description and assigning it to the candidate unless it physically appears in their Resume or Q&A.
+                            2. DO NOT INFER OR ASSUME. 
+                            3. DO NOT INFLATE TO MATCH THE JD. 
+                            4. FACT AUDIT: Before outputting the final JSON, verify every single tool.
+
+                            ========================
+                            OUTPUT FORMAT (STRICT)
+                            ========================
+                            Return ONLY valid JSON:
+
+                            {{
+                              "SUMMARY": "4 sentence summary following the blueprint",
+                              "SKILL1": "Skill Area (tools)",
+                              "YEARS1": "X+ years, current",
+                              "SKILL2": "Skill Area (tools)",
+                              "YEARS2": "X+ years, current",
+                              "SKILL3": "Skill Area (tools)",
+                              "YEARS3": "X+ years, current",
+                              "SKILL4": "Skill Area (tools)",
+                              "YEARS4": "X+ years, current"
+                            }}
+
+                            ========================
+                            INPUT DATA
+                            ========================
+                            Job Description / Notes:
+                            {Job_Description_Notes_etc}
+
+                            Technical Interview Q&A:
+                            Q1: {Question_1}
+                            A1: {Answer_1}
+                            Q2: {Question_2}
+                            A2: {Answer_2}
+                            Q3: {Question_3}
+                            A3: {Answer_3}
+                            Q4: {Question_4}
+                            A4: {Answer_4}
+                            Q5: {Question_5}
+                            A5: {Answer_5}
+
+                            Resume:
+                            {raw_text}
+                            """
+                            time.sleep(2) 
+                            summary_data = {}
+                            
+                            for attempt in range(6):
+                                if attempt == 0:
+                                    current_model = models_to_try[0]
+                                elif attempt in [1, 2]:
+                                    current_model = models_to_try[1]
+                                elif attempt in [3, 4]:
+                                    current_model = models_to_try[2]
+                                else:
+                                    current_model = models_to_try[3]
+                                
+                                try:
+                                    summary_response = client.models.generate_content(
+                                        model=current_model,
+                                        contents=summary_prompt,
+                                        config=types.GenerateContentConfig(
+                                            response_mime_type="application/json"
+                                        )
+                                    )
+                                    summary_data = repair_and_load_json(summary_response.text)
+                                    break
+                                except Exception as api_e:
+                                    if "503" in str(api_e) and attempt < 5:
+                                        time.sleep(2 ** ((attempt % 2) + 1))
+                                        continue
+                                    else:
+                                        raise api_e
+
+                            mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
+                            mapping["SKILL1"] = summary_data.get("SKILL1", "")
+                            mapping["YEARS1"] = summary_data.get("YEARS1", "")
+                            mapping["SKILL2"] = summary_data.get("SKILL2", "")
+                            mapping["YEARS2"] = summary_data.get("YEARS2", "")
+                            mapping["SKILL3"] = summary_data.get("SKILL3", "")
+                            mapping["YEARS3"] = summary_data.get("YEARS3", "")
+                            mapping["SKILL4"] = summary_data.get("SKILL4", "")
+                            mapping["YEARS4"] = summary_data.get("YEARS4", "")
+                        except Exception as e:
+                            st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
+
+                    out_file = f"Submission_CBRE_{name.replace(' ', '_')}.docx"
+                    process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
+                    
+                    with open(out_file, "rb") as file:
+                        btn = st.download_button(
+                            label="⬇️ Download Generated Document",
+                            data=file,
+                            file_name=out_file,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            type="primary"
+                        )
+                    
+                    st.success(f"✅ Success! Document is ready for download.")
+
+                    try:
+                        os.remove(resume_path)
+                    except:
+                        pass
+
+                except Exception as e:
+                    st.error(f"❌ Process Failed: {str(e)}")
+
+
+# ====================================================================
+# --- 🟠 CLIENT APP 6: BNSF 🟠 ---
+# ====================================================================
+def bnsf_app():
+    TEMPLATE_FILENAME = "BNSF_Template.docx"
+    st.title("📄 BNSF Precision Extractor")
+
+    with st.sidebar:
+        st.header("🔑 API Configuration")
+        if "API_KEY" in st.secrets:
+            API_KEY = st.secrets["API_KEY"]
+            st.success("✅ API Key loaded from Secrets")
+        else:
+            API_KEY = st.text_input("Gemini API Key", type="password")
+            st.info("Paste your Gemini API key here to run the tool.")
+
+    st.header("📋 Candidate Information")
+    col1, col2 = st.columns(2)
+    with col1:
+        Current_Location_City_ST = st.text_input("Current Location (City, ST)", key="bn_loc")
+        Remote_or_Onsite = st.selectbox("Remote or Onsite", ["Remote", "Onsite"], index=1, key="bn_rem")
+    with col2:
+        Former_FM = st.selectbox("Former FM", ["Y - Per CRC, this candidate is eligible for rehire", "N"], index=1, key="bn_form")
+        LinkedIn_GitHub_Portfolio_Link = st.text_input("LinkedIn/GitHub/Portfolio Link", key="bn_link")
+
+    st.header("🎤 Supplier Technical Interview Results")
+    qa_col1, qa_col2 = st.columns(2)
+    with qa_col1:
+        Question_1 = st.text_input("Question 1", key="bn_q1")
+        Question_2 = st.text_input("Question 2", key="bn_q2")
+        Question_3 = st.text_input("Question 3", key="bn_q3")
+        Question_4 = st.text_input("Question 4", key="bn_q4")
+        Question_5 = st.text_input("Question 5", key="bn_q5")
+    with qa_col2:
+        Answer_1 = st.text_area("Answer 1", height=68, key="bn_a1")
+        Answer_2 = st.text_area("Answer 2", height=68, key="bn_a2")
+        Answer_3 = st.text_area("Answer 3", height=68, key="bn_a3")
+        Answer_4 = st.text_area("Answer 4", height=68, key="bn_a4")
+        Answer_5 = st.text_area("Answer 5", height=68, key="bn_a5")
+
+    st.header("📝 Job Description & Notes")
+    Job_Description_Notes_etc = st.text_area("Paste JD, Manager Notes, etc. here:", height=200, key="bn_jd")
+
+    st.header("📂 File Uploads")
+    resume_file = st.file_uploader("📤 Upload the candidate's resume...", type=['pdf', 'docx', 'doc'], key="bn_res")
+
+    if st.button("🚀 Generate BNSF Submission", type="primary"):
+        if not API_KEY:
+            st.error("❌ Error: Please enter your Gemini API Key in the sidebar.")
+        elif not resume_file:
+            st.error("❌ Error: Please upload a resume.")
+        elif not os.path.exists(TEMPLATE_FILENAME):
+            st.error(f"❌ Error: The preloaded template '{TEMPLATE_FILENAME}' was not found. Please make sure it is uploaded to your GitHub repository.")
+        else:
+            with st.spinner("Processing document and querying AI..."):
+                try:
+                    resume_path = f"temp_{resume_file.name}"
+                    with open(resume_path, "wb") as f:
+                        f.write(resume_file.getbuffer())
+
+                    raw_text = extract_text(resume_path)
+                    client = genai.Client(api_key=API_KEY)
+
+                    prompt = f"""
+                    Return a valid JSON object ONLY.
+
+                    RULES:
+                    1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
+                    2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
+                    3. Education: Extract School and Degree.
+                    4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
+                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
+                    5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
+
+                    JSON Structure:
+                    {{
+                        "FullName": "",
+                        "Certifications": "",
+                        "Education": [{{"School": "", "Degree": ""}}],
+                        "Experience": [{{"Company": "", "Title": "", "Bullets": [], "Environment": "", "Dates": ""}}]
+                    }}
+
+                    RESUME: {raw_text}
+                    """
+
+                    models_to_try = [
+                        'gemini-2.5-flash', 
+                        'gemini-3-flash-preview', 
+                        'gemini-3.1-flash-lite-preview', 
+                        'gemini-pro-latest'
+                    ]
+                    data = {}
+                    
+                    for attempt in range(6):
+                        if attempt == 0:
+                            current_model = models_to_try[0]
+                        elif attempt in [1, 2]:
+                            current_model = models_to_try[1]
+                        elif attempt in [3, 4]:
+                            current_model = models_to_try[2]
+                        else:
+                            current_model = models_to_try[3]
+                        
+                        try:
+                            response = client.models.generate_content(
+                                model=current_model,
+                                contents=prompt,
+                                config=types.GenerateContentConfig(
+                                    response_mime_type="application/json"
+                                )
+                            )
+                            data = repair_and_load_json(response.text)
+                            break
+                        except Exception as e:
+                            if "503" in str(e) and attempt < 5:
+                                time.sleep(2 ** ((attempt % 2) + 1))
+                                continue
+                            else:
+                                raise e
+
+                    name = data.get('FullName', '').title()
+                    mapping = {
+                        "FullName": name, "Location": Current_Location_City_ST, "Remote": Remote_or_Onsite,
+                        "Certifications": data.get("Certifications", ""),
+                        "FormerFM": Former_FM, "Links": LinkedIn_GitHub_Portfolio_Link,
+                        "Q1": Question_1, "A1": Answer_1, "Q2": Question_2, "A2": Answer_2,
+                        "Q3": Question_3, "A3": Answer_3, "Q4": Question_4, "A4": Answer_4, "Q5": Question_5, "A5": Answer_5,
+                        "SUMMARY": "", "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
+                        "SKILL3": "", "YEARS3": "", "SKILL4": "", "YEARS4": ""
+                    }
+
+                    edu = data.get('Education', [])
+                    for i in range(1, 4):
+                        mapping[f"School{i}"] = clean_school(edu[i-1].get('School', '')) if i <= len(edu) else ""
+                        mapping[f"Degree{i}"] = edu[i-1].get('Degree', '') if i <= len(edu) else ""
+
+                    exp = data.get('Experience', [])
+                    for i in range(1, 8):
+                        if i <= len(exp):
+                            mapping[f"Company{i}"] = exp[i-1].get('Company', '')
+                            raw_title = exp[i-1].get('Title', '')
+                            clean_title = re.sub(r'\s*\(.*$', '', raw_title).strip()
+                            mapping[f"Title{i}"] = clean_title
+                            mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
+                            mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
+                            mapping[f"Dates{i}"] = standardize_dates(exp[i-1].get('Dates', ''))
+                        else:
+                            mapping[f"Company{i}"] = ""
+                            mapping[f"Title{i}"] = ""
+                            mapping[f"Bullets{i}"] = ""
+                            mapping[f"Environment{i}"] = ""
+                            mapping[f"Dates{i}"] = ""
+
+                    if Job_Description_Notes_etc.strip():
+                        try:
+                            summary_prompt = f"""
+                            You are an elite, no-nonsense Senior Technical Recruiter writing an executive submission summary for a Fieldglass portal. 
+                            The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed.
+
+                            ========================
+                            THE NARRATIVE BLUEPRINT (4 Sentences Max)
+                            ========================
+                            Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
+                            - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
+                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
+                            - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter?
+                            - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
+
+                            ========================
+                            STYLE & TONE RULES (STRICT)
+                            ========================
+                            - Write like a human pitching to a colleague. Confident, direct, and factual.
+                            - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
+                            - LEADERSHIP VERBS: Use high-authority active verbs (e.g., 'Engineered', 'Optimized', 'Architected', 'Spearheaded').
+                            - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely."
+                            - Do NOT repeat or restate the job description.
+
+                            ========================
+                            🔴 Q&A USAGE RULES (CRITICAL)
+                            ========================
+                            - The resume is the PRIMARY source of truth for experience.
+                            - The technical interview Q&A is SECONDARY.
+                            If there is any conflict: 👉 prioritize the resume over Q&A.
+
+                            ========================
+                            SKILLS SECTION
+                            ========================
+                            - EXACTLY 4 items
+                            - Prioritize the specific "Must-Have" technologies.
+                            - Use only tools explicitly mentioned in resume/Q&A/notes
+                            Format: "Skill Area (Tool1, Tool2, Tool3, Tool4)"
+                            Years format: "X+ years, current" OR "X+ years, 2026"
+
+                            ========================
+                            🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
+                            ========================
+                            1. THE RESUME IS THE ONLY SOURCE OF TRUTH. You are strictly forbidden from copying a skill, tool, or technology from the Job Description and assigning it to the candidate unless it physically appears in their Resume or Q&A.
+                            2. DO NOT INFER OR ASSUME. 
+                            3. DO NOT INFLATE TO MATCH THE JD. 
+                            4. FACT AUDIT: Before outputting the final JSON, verify every single tool.
+
+                            ========================
+                            OUTPUT FORMAT (STRICT)
+                            ========================
+                            Return ONLY valid JSON:
+
+                            {{
+                              "SUMMARY": "4 sentence summary following the blueprint",
+                              "SKILL1": "Skill Area (tools)",
+                              "YEARS1": "X+ years, current",
+                              "SKILL2": "Skill Area (tools)",
+                              "YEARS2": "X+ years, current",
+                              "SKILL3": "Skill Area (tools)",
+                              "YEARS3": "X+ years, current",
+                              "SKILL4": "Skill Area (tools)",
+                              "YEARS4": "X+ years, current"
+                            }}
+
+                            ========================
+                            INPUT DATA
+                            ========================
+                            Job Description / Notes:
+                            {Job_Description_Notes_etc}
+
+                            Technical Interview Q&A:
+                            Q1: {Question_1}
+                            A1: {Answer_1}
+                            Q2: {Question_2}
+                            A2: {Answer_2}
+                            Q3: {Question_3}
+                            A3: {Answer_3}
+                            Q4: {Question_4}
+                            A4: {Answer_4}
+                            Q5: {Question_5}
+                            A5: {Answer_5}
+
+                            Resume:
+                            {raw_text}
+                            """
+                            time.sleep(2) 
+                            summary_data = {}
+                            
+                            for attempt in range(6):
+                                if attempt == 0:
+                                    current_model = models_to_try[0]
+                                elif attempt in [1, 2]:
+                                    current_model = models_to_try[1]
+                                elif attempt in [3, 4]:
+                                    current_model = models_to_try[2]
+                                else:
+                                    current_model = models_to_try[3]
+                                
+                                try:
+                                    summary_response = client.models.generate_content(
+                                        model=current_model,
+                                        contents=summary_prompt,
+                                        config=types.GenerateContentConfig(
+                                            response_mime_type="application/json"
+                                        )
+                                    )
+                                    summary_data = repair_and_load_json(summary_response.text)
+                                    break
+                                except Exception as api_e:
+                                    if "503" in str(api_e) and attempt < 5:
+                                        time.sleep(2 ** ((attempt % 2) + 1))
+                                        continue
+                                    else:
+                                        raise api_e
+
+                            mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
+                            mapping["SKILL1"] = summary_data.get("SKILL1", "")
+                            mapping["YEARS1"] = summary_data.get("YEARS1", "")
+                            mapping["SKILL2"] = summary_data.get("SKILL2", "")
+                            mapping["YEARS2"] = summary_data.get("YEARS2", "")
+                            mapping["SKILL3"] = summary_data.get("SKILL3", "")
+                            mapping["YEARS3"] = summary_data.get("YEARS3", "")
+                            mapping["SKILL4"] = summary_data.get("SKILL4", "")
+                            mapping["YEARS4"] = summary_data.get("YEARS4", "")
+                        except Exception as e:
+                            st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
+
+                    out_file = f"Submission_BNSF_{name.replace(' ', '_')}.docx"
+                    process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
+                    
+                    with open(out_file, "rb") as file:
+                        btn = st.download_button(
+                            label="⬇️ Download Generated Document",
+                            data=file,
+                            file_name=out_file,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            type="primary"
+                        )
+                    
+                    st.success(f"✅ Success! Document is ready for download.")
+
+                    try:
+                        os.remove(resume_path)
+                    except:
+                        pass
+
+                except Exception as e:
+                    st.error(f"❌ Process Failed: {str(e)}")
+
+
+# ====================================================================
+# --- ⬜ CLIENT APP 7: DALLAS GENERIC ⬜ ---
+# ====================================================================
+def dallas_generic_app():
+    TEMPLATE_FILENAME = "DallasGeneric_Template.docx"
+    st.title("📄 Dallas Generic Precision Extractor")
+
+    with st.sidebar:
+        st.header("🔑 API Configuration")
+        if "API_KEY" in st.secrets:
+            API_KEY = st.secrets["API_KEY"]
+            st.success("✅ API Key loaded from Secrets")
+        else:
+            API_KEY = st.text_input("Gemini API Key", type="password")
+            st.info("Paste your Gemini API key here to run the tool.")
+
+    st.header("📋 Candidate Information")
+    col1, col2 = st.columns(2)
+    with col1:
+        Current_Location_City_ST = st.text_input("Current Location (City, ST)", key="dg_loc")
+        Remote_or_Onsite = st.selectbox("Remote or Onsite", ["Remote", "Onsite"], index=1, key="dg_rem")
+    with col2:
+        Former_FM = st.selectbox("Former FM", ["Y - Per CRC, this candidate is eligible for rehire", "N"], index=1, key="dg_form")
+        LinkedIn_GitHub_Portfolio_Link = st.text_input("LinkedIn/GitHub/Portfolio Link", key="dg_link")
+
+    st.header("🎤 Supplier Technical Interview Results")
+    qa_col1, qa_col2 = st.columns(2)
+    with qa_col1:
+        Question_1 = st.text_input("Question 1", key="dg_q1")
+        Question_2 = st.text_input("Question 2", key="dg_q2")
+        Question_3 = st.text_input("Question 3", key="dg_q3")
+        Question_4 = st.text_input("Question 4", key="dg_q4")
+        Question_5 = st.text_input("Question 5", key="dg_q5")
+    with qa_col2:
+        Answer_1 = st.text_area("Answer 1", height=68, key="dg_a1")
+        Answer_2 = st.text_area("Answer 2", height=68, key="dg_a2")
+        Answer_3 = st.text_area("Answer 3", height=68, key="dg_a3")
+        Answer_4 = st.text_area("Answer 4", height=68, key="dg_a4")
+        Answer_5 = st.text_area("Answer 5", height=68, key="dg_a5")
+
+    st.header("📝 Job Description & Notes")
+    Job_Description_Notes_etc = st.text_area("Paste JD, Manager Notes, etc. here:", height=200, key="dg_jd")
+
+    st.header("📂 File Uploads")
+    resume_file = st.file_uploader("📤 Upload the candidate's resume...", type=['pdf', 'docx', 'doc'], key="dg_res")
+
+    if st.button("🚀 Generate Dallas Generic Submission", type="primary"):
+        if not API_KEY:
+            st.error("❌ Error: Please enter your Gemini API Key in the sidebar.")
+        elif not resume_file:
+            st.error("❌ Error: Please upload a resume.")
+        elif not os.path.exists(TEMPLATE_FILENAME):
+            st.error(f"❌ Error: The preloaded template '{TEMPLATE_FILENAME}' was not found. Please make sure it is uploaded to your GitHub repository.")
+        else:
+            with st.spinner("Processing document and querying AI..."):
+                try:
+                    resume_path = f"temp_{resume_file.name}"
+                    with open(resume_path, "wb") as f:
+                        f.write(resume_file.getbuffer())
+
+                    raw_text = extract_text(resume_path)
+                    client = genai.Client(api_key=API_KEY)
+
+                    prompt = f"""
+                    Return a valid JSON object ONLY.
+
+                    RULES:
+                    1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
+                    2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
+                    3. Education: Extract School and Degree.
+                    4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
+                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
+                    5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
+
+                    JSON Structure:
+                    {{
+                        "FullName": "",
+                        "Certifications": "",
+                        "Education": [{{"School": "", "Degree": ""}}],
+                        "Experience": [{{"Company": "", "Title": "", "Bullets": [], "Environment": "", "Dates": ""}}]
+                    }}
+
+                    RESUME: {raw_text}
+                    """
+
+                    models_to_try = [
+                        'gemini-2.5-flash', 
+                        'gemini-3-flash-preview', 
+                        'gemini-3.1-flash-lite-preview', 
+                        'gemini-pro-latest'
+                    ]
+                    data = {}
+                    
+                    for attempt in range(6):
+                        if attempt == 0:
+                            current_model = models_to_try[0]
+                        elif attempt in [1, 2]:
+                            current_model = models_to_try[1]
+                        elif attempt in [3, 4]:
+                            current_model = models_to_try[2]
+                        else:
+                            current_model = models_to_try[3]
+                        
+                        try:
+                            response = client.models.generate_content(
+                                model=current_model,
+                                contents=prompt,
+                                config=types.GenerateContentConfig(
+                                    response_mime_type="application/json"
+                                )
+                            )
+                            data = repair_and_load_json(response.text)
+                            break
+                        except Exception as e:
+                            if "503" in str(e) and attempt < 5:
+                                time.sleep(2 ** ((attempt % 2) + 1))
+                                continue
+                            else:
+                                raise e
+
+                    name = data.get('FullName', '').title()
+                    mapping = {
+                        "FullName": name, "Location": Current_Location_City_ST, "Remote": Remote_or_Onsite,
+                        "Certifications": data.get("Certifications", ""),
+                        "FormerFM": Former_FM, "Links": LinkedIn_GitHub_Portfolio_Link,
+                        "Q1": Question_1, "A1": Answer_1, "Q2": Question_2, "A2": Answer_2,
+                        "Q3": Question_3, "A3": Answer_3, "Q4": Question_4, "A4": Answer_4, "Q5": Question_5, "A5": Answer_5,
+                        "SUMMARY": "", "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
+                        "SKILL3": "", "YEARS3": "", "SKILL4": "", "YEARS4": ""
+                    }
+
+                    edu = data.get('Education', [])
+                    for i in range(1, 4):
+                        mapping[f"School{i}"] = clean_school(edu[i-1].get('School', '')) if i <= len(edu) else ""
+                        mapping[f"Degree{i}"] = edu[i-1].get('Degree', '') if i <= len(edu) else ""
+
+                    exp = data.get('Experience', [])
+                    for i in range(1, 8):
+                        if i <= len(exp):
+                            mapping[f"Company{i}"] = exp[i-1].get('Company', '')
+                            raw_title = exp[i-1].get('Title', '')
+                            clean_title = re.sub(r'\s*\(.*$', '', raw_title).strip()
+                            mapping[f"Title{i}"] = clean_title
+                            mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
+                            mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
+                            mapping[f"Dates{i}"] = standardize_dates(exp[i-1].get('Dates', ''))
+                        else:
+                            mapping[f"Company{i}"] = ""
+                            mapping[f"Title{i}"] = ""
+                            mapping[f"Bullets{i}"] = ""
+                            mapping[f"Environment{i}"] = ""
+                            mapping[f"Dates{i}"] = ""
+
+                    if Job_Description_Notes_etc.strip():
+                        try:
+                            summary_prompt = f"""
+                            You are an elite, no-nonsense Senior Technical Recruiter writing an executive submission summary for a Fieldglass portal. 
+                            The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed.
+
+                            ========================
+                            THE NARRATIVE BLUEPRINT (4 Sentences Max)
+                            ========================
+                            Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
+                            - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
+                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
+                            - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter?
+                            - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
+
+                            ========================
+                            STYLE & TONE RULES (STRICT)
+                            ========================
+                            - Write like a human pitching to a colleague. Confident, direct, and factual.
+                            - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
+                            - LEADERSHIP VERBS: Use high-authority active verbs (e.g., 'Engineered', 'Optimized', 'Architected', 'Spearheaded').
+                            - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely."
+                            - Do NOT repeat or restate the job description.
+
+                            ========================
+                            🔴 Q&A USAGE RULES (CRITICAL)
+                            ========================
+                            - The resume is the PRIMARY source of truth for experience.
+                            - The technical interview Q&A is SECONDARY.
+                            If there is any conflict: 👉 prioritize the resume over Q&A.
+
+                            ========================
+                            SKILLS SECTION
+                            ========================
+                            - EXACTLY 4 items
+                            - Prioritize the specific "Must-Have" technologies.
+                            - Use only tools explicitly mentioned in resume/Q&A/notes
+                            Format: "Skill Area (Tool1, Tool2, Tool3, Tool4)"
+                            Years format: "X+ years, current" OR "X+ years, 2026"
+
+                            ========================
+                            🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
+                            ========================
+                            1. THE RESUME IS THE ONLY SOURCE OF TRUTH. You are strictly forbidden from copying a skill, tool, or technology from the Job Description and assigning it to the candidate unless it physically appears in their Resume or Q&A.
+                            2. DO NOT INFER OR ASSUME. 
+                            3. DO NOT INFLATE TO MATCH THE JD. 
+                            4. FACT AUDIT: Before outputting the final JSON, verify every single tool.
+
+                            ========================
+                            OUTPUT FORMAT (STRICT)
+                            ========================
+                            Return ONLY valid JSON:
+
+                            {{
+                              "SUMMARY": "4 sentence summary following the blueprint",
+                              "SKILL1": "Skill Area (tools)",
+                              "YEARS1": "X+ years, current",
+                              "SKILL2": "Skill Area (tools)",
+                              "YEARS2": "X+ years, current",
+                              "SKILL3": "Skill Area (tools)",
+                              "YEARS3": "X+ years, current",
+                              "SKILL4": "Skill Area (tools)",
+                              "YEARS4": "X+ years, current"
+                            }}
+
+                            ========================
+                            INPUT DATA
+                            ========================
+                            Job Description / Notes:
+                            {Job_Description_Notes_etc}
+
+                            Technical Interview Q&A:
+                            Q1: {Question_1}
+                            A1: {Answer_1}
+                            Q2: {Question_2}
+                            A2: {Answer_2}
+                            Q3: {Question_3}
+                            A3: {Answer_3}
+                            Q4: {Question_4}
+                            A4: {Answer_4}
+                            Q5: {Question_5}
+                            A5: {Answer_5}
+
+                            Resume:
+                            {raw_text}
+                            """
+                            time.sleep(2) 
+                            summary_data = {}
+                            
+                            for attempt in range(6):
+                                if attempt == 0:
+                                    current_model = models_to_try[0]
+                                elif attempt in [1, 2]:
+                                    current_model = models_to_try[1]
+                                elif attempt in [3, 4]:
+                                    current_model = models_to_try[2]
+                                else:
+                                    current_model = models_to_try[3]
+                                
+                                try:
+                                    summary_response = client.models.generate_content(
+                                        model=current_model,
+                                        contents=summary_prompt,
+                                        config=types.GenerateContentConfig(
+                                            response_mime_type="application/json"
+                                        )
+                                    )
+                                    summary_data = repair_and_load_json(summary_response.text)
+                                    break
+                                except Exception as api_e:
+                                    if "503" in str(api_e) and attempt < 5:
+                                        time.sleep(2 ** ((attempt % 2) + 1))
+                                        continue
+                                    else:
+                                        raise api_e
+
+                            mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
+                            mapping["SKILL1"] = summary_data.get("SKILL1", "")
+                            mapping["YEARS1"] = summary_data.get("YEARS1", "")
+                            mapping["SKILL2"] = summary_data.get("SKILL2", "")
+                            mapping["YEARS2"] = summary_data.get("YEARS2", "")
+                            mapping["SKILL3"] = summary_data.get("SKILL3", "")
+                            mapping["YEARS3"] = summary_data.get("YEARS3", "")
+                            mapping["SKILL4"] = summary_data.get("SKILL4", "")
+                            mapping["YEARS4"] = summary_data.get("YEARS4", "")
+                        except Exception as e:
+                            st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
+
+                    out_file = f"Submission_DallasGeneric_{name.replace(' ', '_')}.docx"
+                    process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
+                    
+                    with open(out_file, "rb") as file:
+                        btn = st.download_button(
+                            label="⬇️ Download Generated Document",
+                            data=file,
+                            file_name=out_file,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            type="primary"
+                        )
+                    
+                    st.success(f"✅ Success! Document is ready for download.")
+
+                    try:
+                        os.remove(resume_path)
+                    except:
+                        pass
+
+                except Exception as e:
+                    st.error(f"❌ Process Failed: {str(e)}")
+
+
+# ====================================================================
 # --- MAIN ROUTING LOGIC (The Dropdown Page) ---
 # ====================================================================
 
 st.title("🏢 Precision Extractor Hub")
 st.markdown("Please select your client account below to access the customized formatter.")
 
-client_selection = st.selectbox("Select Client Account:", ["Fannie Mae", "Peraton"])
+client_selection = st.selectbox(
+    "Select Client Account:", 
+    ["Fannie Mae", "Peraton", "Capital One", "ADUSA", "CBRE", "BNSF", "Dallas Generic"]
+)
 
 st.divider()
 
@@ -1023,3 +2560,13 @@ if client_selection == "Fannie Mae":
     fannie_mae_app()
 elif client_selection == "Peraton":
     peraton_app()
+elif client_selection == "Capital One":
+    capital_one_app()
+elif client_selection == "ADUSA":
+    adusa_app()
+elif client_selection == "CBRE":
+    cbre_app()
+elif client_selection == "BNSF":
+    bnsf_app()
+elif client_selection == "Dallas Generic":
+    dallas_generic_app()
