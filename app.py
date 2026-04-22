@@ -10,6 +10,7 @@ import re
 import os
 import copy
 import time
+import subprocess
 
 # ====================================================================
 # --- STREAMLIT UI & PASSWORD LOGIC ---
@@ -1337,22 +1338,48 @@ def capital_one_app():
                         except Exception as e:
                             st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
 
-                    out_file = f"Submission_CapitalOne_{name.replace(' ', '_')}.docx"
-                    process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
+                    # 1. Generate the .docx file first
+                    docx_file = f"Submission_CapitalOne_{name.replace(' ', '_')}.docx"
+                    process_word_doc(TEMPLATE_FILENAME, mapping, docx_file)
                     
-                    with open(out_file, "rb") as file:
-                        btn = st.download_button(
-                            label="⬇️ Download Generated Document",
-                            data=file,
-                            file_name=out_file,
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            type="primary"
-                        )
+                    # 2. Convert the .docx to .pdf using LibreOffice (Linux compatible)
+                    pdf_file = f"Submission_CapitalOne_{name.replace(' ', '_')}.pdf"
                     
-                    st.success(f"✅ Success! Document is ready for download.")
+                    try:
+                        subprocess.run([
+                            'libreoffice', '--headless', '--convert-to', 'pdf', 
+                            docx_file, '--outdir', os.getcwd()
+                        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception as e:
+                        st.error(f"⚠️ PDF Conversion failed: {e}. Ensure 'libreoffice' is in packages.txt.")
+                    
+                    # 3. Provide the PDF for download (fallback to docx if PDF fails to generate)
+                    if os.path.exists(pdf_file):
+                        with open(pdf_file, "rb") as file:
+                            btn = st.download_button(
+                                label="⬇️ Download Generated PDF",
+                                data=file,
+                                file_name=pdf_file,
+                                mime="application/pdf",
+                                type="primary"
+                            )
+                        st.success(f"✅ Success! PDF Document is ready for download.")
+                    else:
+                        with open(docx_file, "rb") as file:
+                            btn = st.download_button(
+                                label="⬇️ Download Generated Word Doc (PDF Failed)",
+                                data=file,
+                                file_name=docx_file,
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                type="primary"
+                            )
+                        st.warning("⚠️ Success, but PDF conversion failed. Provided Word Document instead.")
 
+                    # 4. Cleanup the temporary files
                     try:
                         os.remove(resume_path)
+                        if os.path.exists(docx_file):
+                            os.remove(docx_file)
                     except:
                         pass
 
