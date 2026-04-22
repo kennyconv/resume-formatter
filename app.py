@@ -224,29 +224,62 @@ def process_word_doc(temp_path, mapping, out_path):
     target_font = 'Calibri' if is_peraton else None
     env_font = 'Calibri' if is_peraton else 'Times New Roman'
 
-    if not mapping.get("Certifications") or not str(mapping.get("Certifications")).strip():
+    # --- TWEAK 1: Remove "Certifications" Table & Header (All Clients) ---
+    has_certifications = True
+    if is_peraton:
+        if not mapping.get("CERTIFICATION1"):
+            has_certifications = False
+    else:
+        if not mapping.get("Certifications") or not str(mapping.get("Certifications")).strip():
+            has_certifications = False
+
+    if not has_certifications:
         tables_to_delete = []
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
-                    if "{{Certifications}}" in cell.text:
+                    if "{{Certifications}}" in cell.text or "{{CERTIFICATION1}}" in cell.text:
                         if table not in tables_to_delete:
                             tables_to_delete.append(table)
         for table in tables_to_delete:
             table._element.getparent().remove(table._element)
             
-    # --- PERATON TWEAK 1: Remove "Certifications" Header & Fix Spacing ---
-    if is_peraton and not mapping.get("CERTIFICATION1"):
         paras = list(doc.paragraphs)
         for i, p in enumerate(paras):
             if p.text.strip() == "Certifications":
                 delete_paragraph(p)
-                # To prevent a double-space gap, delete the empty line above it if it exists
+                # Prevent a double-space gap by deleting the empty line above it if it exists
                 if i > 0 and not paras[i-1].text.strip():
                     try:
                         delete_paragraph(paras[i-1])
                     except:
                         pass
+
+    # --- TWEAK 2: Remove Q&A Section for all clients except Fannie Mae if empty ---
+    is_fannie_mae = "FormerFM" in mapping
+    has_qa = any(mapping.get(k) and str(mapping.get(k)).strip() for k in ["Q1", "A1", "Q2", "A2", "Q3", "A3", "Q4", "A4", "Q5", "A5"])
+
+    if not is_fannie_mae and not has_qa:
+        paras = list(doc.paragraphs)
+        for i, p in enumerate(paras):
+            if "SUPPLIER TECHNICAL INTERVIEW RESULTS" in p.text.upper():
+                delete_paragraph(p)
+                # Prevent a double-space gap by deleting the empty line above it if it exists
+                if i > 0 and not paras[i-1].text.strip():
+                    try:
+                        delete_paragraph(paras[i-1])
+                    except:
+                        pass
+        
+        tables_to_delete = []
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if "{{Q1}}" in cell.text:
+                        if table not in tables_to_delete:
+                            tables_to_delete.append(table)
+        for table in tables_to_delete:
+            table._element.getparent().remove(table._element)
                 
     # --- PERATON TWEAK 2: Space before Relevant Professional Experience ---
     if is_peraton:
