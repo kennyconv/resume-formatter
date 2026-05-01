@@ -556,16 +556,18 @@ def fannie_mae_app():
                         try:
                             summary_prompt = f"""
                             You are an elite, no-nonsense Senior Technical Recruiter writing an executive submission summary for a Fieldglass portal. 
-                            The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed.
+                            The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed, optimized for both human reading and ATS exact-match parsing.
 
                             ========================
                             THE NARRATIVE BLUEPRINT (4 Sentences Max)
                             ========================
                             Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
-                            - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description? (Calculate their total overall years. Use their FIRST NAME only. You MUST use the exact job title requested in the JD if the candidate's history support it. Avoid generic fluff; use specific technical keywords from the JD).
-                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job? (Do not skip their current job just to find a better keyword match 5 years ago. Frame it as a direct 1:1 match for the manager's current challenge).
-                            - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter? (Weave the specific tools/methodologies into an "Execution Statement" that highlights the complexity, scale, or business impact. DO NOT write a comma-separated list of tools. E.g., "By engineering PySpark pipelines across Glue and EMR, she orchestrated TB-scale workflows that eliminated bottlenecks and ensured 99% reliability." DO NOT repeat verbs from Sentence 2).
-                            - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role? (Do NOT start with "Because" or "With." Use a strong, direct structure like: "[First Name]'s success in [X] makes them an immediate asset for [Y]." Note: Refer to the work as "this team," "this project," or "the application". Do NOT mention the physical location/city).
+                            - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description? (Calculate their total overall years strictly rounding DOWN to the nearest whole year formatted as 'X+ years'. Use their FIRST NAME only. You MUST use the exact job title requested in the JD if the candidate's history supports it. Avoid generic fluff).
+                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job? (Frame it as a direct 1:1 match for the manager's current challenge).
+                            - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter? (Weave the specific tools/methodologies into an "Execution Statement" that highlights the complexity, scale, or business impact. DO NOT write a comma-separated list of tools. DO NOT repeat verbs from Sentence 2).
+                            - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role? (Use a strong, direct structure like: "[First Name]'s success in [X] makes them an immediate asset for driving this team's [specific technical goal/initiative]." Do NOT mention the physical location/city).
+
+                            CRITICAL ATS HACK: Across these 4 sentences, you MUST seamlessly embed 2-3 exact phrases from the Job Description (including soft skills like "changing priorities" or "system analysis") to maximize the Fieldglass match score. Do not force them if they ruin the sentence flow, but prioritize exact phrase matching where supported by the resume.
 
                             ========================
                             STYLE & TONE RULES (STRICT)
@@ -584,7 +586,7 @@ def fannie_mae_app():
                             ========================
                             EXAMPLE OF A PERFECT SUMMARY
                             ========================
-                            "Sarah is a senior data engineer with 8+ years of experience architecting cloud-native data migrations within heavily regulated financial environments. Most recently at Capital One, she led the end-to-end migration of a legacy on-prem data warehouse to AWS, directly mirroring the scale and compliance rigor required for this team's current cloud initiative. By engineering automated ETL pipelines with Python, PySpark, and Apache Airflow, she processed 5TB of daily transaction data and reduced reporting latency by 40%. Sarah's success in navigating complex data governance structures makes her an immediate asset for driving this AWS migration."
+                            "Sarah is a Senior Data Engineer with 7+ years of experience architecting cloud-native data migrations within heavily regulated financial environments. Most recently at Capital One, she led the end-to-end migration of a legacy on-prem data warehouse to AWS, directly mirroring the scale and compliance rigor required for this team's current cloud initiative. By engineering automated ETL pipelines with Python, PySpark, and Apache Airflow, she processed 5TB of daily transaction data and reduced reporting latency by 40%. Sarah's success in navigating complex data governance structures makes her an immediate asset for driving this team's AWS migration goals."
 
                             ========================
                             🔴 Q&A USAGE RULES (CRITICAL)
@@ -628,10 +630,10 @@ def fannie_mae_app():
                             ========================
                             YEARS ACCURACY RULES (REALISTIC RECRUITER MODE)
                             ========================
-                            - Use April 2026 as the current date.
-                            - Calculate years based on total progressive experience in that SKILL DOMAIN, but DO NOT blindly apply their maximum total years to every single bucket.
-                            - Foundational skills (e.g., Python, SQL, general engineering) should get their maximum total years (e.g., 7+).
-                            - Advanced/Specialized tools (e.g., SageMaker, Kubernetes, Cloud Architecture) should realistically be calculated at 1-2 years less than their maximum total experience (e.g., 5+ or 6+) unless the resume proves otherwise. 
+                            - Use May 2026 as the current date.
+                            - STRICT MATH (DATE-DRIVEN ONLY): Calculate years strictly based on the earliest chronological date provided in the 'Professional Experience' or 'Work History' section. You MUST completely IGNORE any self-reported years of experience in the candidate's summary blurb (e.g., if their summary claims "12+ years" but their listed jobs only go back to 2019, you must calculate from 2019). Round DOWN to the nearest whole year and use the exact format "X+ years". Do not use phrases like "nearly X years". (e.g., If the job history calculates to 7 years and 10 months, output "7+ years". NEVER round up to 8+). 
+                            - Foundational skills (e.g., Python, SQL, general engineering) should get their maximum calculated years.
+                            - Advanced/Specialized tools (e.g., SageMaker, Kubernetes, Cloud Architecture) should realistically be calculated at 1-2 years less than their maximum total experience unless the resume explicitly proves Day 1 usage. 
                             - Default to "current" if they are still working in this general technical field. Do NOT use past years (e.g., "2022"). Always bridge past experience to their current tenure.
 
                             ========================
@@ -644,6 +646,7 @@ def fannie_mae_app():
                             4. NO REPETITION: Do not repeat verbs or concepts across sentences.
                             5. THE PITCH: Ensure a natural, confident recruiter tone.
                             6. CURRENT JOB: Did you explicitly name their most recent employer in Sentence 2?
+                            7. ACCURATE MATH: Did you strictly round down their years of experience and use the 'X+ years' format to prevent ATS parser flags?
 
                             Output only the final, polished JSON.
 
