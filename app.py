@@ -256,7 +256,8 @@ def process_word_doc(temp_path, mapping, out_path):
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
-                    if "{{Certifications}}" in cell.text or "{{CERTIFICATION1}}" in cell.text:
+                    # Made case-insensitive to ensure it catches the tag even if typed differently in template
+                    if "{{certifications}}" in cell.text.lower() or "{{certification1}}" in cell.text.lower():
                         if table not in tables_to_delete:
                             tables_to_delete.append(table)
         for table in tables_to_delete:
@@ -264,7 +265,8 @@ def process_word_doc(temp_path, mapping, out_path):
             
         paras = list(doc.paragraphs)
         for i, p in enumerate(paras):
-            if p.text.strip() == "Certifications":
+            # Made case-insensitive to ensure the header text is caught
+            if p.text.strip().lower() == "certifications":
                 delete_paragraph(p)
                 # Prevent a double-space gap by deleting the empty line above it if it exists
                 if i > 0 and not paras[i-1].text.strip():
@@ -273,11 +275,10 @@ def process_word_doc(temp_path, mapping, out_path):
                     except:
                         pass
 
-    # --- TWEAK 2: Remove Q&A Section for all clients except Fannie Mae if empty ---
-    is_fannie_mae = "FormerFM" in mapping
+    # --- TWEAK 2: Remove Q&A Section for ALL clients if empty (Including Fannie Mae) ---
     has_qa = any(mapping.get(k) and str(mapping.get(k)).strip() for k in ["Q1", "A1", "Q2", "A2", "Q3", "A3", "Q4", "A4", "Q5", "A5"])
 
-    if not is_fannie_mae and not has_qa:
+    if not has_qa:
         paras = list(doc.paragraphs)
         for i, p in enumerate(paras):
             if "SUPPLIER TECHNICAL INTERVIEW RESULTS" in p.text.upper():
@@ -293,7 +294,8 @@ def process_word_doc(temp_path, mapping, out_path):
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
-                    if "{{Q1}}" in cell.text:
+                    # Made case-insensitive for safety
+                    if "{{q1}}" in cell.text.lower():
                         if table not in tables_to_delete:
                             tables_to_delete.append(table)
         for table in tables_to_delete:
