@@ -268,26 +268,12 @@ def process_word_doc(temp_path, mapping, out_path):
             # Made case-insensitive to ensure the header text is caught
             if p.text.strip().lower() == "certifications":
                 delete_paragraph(p)
-                
-                # Clean up ALL empty lines immediately above
-                prev_idx = i - 1
-                while prev_idx >= 0 and not paras[prev_idx].text.strip():
+                # Prevent a double-space gap by deleting the empty line above it if it exists
+                if i > 0 and not paras[i-1].text.strip():
                     try:
-                        if getattr(paras[prev_idx], '_element', None) is not None:
-                            delete_paragraph(paras[prev_idx])
+                        delete_paragraph(paras[i-1])
                     except:
                         pass
-                    prev_idx -= 1
-                        
-                # Clean up ALL empty lines immediately below (acts as spacer after table)
-                next_idx = i + 1
-                while next_idx < len(paras) and not paras[next_idx].text.strip():
-                    try:
-                        if getattr(paras[next_idx], '_element', None) is not None:
-                            delete_paragraph(paras[next_idx])
-                    except:
-                        pass
-                    next_idx += 1
 
     # --- TWEAK 2: Remove Q&A Section for ALL clients if empty (Including Fannie Mae) ---
     has_qa = any(mapping.get(k) and str(mapping.get(k)).strip() for k in ["Q1", "A1", "Q2", "A2", "Q3", "A3", "Q4", "A4", "Q5", "A5"])
