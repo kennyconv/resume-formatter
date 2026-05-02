@@ -268,10 +268,18 @@ def process_word_doc(temp_path, mapping, out_path):
             # Made case-insensitive to ensure the header text is caught
             if p.text.strip().lower() == "certifications":
                 delete_paragraph(p)
+                
                 # Prevent a double-space gap by deleting the empty line above it if it exists
                 if i > 0 and not paras[i-1].text.strip():
                     try:
                         delete_paragraph(paras[i-1])
+                    except:
+                        pass
+                        
+                # ALSO delete the empty line below it (which acts as a spacer after the deleted table)
+                if i + 1 < len(paras) and not paras[i+1].text.strip():
+                    try:
+                        delete_paragraph(paras[i+1])
                     except:
                         pass
 
