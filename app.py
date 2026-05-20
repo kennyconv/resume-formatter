@@ -2807,45 +2807,40 @@ def pdf_to_word_app():
     st.header("📂 File Upload")
     resume_file = st.file_uploader("📤 Upload PDF Resume...", type=['pdf'], key="pdf2word_res")
 
-    if st.button("🔄 Convert to Word", type="primary"):
+    if st.button("🔄 Convert to Word (Adobe High Fidelity)", type="primary"):
         if not resume_file:
             st.error("❌ Error: Please upload a PDF file.")
         else:
-            with st.spinner("Converting document layout to Word..."):
+            with st.spinner("Converting via Adobe PDF Services... this may take 15-30 seconds."):
                 try:
-                    # Save uploaded PDF to temp file
-                    pdf_path = f"temp_{resume_file.name}"
-                    with open(pdf_path, "wb") as f:
-                        f.write(resume_file.getbuffer())
+                    # Pull Adobe credentials from Streamlit secrets
+                    client_id = st.secrets["PDF_SERVICES_CLIENT_ID"]
+                    client_secret = st.secrets["PDF_SERVICES_CLIENT_SECRET"]
 
-                    # Define output docx path
+                    # Read PDF bytes directly from uploader (no temp file needed)
+                    pdf_bytes = resume_file.read()
+
+                    # Call Adobe converter
+                    from adobe_converter import convert_pdf_to_docx
+                    docx_bytes = convert_pdf_to_docx(pdf_bytes, client_id, client_secret)
+
                     docx_filename = f"Converted_{resume_file.name.replace('.pdf', '')}.docx"
 
-                    # Convert using pdf2docx (Preserves layout, bypasses AI)
-                    cv = Converter(pdf_path)
-                    cv.convert(docx_filename, start=0, end=None)
-                    cv.close()
+                    st.download_button(
+                        label="⬇️ Download Word Document",
+                        data=docx_bytes,
+                        file_name=docx_filename,
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        type="primary"
+                    )
+                    st.success("✅ Success! Document converted with full formatting preserved.")
 
-                    # Provide download button
-                    with open(docx_filename, "rb") as file:
-                        st.download_button(
-                            label="⬇️ Download Word Document",
-                            data=file,
-                            file_name=docx_filename,
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            type="primary"
-                        )
-                    st.success("✅ Success! Document successfully converted.")
-
-                    # Cleanup temp files
-                    try:
-                        os.remove(pdf_path)
-                        os.remove(docx_filename)
-                    except:
-                        pass
-
+                except KeyError:
+                    st.error("❌ Adobe API credentials not found in Streamlit Secrets. Please add PDF_SERVICES_CLIENT_ID and PDF_SERVICES_CLIENT_SECRET.")
+                except RuntimeError as e:
+                    st.error(f"❌ Adobe Conversion Failed: {str(e)}")
                 except Exception as e:
-                    st.error(f"❌ Conversion Failed: {str(e)}")
+                    st.error(f"❌ Unexpected Error: {str(e)}")
 
 
 # ====================================================================
