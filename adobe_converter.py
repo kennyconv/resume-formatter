@@ -25,8 +25,10 @@ def convert_pdf_to_docx(pdf_bytes: bytes, client_id: str, client_secret: str) ->
         pdf_services = PDFServices(credentials=credentials)
 
         # Upload the PDF bytes to Adobe
+        import io
+        
         input_asset = pdf_services.upload(
-            input_stream=pdf_bytes,
+            input_stream=io.BytesIO(pdf_bytes),
             mime_type=PDFServicesMediaType.PDF
         )
 
