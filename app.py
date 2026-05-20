@@ -2799,58 +2799,98 @@ def dallas_generic_app():
 # --- 📄 NEW APP: PDF TO WORD CONVERTER 📄 ---
 # ====================================================================
 def pdf_to_word_app():
+
     st.title("PDF to Word Converter")
     st.markdown("Converting using LibreOffice Headless mode.")
 
     st.header("📂 File Upload")
-    resume_file = st.file_uploader("📤 Upload PDF Resume...", type=['pdf'], key="pdf2word_res")
+
+    resume_file = st.file_uploader(
+        "📤 Upload PDF Resume...",
+        type=["pdf"],
+        key="pdf2word_res"
+    )
 
     if st.button("🔄 Convert to Word", type="primary"):
-        if not resume_file:
+
+        if resume_file is None:
             st.error("❌ Error: Please upload a PDF file.")
-        else:
-            with st.spinner("Converting document layout to Word..."):
-                try:
-                    # Save uploaded PDF to temp file
-                    pdf_path = f"temp_{resume_file.name}"
+            return
+
+        with st.spinner("Converting document layout to Word..."):
+
+            try:
+
+                # Create temp directory
+                with tempfile.TemporaryDirectory() as tmpdir:
+
+                    # Save uploaded PDF
+                    pdf_path = os.path.join(tmpdir, resume_file.name)
+
                     with open(pdf_path, "wb") as f:
                         f.write(resume_file.getbuffer())
 
-                    # Define output docx path
-                    docx_filename = resume_file.name.replace('.pdf', '.docx')
+                    # Base filename
+                    base_name = os.path.splitext(resume_file.name)[0]
 
-                    # Convert using LibreOffice headless and capture errors
-                    result = subprocess.run([
-                        'libreoffice', '--headless', '--convert-to', 'docx', 
-                        pdf_path, '--outdir', os.getcwd()
-                    ], capture_output=True, text=True, check=True)
+                    # Expected output DOCX
+                    docx_path = os.path.join(
+                        tmpdir,
+                        f"{base_name}.docx"
+                    )
 
-                    # Provide download button with a check for existence
-                    if os.path.exists(docx_filename):
-                        with open(docx_filename, "rb") as file:
-                            st.download_button(
-                                label="⬇️ Download Word Document",
-                                data=file,
-                                file_name=docx_filename,
-                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                                type="primary"
-                            )
-                        st.success("✅ Success! Document successfully converted.")
-                    else:
-                        st.error(f"Conversion failed. File not found at: {os.path.abspath(docx_filename)}")
+                    # LibreOffice executable
+                    # WINDOWS:
+                    libreoffice_cmd = r"C:\Program Files\LibreOffice\program\soffice.exe"
 
-                    # Cleanup temp files
-                    try:
-                        os.remove(pdf_path)
-                    except:
-                        pass
+                    # MAC/LINUX:
+                    # libreoffice_cmd = "soffice"
 
-                except Exception as e:
-                    # Display stderr if it's a subprocess error
-                    if isinstance(e, subprocess.CalledProcessError):
-                        st.error(f"❌ Conversion Failed: {e.stderr}")
-                    else:
-                        st.error(f"❌ Conversion Failed: {str(e)}")
+                    # Convert PDF -> DOCX
+                    result = subprocess.run(
+                        [
+                            libreoffice_cmd,
+                            "--headless",
+                            "--convert-to",
+                            "docx",
+                            pdf_path,
+                            "--outdir",
+                            tmpdir
+                        ],
+                        capture_output=True,
+                        text=True
+                    )
+
+                    # Debug output
+                    st.text(result.stdout)
+                    st.text(result.stderr)
+
+                    # Verify file exists
+                    if not os.path.exists(docx_path):
+
+                        st.error("❌ DOCX file was not created.")
+
+                        st.write("Files found in temp directory:")
+                        st.write(os.listdir(tmpdir))
+
+                        return
+
+                    # Download button
+                    with open(docx_path, "rb") as file:
+
+                        st.download_button(
+                            label="⬇️ Download Word Document",
+                            data=file,
+                            file_name=f"{base_name}.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            type="primary"
+                        )
+
+                    st.success("✅ Success! Document successfully converted.")
+
+            except Exception as e:
+
+                st.error(f"❌ Conversion Failed: {str(e)}")
 
 
 # ====================================================================
