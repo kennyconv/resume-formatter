@@ -45,7 +45,11 @@ def convert_pdf_to_docx(pdf_bytes: bytes, client_id: str, client_secret: str) ->
         # Read result as bytes and return
         result_asset = pdf_services_response.get_result().get_asset()
         stream_asset: StreamAsset = pdf_services.get_content(result_asset)
-        return stream_asset.get_input_stream().read()
+        output_stream = stream_asset.get_input_stream()
+        if hasattr(output_stream, 'read'):
+            return output_stream.read()
+        else:
+            return bytes(output_stream)
 
     except ServiceUsageException as e:
         raise RuntimeError(f"Adobe API quota exceeded — you may have hit the 500/month free tier limit. ({e})")
