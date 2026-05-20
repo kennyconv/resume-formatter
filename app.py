@@ -2773,23 +2773,23 @@ def dallas_generic_app():
                     process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
                     
                     with open(out_file, "rb") as file:
-                        btn = st.download_button(
-                            label="⬇️ Download Generated Document",
-                            data=file,
-                            file_name=out_file,
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            type="primary"
-                        )
-                    
-                    st.success(f"✅ Success! Document is ready for download.")
+                        btn = st.download_button(
+                            label="⬇️ Download Generated Document",
+                            data=file,
+                            file_name=out_file,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            type="primary"
+                        )
+                    
+                    st.success(f"✅ Success! Document is ready for download.")
 
-                    try:
-                        os.remove(resume_path)
-                    except:
-                        pass
+                    try:
+                        os.remove(resume_path)
+                    except:
+                        pass
 
-                except Exception as e:
-                    st.error(f"❌ Process Failed: {str(e)}")
+                except Exception as e:
+                    st.error(f"❌ Process Failed: {str(e)}")
 
 
 # ====================================================================
