@@ -11,6 +11,7 @@ import os
 import copy
 import time
 import subprocess
+import tempfile
 
 # ====================================================================
 # --- STREAMLIT UI & PASSWORD LOGIC ---
