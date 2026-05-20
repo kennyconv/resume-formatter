@@ -11,7 +11,6 @@ import os
 import copy
 import time
 import subprocess
-from pdf2docx import Converter
 
 # ====================================================================
 # --- STREAMLIT UI & PASSWORD LOGIC ---
@@ -2801,7 +2800,7 @@ def dallas_generic_app():
 # ====================================================================
 def pdf_to_word_app():
     st.title("PDF to Word Converter")
-    st.markdown("Upload a PDF resume below to convert it to a Word Document (.docx) without any AI formatting or content changes.")
+    st.markdown("Converting using LibreOffice Headless mode.")
 
     st.header("📂 File Upload")
     resume_file = st.file_uploader("📤 Upload PDF Resume...", type=['pdf'], key="pdf2word_res")
@@ -2820,10 +2819,11 @@ def pdf_to_word_app():
                     # Define output docx path
                     docx_filename = f"Converted_{resume_file.name.replace('.pdf', '')}.docx"
 
-                    # Convert using pdf2docx (Preserves layout, bypasses AI)
-                    cv = Converter(pdf_path)
-                    cv.convert(docx_filename, start=0, end=None)
-                    cv.close()
+                    # Convert using LibreOffice headless
+                    subprocess.run([
+                        'libreoffice', '--headless', '--convert-to', 'docx', 
+                        pdf_path, '--outdir', os.getcwd()
+                    ], check=True)
 
                     # Provide download button
                     with open(docx_filename, "rb") as file:
