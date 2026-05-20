@@ -2841,11 +2841,7 @@ def pdf_to_word_app():
                     )
 
                     # LibreOffice executable
-                    # WINDOWS:
-                    libreoffice_cmd = r"C:\Program Files\LibreOffice\program\soffice.exe"
-
-                    # MAC/LINUX:
-                    # libreoffice_cmd = "soffice"
+                    libreoffice_cmd = "soffice"
 
                     # Convert PDF -> DOCX
                     result = subprocess.run(
