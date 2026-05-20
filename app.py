@@ -2817,7 +2817,7 @@ def pdf_to_word_app():
                         f.write(resume_file.getbuffer())
 
                     # Define output docx path
-                    docx_filename = f"Converted_{resume_file.name.replace('.pdf', '')}.docx"
+                    docx_filename = resume_file.name.replace('.pdf', '.docx')
 
                     # Convert using LibreOffice headless
                     subprocess.run([
@@ -2839,7 +2839,6 @@ def pdf_to_word_app():
                     # Cleanup temp files
                     try:
                         os.remove(pdf_path)
-                        os.remove(docx_filename)
                     except:
                         pass
 
