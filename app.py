@@ -2819,22 +2819,25 @@ def pdf_to_word_app():
                     # Define output docx path
                     docx_filename = resume_file.name.replace('.pdf', '.docx')
 
-                    # Convert using LibreOffice headless
-                    subprocess.run([
+                    # Convert using LibreOffice headless and capture errors
+                    result = subprocess.run([
                         'libreoffice', '--headless', '--convert-to', 'docx', 
                         pdf_path, '--outdir', os.getcwd()
-                    ], check=True)
+                    ], capture_output=True, text=True, check=True)
 
-                    # Provide download button
-                    with open(docx_filename, "rb") as file:
-                        st.download_button(
-                            label="⬇️ Download Word Document",
-                            data=file,
-                            file_name=docx_filename,
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            type="primary"
-                        )
-                    st.success("✅ Success! Document successfully converted.")
+                    # Provide download button with a check for existence
+                    if os.path.exists(docx_filename):
+                        with open(docx_filename, "rb") as file:
+                            st.download_button(
+                                label="⬇️ Download Word Document",
+                                data=file,
+                                file_name=docx_filename,
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                type="primary"
+                            )
+                        st.success("✅ Success! Document successfully converted.")
+                    else:
+                        st.error(f"Conversion failed. File not found at: {os.path.abspath(docx_filename)}")
 
                     # Cleanup temp files
                     try:
@@ -2843,7 +2846,11 @@ def pdf_to_word_app():
                         pass
 
                 except Exception as e:
-                    st.error(f"❌ Conversion Failed: {str(e)}")
+                    # Display stderr if it's a subprocess error
+                    if isinstance(e, subprocess.CalledProcessError):
+                        st.error(f"❌ Conversion Failed: {e.stderr}")
+                    else:
+                        st.error(f"❌ Conversion Failed: {str(e)}")
 
 
 # ====================================================================
