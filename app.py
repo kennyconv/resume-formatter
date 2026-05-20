@@ -2545,7 +2545,10 @@ def dallas_generic_app():
                     RULES:
                     1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
                     2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
-                    3. Education: Extract School and Degree.
+                    3. Education: Extract School, Degree, and DegreeStatus.
+                        - DegreeStatus: Evaluate if the degree is completed or in progress.
+                        - Return "Yes" if the resume indicates the degree is finished.
+                        - Return "Pursuing" if the resume indicates ongoing study, contains the word "Pursuing", "In-progress", or lists a graduation date in the future (relative to May 2026).
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
                         - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
@@ -2555,7 +2558,7 @@ def dallas_generic_app():
                     {{
                         "FullName": "",
                         "Certifications": "",
-                        "Education": [{{"School": "", "Degree": ""}}],
+                        "Education": [{{"School": "", "Degree": "", "DegreeStatus": "Yes"}}],
                         "Experience": [{{"Company": "", "Title": "", "Bullets": [], "Environment": "", "Dates": ""}}]
                     }}
 
@@ -2615,6 +2618,7 @@ def dallas_generic_app():
                     for i in range(1, 4):
                         mapping[f"School{i}"] = clean_school(edu[i-1].get('School', '')) if i <= len(edu) else ""
                         mapping[f"Degree{i}"] = edu[i-1].get('Degree', '') if i <= len(edu) else ""
+                        mapping[f"DegreeStatus{i}"] = edu[i-1].get('DegreeStatus', 'Yes') if i <= len(edu) else ""
 
                     exp = data.get('Experience', [])
                     for i in range(1, 8):
