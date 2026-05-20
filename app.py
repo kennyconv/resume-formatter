@@ -2822,23 +2822,9 @@ def pdf_to_word_app():
                     docx_filename = f"Converted_{resume_file.name.replace('.pdf', '')}.docx"
 
                     # Convert using pdf2docx (Preserves layout, bypasses AI)
-                    # Convert using pdf2docx
                     cv = Converter(pdf_path)
                     cv.convert(docx_filename, start=0, end=None)
                     cv.close()
-
-                    # --- POST-PROCESSING WITH python-docx ---
-                    from docx import Document
-                    doc = Document(docx_filename)
-
-                    # Example: Normalize font to Arial, size 11
-                    for paragraph in doc.paragraphs:
-                        for run in paragraph.runs:
-                            run.font.name = 'Arial'
-                            run.font.size = Pt(11)
-
-                    # Save the cleaned-up document
-                    doc.save(docx_filename)
 
                     # Provide download button
                     with open(docx_filename, "rb") as file:
