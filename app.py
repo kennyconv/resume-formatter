@@ -11,6 +11,7 @@ import os
 import copy
 import time
 import subprocess
+from pdf2docx import Converter
 
 # ====================================================================
 # --- STREAMLIT UI & PASSWORD LOGIC ---
@@ -2772,23 +2773,74 @@ def dallas_generic_app():
                     process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
                     
                     with open(out_file, "rb") as file:
-                        btn = st.download_button(
-                            label="⬇️ Download Generated Document",
+                        btn = st.download_button(
+                            label="⬇️ Download Generated Document",
+                            data=file,
+                            file_name=out_file,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            type="primary"
+                        )
+                    
+                    st.success(f"✅ Success! Document is ready for download.")
+
+                    try:
+                        os.remove(resume_path)
+                    except:
+                        pass
+
+                except Exception as e:
+                    st.error(f"❌ Process Failed: {str(e)}")
+
+
+# ====================================================================
+# --- 📄 NEW APP: PDF TO WORD CONVERTER 📄 ---
+# ====================================================================
+def pdf_to_word_app():
+    st.title("PDF to Word Converter")
+    st.markdown("Upload a PDF resume below to convert it to a Word Document (.docx) without any AI formatting or content changes.")
+
+    st.header("📂 File Upload")
+    resume_file = st.file_uploader("📤 Upload PDF Resume...", type=['pdf'], key="pdf2word_res")
+
+    if st.button("🔄 Convert to Word", type="primary"):
+        if not resume_file:
+            st.error("❌ Error: Please upload a PDF file.")
+        else:
+            with st.spinner("Converting document layout to Word..."):
+                try:
+                    # Save uploaded PDF to temp file
+                    pdf_path = f"temp_{resume_file.name}"
+                    with open(pdf_path, "wb") as f:
+                        f.write(resume_file.getbuffer())
+
+                    # Define output docx path
+                    docx_filename = f"Converted_{resume_file.name.replace('.pdf', '')}.docx"
+
+                    # Convert using pdf2docx (Preserves layout, bypasses AI)
+                    cv = Converter(pdf_path)
+                    cv.convert(docx_filename, start=0, end=None)
+                    cv.close()
+
+                    # Provide download button
+                    with open(docx_filename, "rb") as file:
+                        st.download_button(
+                            label="⬇️ Download Word Document",
                             data=file,
-                            file_name=out_file,
+                            file_name=docx_filename,
                             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                             type="primary"
                         )
-                    
-                    st.success(f"✅ Success! Document is ready for download.")
+                    st.success("✅ Success! Document successfully converted.")
 
+                    # Cleanup temp files
                     try:
-                        os.remove(resume_path)
+                        os.remove(pdf_path)
+                        os.remove(docx_filename)
                     except:
                         pass
 
                 except Exception as e:
-                    st.error(f"❌ Process Failed: {str(e)}")
+                    st.error(f"❌ Conversion Failed: {str(e)}")
 
 
 # ====================================================================
@@ -2799,8 +2851,8 @@ st.title("Resume Formatter")
 st.markdown("Please select your client account below to access the customized formatter.")
 
 client_selection = st.selectbox(
-    "Select Client Account:", 
-    ["Fannie Mae", "Peraton", "Capital One", "ADUSA", "CBRE", "BNSF", "Dallas Generic"]
+    "Select Client Account or Tool:", 
+    ["Fannie Mae", "Peraton", "Capital One", "ADUSA", "CBRE", "BNSF", "Dallas Generic", "PDF to Word"]
 )
 
 st.divider()
@@ -2819,3 +2871,5 @@ elif client_selection == "BNSF":
     bnsf_app()
 elif client_selection == "Dallas Generic":
     dallas_generic_app()
+elif client_selection == "PDF to Word":
+    pdf_to_word_app()
