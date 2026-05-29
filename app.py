@@ -128,7 +128,6 @@ def extract_text(file_path):
                     text_parts.append(content)
         elif ext in ['.docx', '.doc']:
             doc = docx.Document(file_path)
-            
             text_box_found = False
             for node in doc.element.xpath('//w:txbxContent//w:t'):
                 if node.text and node.text.strip():
@@ -136,7 +135,6 @@ def extract_text(file_path):
                     text_box_found = True
             if text_box_found:
                 text_parts.append("--- END OF TEXT BOXES ---")
-                
             for section in doc.sections:
                 headers = [section.header, section.first_page_header, section.even_page_header]
                 for hdr in headers:
@@ -149,20 +147,14 @@ def extract_text(file_path):
                                 for cell in row.cells:
                                     if cell.text.strip():
                                         text_parts.append(cell.text)
-                                        
-            # --- CRITICAL FIX: Extract Paragraphs & Tables IN VISUAL ORDER ---
-            from docx.table import Table
-            for element in doc.element.body:
-                if element.tag.endswith('}p'):
-                    p = Paragraph(element, doc)
-                    if p.text.strip():
-                        text_parts.append(p.text)
-                elif element.tag.endswith('}tbl'):
-                    table = Table(element, doc)
-                    for row in table.rows:
-                        for cell in row.cells:
-                            if cell.text.strip():
-                                text_parts.append(cell.text)
+            for para in doc.paragraphs:
+                if para.text.strip():
+                    text_parts.append(para.text)
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        if cell.text.strip():
+                            text_parts.append(cell.text)
     except:
         with open(file_path, 'rb') as f:
             text_parts.append(f.read().decode('utf-8', errors='ignore'))
@@ -481,12 +473,8 @@ def fannie_mae_app():
                     2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line. (e.g., If the resume says "DUPONT, DELAWARE TCS", you must output exactly "DUPONT").
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
-                        - CRITICAL EXTRACTION: You MUST extract EVERY SINGLE JOB entry. Do not skip, merge, or summarize any jobs. Count them to ensure none are left behind.
-                        - OUT OF ORDER TEXT ALERT: Text inside document text boxes is extracted at the VERY TOP of the raw text. This means certain jobs might appear entirely out of sequence. You MUST scan the ENTIRE text (including the top) and arrange ALL jobs chronologically in your output.
-                        - STRICT JSON KEYS: You MUST use the exact keys: "Company", "Title", "Bullets", "Environment", "Dates". DO NOT invent keys like "Employer" or "Role". If you change these keys, the system will break and output blank fields.
-                        - NO BLANK DATA: You MUST accurately map 'Company', 'Title', and 'Dates'. Never leave them blank if the info exists anywhere in the text.
-                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
-                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate an environment list.
+                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
+                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
 
                     JSON Structure:
@@ -831,13 +819,9 @@ def peraton_app():
                     2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Responsible, Bullets (LIST), Environment (String, optional), Dates.
-                        - CRITICAL EXTRACTION: You MUST extract EVERY SINGLE JOB entry. Do not skip, merge, or summarize any jobs. Count them to ensure none are left behind.
-                        - OUT OF ORDER TEXT ALERT: Text inside document text boxes is extracted at the VERY TOP of the raw text. This means certain jobs might appear entirely out of sequence. You MUST scan the ENTIRE text (including the top) and arrange ALL jobs chronologically in your output.
-                        - STRICT JSON KEYS: You MUST use the exact keys: "Company", "Title", "Responsible", "Bullets", "Environment", "Dates". DO NOT invent keys like "Employer" or "Role". If you change these keys, the system will break and output blank fields.
-                        - NO BLANK DATA: You MUST accurately map 'Company', 'Title', and 'Dates'. Never leave them blank if the info exists anywhere in the text.
                         - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
                         - For 'Responsible', write exactly 1 sentence summarizing what the candidate was responsible for at this specific job, based on their bullets. Do NOT use the candidate's name or pronouns (he/she). Start the sentence with the exact words "Responsible for ".
-                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If missing, leave it blank "".
+                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role.
                         - For 'Dates', you MUST format the dates strictly as "MM/YYYY to MM/YYYY" (e.g., "10/2019 to 07/2024") or "MM/YYYY to Present" if it is their current position. Convert all months to their 2-digit number.
                     5. Certifications: Extract active certifications into an ARRAY of strings. Do not include classes or courses taken. Keep it strictly to the certification name.
 
@@ -1190,12 +1174,8 @@ def capital_one_app():
                     2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
-                        - CRITICAL EXTRACTION: You MUST extract EVERY SINGLE JOB entry. Do not skip, merge, or summarize any jobs. Count them to ensure none are left behind.
-                        - OUT OF ORDER TEXT ALERT: Text inside document text boxes is extracted at the VERY TOP of the raw text. This means certain jobs might appear entirely out of sequence. You MUST scan the ENTIRE text (including the top) and arrange ALL jobs chronologically in your output.
-                        - STRICT JSON KEYS: You MUST use the exact keys: "Company", "Title", "Bullets", "Environment", "Dates". DO NOT invent keys like "Employer" or "Role". If you change these keys, the system will break and output blank fields.
-                        - NO BLANK DATA: You MUST accurately map 'Company', 'Title', and 'Dates'. Never leave them blank if the info exists anywhere in the text.
-                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
-                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate an environment list.
+                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
+                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
 
                     JSON Structure:
@@ -1558,12 +1538,8 @@ def adusa_app():
                     2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
-                        - CRITICAL EXTRACTION: You MUST extract EVERY SINGLE JOB entry. Do not skip, merge, or summarize any jobs. Count them to ensure none are left behind.
-                        - OUT OF ORDER TEXT ALERT: Text inside document text boxes is extracted at the VERY TOP of the raw text. This means certain jobs might appear entirely out of sequence. You MUST scan the ENTIRE text (including the top) and arrange ALL jobs chronologically in your output.
-                        - STRICT JSON KEYS: You MUST use the exact keys: "Company", "Title", "Bullets", "Environment", "Dates". DO NOT invent keys like "Employer" or "Role". If you change these keys, the system will break and output blank fields.
-                        - NO BLANK DATA: You MUST accurately map 'Company', 'Title', and 'Dates'. Never leave them blank if the info exists anywhere in the text.
-                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
-                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate an environment list.
+                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
+                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
 
                     JSON Structure:
@@ -1901,12 +1877,8 @@ def cbre_app():
                     2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
-                        - CRITICAL EXTRACTION: You MUST extract EVERY SINGLE JOB entry. Do not skip, merge, or summarize any jobs. Count them to ensure none are left behind.
-                        - OUT OF ORDER TEXT ALERT: Text inside document text boxes is extracted at the VERY TOP of the raw text. This means certain jobs might appear entirely out of sequence. You MUST scan the ENTIRE text (including the top) and arrange ALL jobs chronologically in your output.
-                        - STRICT JSON KEYS: You MUST use the exact keys: "Company", "Title", "Bullets", "Environment", "Dates". DO NOT invent keys like "Employer" or "Role". If you change these keys, the system will break and output blank fields.
-                        - NO BLANK DATA: You MUST accurately map 'Company', 'Title', and 'Dates'. Never leave them blank if the info exists anywhere in the text.
-                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
-                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate an environment list.
+                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
+                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
 
                     JSON Structure:
@@ -2248,12 +2220,8 @@ def bnsf_app():
                     2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
-                        - CRITICAL EXTRACTION: You MUST extract EVERY SINGLE JOB entry. Do not skip, merge, or summarize any jobs. Count them to ensure none are left behind.
-                        - OUT OF ORDER TEXT ALERT: Text inside document text boxes is extracted at the VERY TOP of the raw text. This means certain jobs might appear entirely out of sequence. You MUST scan the ENTIRE text (including the top) and arrange ALL jobs chronologically in your output.
-                        - STRICT JSON KEYS: You MUST use the exact keys: "Company", "Title", "Bullets", "Environment", "Dates". DO NOT invent keys like "Employer" or "Role". If you change these keys, the system will break and output blank fields.
-                        - NO BLANK DATA: You MUST accurately map 'Company', 'Title', and 'Dates'. Never leave them blank if the info exists anywhere in the text.
-                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
-                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate an environment list.
+                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
+                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
 
                     JSON Structure:
@@ -2583,12 +2551,8 @@ def dallas_generic_app():
                         - Return "Yes" if the resume indicates the degree is finished.
                         - Return "Pursuing" if the resume indicates ongoing study, contains the word "Pursuing", "In-progress", or lists a graduation date in the future (relative to May 2026).
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
-                        - CRITICAL EXTRACTION: You MUST extract EVERY SINGLE JOB entry. Do not skip, merge, or summarize any jobs. Count them to ensure none are left behind.
-                        - OUT OF ORDER TEXT ALERT: Text inside document text boxes is extracted at the VERY TOP of the raw text. This means certain jobs might appear entirely out of sequence. You MUST scan the ENTIRE text (including the top) and arrange ALL jobs chronologically in your output.
-                        - STRICT JSON KEYS: You MUST use the exact keys: "Company", "Title", "Bullets", "Environment", "Dates". DO NOT invent keys like "Employer" or "Role". If you change these keys, the system will break and output blank fields.
-                        - NO BLANK DATA: You MUST accurately map 'Company', 'Title', and 'Dates'. Never leave them blank if the info exists anywhere in the text.
-                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
-                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate an environment list.
+                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
+                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
 
                     JSON Structure:
