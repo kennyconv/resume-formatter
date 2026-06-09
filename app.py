@@ -482,13 +482,22 @@ def fannie_mae_app():
                 # Added transcript to the mapping dictionary
                 req_mapping[option_str] = {"desc": desc, "notes": notes, "transcript": transcript}
 
+    if "fm_jd" not in st.session_state:
+        st.session_state.fm_jd = ""
+    if "fm_notes" not in st.session_state:
+        st.session_state.fm_notes = ""
+    if "fm_trans" not in st.session_state:
+        st.session_state.fm_trans = ""
+
     def update_jd_text():
+        if "fm_req_selector" not in st.session_state:
+            return
+
         selected = st.session_state.fm_req_selector
         if selected != "None" and selected in req_mapping:
-            # Populates the 3 distinct boxes but leaves them editable
-            st.session_state.fm_jd = req_mapping[selected]["desc"].strip()
-            st.session_state.fm_notes = req_mapping[selected]["notes"].strip()
-            st.session_state.fm_trans = req_mapping[selected]["transcript"].strip()
+            st.session_state.fm_jd = req_mapping[selected].get("desc", "").strip()
+            st.session_state.fm_notes = req_mapping[selected].get("notes", "").strip()
+            st.session_state.fm_trans = req_mapping[selected].get("transcript", "").strip()
             
     selected_req = st.selectbox(
         "🔍 Select a Fannie Mae Requisition (Type to search):",
