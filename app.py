@@ -474,20 +474,22 @@ def fannie_mae_app():
             title = str(row.get("Job Title", ""))
             desc = str(row.get("Description", ""))
             notes = str(row.get("FG Notes", ""))
+            transcript = str(row.get("Spotlight Transcript", "")) # NEW: Extract Transcript
 
             option_str = f"{req_id} - {vms_id} - {title}".strip(" -")
             if option_str and option_str != "-":
                 options.append(option_str)
-                req_mapping[option_str] = {"desc": desc, "notes": notes}
+                # Added transcript to the mapping dictionary
+                req_mapping[option_str] = {"desc": desc, "notes": notes, "transcript": transcript}
 
     def update_jd_text():
         selected = st.session_state.fm_req_selector
         if selected != "None" and selected in req_mapping:
-            d = req_mapping[selected]["desc"]
-            n = req_mapping[selected]["notes"]
-            # Populates the box but leaves it editable
-            st.session_state.fm_jd = f"{d}\n\nFieldglass chat notes:\n{n}".strip()
-
+            # Populates the 3 distinct boxes but leaves them editable
+            st.session_state.fm_jd = req_mapping[selected]["desc"].strip()
+            st.session_state.fm_notes = req_mapping[selected]["notes"].strip()
+            st.session_state.fm_trans = req_mapping[selected]["transcript"].strip()
+            
     selected_req = st.selectbox(
         "🔍 Select a Fannie Mae Requisition (Type to search):",
         options=options,
@@ -495,10 +497,22 @@ def fannie_mae_app():
         on_change=update_jd_text
     )
 
-    Job_Description_Notes_etc = st.text_area(
-        "Paste JD, Manager Notes, etc. here:", 
-        height=200, 
+    Job_Description = st.text_area(
+        "1. Official Job Description (Paste generic JD here):", 
+        height=150, 
         key="fm_jd"
+    )
+
+    Chat_Notes = st.text_area(
+        "2. Fieldglass Chat Notes (Optional - Overrides JD):", 
+        height=100, 
+        key="fm_notes"
+    )
+
+    Call_Transcript = st.text_area(
+        "3. Spotlight Call Transcript (Optional - Highest Priority):", 
+        height=100, 
+        key="fm_trans"
     )
 
     st.header("📂 File Uploads")
@@ -612,11 +626,22 @@ def fannie_mae_app():
                             mapping[f"Environment{i}"] = ""
                             mapping[f"Dates{i}"] = ""
 
-                    if Job_Description_Notes_etc.strip():
+                    if Job_Description.strip():
                         try:
                             summary_prompt = f"""
                             You are an elite, no-nonsense Senior Technical Recruiter writing an executive submission summary for a Fieldglass portal. 
                             The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed, optimized for both human reading and ATS exact-match parsing.
+
+                            ========================
+                            🚨 HIERARCHY OF TRUTH: JD vs. MANAGER NOTES (CRITICAL)
+                            ========================
+                            You are receiving up to three sources of information for this role:
+                            1. Spotlight Call Transcript (HIGHEST PRIORITY)
+                            2. Fieldglass Chat Notes (HIGH PRIORITY)
+                            3. Official Job Description (BASELINE)
+
+                            - OVERRIDE RULE: The Call Transcript and Chat Notes represent the Hiring Manager's actual, immediate needs. They are the ABSOLUTE SOURCE OF TRUTH. If they contradict or update the official Job Description (e.g., lowering required years of experience, changing the core tech stack, or negating responsibilities), you MUST strictly follow the Transcript and Notes.
+                            - ATS COMPROMISE: To satisfy the Fieldglass parsing algorithm, you must still weave in high-level, generalized keywords from the baseline Job Description where applicable, but NEVER highlight technical skills or responsibilities that the manager explicitly negated in their notes or calls.
 
                             ========================
                             THE NARRATIVE BLUEPRINT (4 Sentences Max)
@@ -730,8 +755,14 @@ def fannie_mae_app():
                             ========================
                             INPUT DATA
                             ========================
-                            Job Description / Notes:
-                            {Job_Description_Notes_etc}
+                            Official Job Description:
+                            {Job_Description}
+
+                            Fieldglass Chat Notes:
+                            {Chat_Notes}
+
+                            Spotlight Call Transcript:
+                            {Call_Transcript}
 
                             Technical Interview Q&A:
                             Q1: {Question_1}
