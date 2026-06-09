@@ -1,4 +1,5 @@
 import streamlit as st
+import pandas as pd
 from google import genai
 from google.genai import types
 import docx
@@ -443,7 +444,62 @@ def fannie_mae_app():
         Answer_5 = st.text_area("Answer 5", height=68, key="fm_a5")
 
     st.header("📝 Job Description & Notes")
-    Job_Description_Notes_etc = st.text_area("Paste JD, Manager Notes, etc. here:", height=200, key="fm_jd")
+
+    # --- NEW GOOGLE SHEET LOGIC ---
+    # IMPORTANT: Replace this placeholder with your actual Google Sheet link. 
+    # The sheet's share settings MUST be set to "Anyone with the link can view".
+    SHEET_URL = "https://docs.google.com/spreadsheets/d/1swKaDhGdlmO0ILv7tngkRCbsK-7jF89cdCpf5bypzwM/edit?usp=sharing"
+
+    @st.cache_data(ttl=600)
+    def load_reqs(url):
+        try:
+            # Converts standard Google Sheet URL to a direct CSV download link
+            if "/edit" in url:
+                csv_url = url.split("/edit")[0] + "/export?format=csv"
+            else:
+                csv_url = url
+            df = pd.read_csv(csv_url)
+            return df.fillna("")
+        except Exception:
+            return pd.DataFrame()
+
+    df_reqs = load_reqs(SHEET_URL)
+    options = ["None"]
+    req_mapping = {}
+
+    if not df_reqs.empty:
+        for idx, row in df_reqs.iterrows():
+            req_id = str(row.get("ID", "")).replace(".0", "")
+            vms_id = str(row.get("VMS ID", "")).replace(".0", "")
+            title = str(row.get("Job Title", ""))
+            desc = str(row.get("Description", ""))
+            notes = str(row.get("FG Notes", ""))
+
+            option_str = f"{req_id} - {vms_id} - {title}".strip(" -")
+            if option_str and option_str != "-":
+                options.append(option_str)
+                req_mapping[option_str] = {"desc": desc, "notes": notes}
+
+    def update_jd_text():
+        selected = st.session_state.fm_req_selector
+        if selected != "None" and selected in req_mapping:
+            d = req_mapping[selected]["desc"]
+            n = req_mapping[selected]["notes"]
+            # Populates the box but leaves it editable
+            st.session_state.fm_jd = f"{d}\n\nFieldglass chat notes:\n{n}".strip()
+
+    selected_req = st.selectbox(
+        "🔍 Select a Fannie Mae Requisition (Type to search):",
+        options=options,
+        key="fm_req_selector",
+        on_change=update_jd_text
+    )
+
+    Job_Description_Notes_etc = st.text_area(
+        "Paste JD, Manager Notes, etc. here:", 
+        height=200, 
+        key="fm_jd"
+    )
 
     st.header("📂 File Uploads")
     resume_file = st.file_uploader("📤 Upload the candidate's resume...", type=['pdf', 'docx', 'doc'], key="fm_res")
