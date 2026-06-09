@@ -472,11 +472,15 @@ def fannie_mae_app():
             req_id = str(row.get("ID", "")).replace(".0", "")
             vms_id = str(row.get("VMS ID", "")).replace(".0", "")
             title = str(row.get("Job Title", ""))
+            manager = str(row.get("Manager", "")) # NEW: Extract Manager
             desc = str(row.get("Description", ""))
             notes = str(row.get("FG Notes", ""))
             transcript = str(row.get("Spotlight Transcript", "")) # NEW: Extract Transcript
 
-            option_str = f"{req_id} - {vms_id} - {title}".strip(" -")
+            # Build the dropdown string safely, ignoring empty values
+            option_parts = [req_id, vms_id, title, manager]
+            option_str = " - ".join([p.strip() for p in option_parts if p.strip()])
+            
             if option_str and option_str != "-":
                 options.append(option_str)
                 # Added transcript to the mapping dictionary
