@@ -502,6 +502,11 @@ def fannie_mae_app():
             st.session_state.fm_jd = req_mapping[selected].get("desc", "").strip()
             st.session_state.fm_notes = req_mapping[selected].get("notes", "").strip()
             st.session_state.fm_trans = req_mapping[selected].get("transcript", "").strip()
+        else:
+            # Clear the text boxes if "None" is selected
+            st.session_state.fm_jd = ""
+            st.session_state.fm_notes = ""
+            st.session_state.fm_trans = ""
             
     selected_req = st.selectbox(
         "🔍 Select a Fannie Mae Requisition (Type to search):",
