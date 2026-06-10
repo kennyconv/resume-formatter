@@ -2949,6 +2949,374 @@ def pdf_to_word_app():
 
 
 # ====================================================================
+# --- 🔵 CLIENT APP 8: DELOITTE 🔵 ---
+# ====================================================================
+def deloitte_app():
+    TEMPLATE_FILENAME = "Deloitte_Template.docx"
+    st.title("Deloitte Precision Extractor")
+
+    with st.sidebar:
+        st.header("🔑 API Configuration")
+        if "API_KEY" in st.secrets:
+            API_KEY = st.secrets["API_KEY"]
+            st.success("✅ API Key loaded from Secrets")
+        else:
+            API_KEY = st.text_input("Gemini API Key", type="password")
+            st.info("Paste your Gemini API key here to run the tool.")
+
+    st.header("📋 Candidate Information")
+    col1, col2 = st.columns(2)
+    with col1:
+        Legal_Name = st.text_input("Candidate Legal Name", key="del_legal")
+        Current_Location_City_ST = st.text_input("Current Location (City, ST)", key="del_loc")
+    with col2:
+        Preferred_Name = st.text_input("Preferred Name", key="del_pref")
+        Time_Off = st.text_input("Upcoming Scheduled Time off", key="del_toff")
+
+    st.header("📝 Job Description & Notes")
+
+    # --- GOOGLE SHEET LOGIC FOR DELOITTE ---
+    SHEET_URL = "https://docs.google.com/spreadsheets/d/1swKaDhGdlmO0ILv7tngkRCbsK-7jF89cdCpf5bypzwM/edit?gid=2029588481#gid=2029588481"
+
+    @st.cache_data(ttl=600)
+    def load_deloitte_reqs(url):
+        try:
+            # Use the exact GID for the Deloitte sheet
+            base_url = url.split("/edit")[0]
+            csv_url = base_url + "/export?format=csv&gid=2029588481"
+            df = pd.read_csv(csv_url)
+            return df.fillna("")
+        except Exception:
+            return pd.DataFrame()
+
+    df_reqs = load_deloitte_reqs(SHEET_URL)
+    options = ["None"]
+    req_mapping = {}
+
+    if not df_reqs.empty:
+        for idx, row in df_reqs.iterrows():
+            # Column A (index 0) = ID, Column B (index 1) = VMS ID, Column C (index 2) = Job Title
+            req_id = str(row.iloc[0]).replace(".0", "") if len(row) > 0 else ""
+            vms_id = str(row.iloc[1]).replace(".0", "") if len(row) > 1 else ""
+            title = str(row.iloc[2]) if len(row) > 2 else ""
+            
+            # Column I (index 8) = Job Description
+            desc = str(row.iloc[8]) if len(row) > 8 else ""
+
+            # Skills starting from Column J (index 9) to the end of the row
+            skills = []
+            if len(row) > 9:
+                for val in row.iloc[9:]:
+                    val_str = str(val).strip()
+                    if val_str:
+                        skills.append(val_str)
+            skills_matrix_text = "\n".join(skills)
+
+            option_parts = [req_id, vms_id, title]
+            option_str = " - ".join([p.strip() for p in option_parts if p.strip()])
+            
+            if option_str and option_str != "-":
+                options.append(option_str)
+                req_mapping[option_str] = {"desc": desc, "skills": skills_matrix_text}
+
+    if "del_jd" not in st.session_state:
+        st.session_state.del_jd = ""
+    if "del_notes" not in st.session_state:
+        st.session_state.del_notes = ""
+    if "del_skills" not in st.session_state:
+        st.session_state.del_skills = ""
+
+    def update_jd_text():
+        if "del_req_selector" not in st.session_state:
+            return
+        selected = st.session_state.del_req_selector
+        if selected != "None" and selected in req_mapping:
+            st.session_state.del_jd = req_mapping[selected].get("desc", "").strip()
+            st.session_state.del_skills = req_mapping[selected].get("skills", "").strip()
+            st.session_state.del_notes = ""
+        else:
+            st.session_state.del_jd = ""
+            st.session_state.del_skills = ""
+            st.session_state.del_notes = ""
+            
+    selected_req = st.selectbox(
+        "🔍 Select a Deloitte Requisition (Type to search):",
+        options=options,
+        key="del_req_selector",
+        on_change=update_jd_text
+    )
+
+    Job_Description = st.text_area("1. Official Job Description (Paste generic JD here):", height=150, key="del_jd")
+    Chat_Notes = st.text_area("2. Notes (Optional - Overrides JD):", height=100, key="del_notes")
+    Skills_Matrix = st.text_area("3. Skills Matrix:", height=100, key="del_skills")
+
+    st.header("📂 File Uploads")
+    resume_file = st.file_uploader("📤 Upload the candidate's resume...", type=['pdf', 'docx', 'doc'], key="del_res")
+
+    if st.button("🚀 Generate Deloitte Submission", type="primary"):
+        if not API_KEY:
+            st.error("❌ Error: Please enter your Gemini API Key in the sidebar.")
+        elif not resume_file:
+            st.error("❌ Error: Please upload a resume.")
+        elif not os.path.exists(TEMPLATE_FILENAME):
+            st.error(f"❌ Error: The preloaded template '{TEMPLATE_FILENAME}' was not found.")
+        else:
+            with st.spinner("Processing document and querying AI..."):
+                try:
+                    resume_path = f"temp_{resume_file.name}"
+                    with open(resume_path, "wb") as f:
+                        f.write(resume_file.getbuffer())
+
+                    raw_text = extract_text(resume_path)
+                    client = genai.Client(api_key=API_KEY)
+
+                    prompt = f"""
+                    Return a valid JSON object ONLY.
+
+                    RULES:
+                    1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
+                    2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors.
+                    3. Education: Extract School and Degree.
+                    4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
+                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
+                    5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
+
+                    JSON Structure:
+                    {{
+                        "FullName": "",
+                        "Certifications": "",
+                        "Education": [{{"School": "", "Degree": ""}}],
+                        "Experience": [{{"Company": "", "Title": "", "Bullets": [], "Environment": "", "Dates": ""}}]
+                    }}
+
+                    RESUME: {raw_text}
+                    """
+
+                    models_to_try = ['gemini-2.5-flash', 'gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview', 'gemini-pro-latest']
+                    data = {}
+                    
+                    for attempt in range(6):
+                        current_model = models_to_try[0] if attempt == 0 else (models_to_try[1] if attempt in [1, 2] else (models_to_try[2] if attempt in [3, 4] else models_to_try[3]))
+                        try:
+                            response = client.models.generate_content(
+                                model=current_model,
+                                contents=prompt,
+                                config=types.GenerateContentConfig(response_mime_type="application/json")
+                            )
+                            data = repair_and_load_json(response.text)
+                            break
+                        except Exception as e:
+                            if "503" in str(e) and attempt < 5:
+                                time.sleep(2 ** ((attempt % 2) + 1))
+                                continue
+                            else:
+                                raise e
+
+                    ai_name = data.get('FullName', '').title()
+                    final_name = Legal_Name.strip() if Legal_Name.strip() else ai_name
+
+                    mapping = {
+                        "FullName": final_name, "PreferredName": Preferred_Name, 
+                        "TimeOff": Time_Off, "Location": Current_Location_City_ST,
+                        "Certifications": data.get("Certifications", ""),
+                        "SUMMARY": "", "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
+                        "SKILL3": "", "YEARS3": "", "SKILL4": "", "YEARS4": ""
+                    }
+
+                    edu = data.get('Education', [])
+                    for i in range(1, 4):
+                        mapping[f"School{i}"] = clean_school(edu[i-1].get('School', '')) if i <= len(edu) else ""
+                        mapping[f"Degree{i}"] = edu[i-1].get('Degree', '') if i <= len(edu) else ""
+
+                    exp = data.get('Experience', [])
+                    for i in range(1, 8):
+                        if i <= len(exp):
+                            mapping[f"Company{i}"] = exp[i-1].get('Company', '')
+                            raw_title = exp[i-1].get('Title', '')
+                            clean_title = re.sub(r'\s*\(.*$', '', raw_title).strip()
+                            mapping[f"Title{i}"] = clean_title
+                            mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
+                            mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
+                            mapping[f"Dates{i}"] = standardize_dates(exp[i-1].get('Dates', ''))
+                        else:
+                            mapping[f"Company{i}"] = ""
+                            mapping[f"Title{i}"] = ""
+                            mapping[f"Bullets{i}"] = ""
+                            mapping[f"Environment{i}"] = ""
+                            mapping[f"Dates{i}"] = ""
+
+                    if Job_Description.strip():
+                        try:
+                            summary_prompt = f"""
+                            You are an elite, no-nonsense Senior Technical Recruiter writing an executive submission summary for a Fieldglass portal. 
+                            The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed, optimized for both human reading and ATS exact-match parsing.
+
+                            ========================
+                            🚨 HIERARCHY OF TRUTH: JD vs. MANAGER NOTES (CRITICAL)
+                            ========================
+                            You are receiving two primary sources of information for this role:
+                            1. Notes (HIGH PRIORITY)
+                            2. Official Job Description (BASELINE)
+
+                            - OVERRIDE RULE: The Notes represent the Hiring Manager's actual, immediate needs. They are the ABSOLUTE SOURCE OF TRUTH. If they contradict or update the official Job Description, you MUST strictly follow the Notes.
+                            - ATS COMPROMISE: To satisfy the Fieldglass parsing algorithm, you must still weave in high-level, generalized keywords from the baseline Job Description where applicable, but NEVER highlight technical skills or responsibilities that the manager explicitly negated in their notes.
+
+                            ========================
+                            THE NARRATIVE BLUEPRINT (4 Sentences Max)
+                            ========================
+                            Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
+                            - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description? (Calculate their total overall years strictly rounding DOWN to the nearest whole year formatted as 'X+ years'. Use their FIRST NAME only. You MUST use the exact job title requested in the JD if the candidate's history supports it. Avoid generic fluff).
+                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job? (Frame it as a direct 1:1 match for the manager's current challenge).
+                            - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter? (Weave the specific tools/methodologies into an "Execution Statement" that highlights the complexity, scale, or business impact. DO NOT write a comma-separated list of tools. DO NOT repeat verbs from Sentence 2).
+                            - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role? (Use a strong, direct structure like: "[First Name]'s success in [X] makes them an immediate asset for driving this team's [specific technical goal/initiative]." Do NOT mention the physical location/city).
+
+                            CRITICAL ATS HACK: Across these 4 sentences, you MUST seamlessly embed 2-3 exact phrases from the Job Description to maximize the Fieldglass match score. Do not force them if they ruin the sentence flow, but prioritize exact phrase matching where supported by the resume.
+
+                            ========================
+                            STYLE & TONE RULES (STRICT)
+                            ========================
+                            - Write like a human pitching to a colleague. Confident, direct, and factual.
+                            - TECH MATCHING: Strictly align the tools you highlight with the JD. 
+                            - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
+                            - LEADERSHIP VERBS: Use high-authority active verbs (e.g., 'Engineered', 'Optimized', 'Architected', 'Spearheaded') instead of passive verbs like 'Assisted', 'Collaborated', or 'Helped'.
+                            - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely," "exceptionally well-prepared," "fits well," "aligns with," "enterprise-grade platforms."
+                            - Do NOT use transition crutches: "Additionally," "Furthermore," "Moreover."
+                            - Do NOT repeat or restate the job description.
+
+                            ========================
+                            SKILLS SECTION
+                            ========================
+                            - EXACTLY 4 items
+                            - Prioritize the specific "Must-Have" technologies AND methodologies requested in the JD and the provided Skills Matrix.
+                            - Highly relevant + keyword-rich
+                            - Use only tools explicitly mentioned in resume/notes
+
+                            Format:
+                            "Skill Area (Tool1, Tool2, Tool3, Tool4)"
+
+                            Years format:
+                            "X+ years, current" OR "X+ years, 2026"
+
+                            ========================
+                            🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
+                            ========================
+                            1. THE RESUME IS THE ONLY SOURCE OF TRUTH. You are strictly forbidden from copying a skill, tool, or technology from the Job Description and assigning it to the candidate unless it physically appears in their Resume.
+                            2. DO NOT INFER OR ASSUME. If the JD asks for "Redshift" and the resume only says "AWS", you MUST NOT write "Redshift" under any circumstances. 
+                            3. DO NOT INFLATE TO MATCH THE JD. If the candidate lacks a requested skill, omit it completely. It is better to have an incomplete match than a fabricated one.
+                            4. FACT AUDIT: Before outputting the final JSON, you must verify every single tool mentioned in your SUMMARY and SKILLS. If a tool exists in the JD but not in the Resume, you must delete it from your output.
+
+                            ========================
+                            YEARS ACCURACY RULES (REALISTIC RECRUITER MODE)
+                            ========================
+                            - Use June 2026 as the current date.
+                            - STRICT MATH (DATE-DRIVEN ONLY): Calculate years strictly based on the earliest chronological date provided in the 'Professional Experience' or 'Work History' section. You MUST completely IGNORE any self-reported years of experience in the candidate's summary blurb. Round DOWN to the nearest whole year and use the exact format "X+ years". Do not use phrases like "nearly X years". 
+                            - Foundational skills should get their maximum calculated years.
+                            - Advanced/Specialized tools should realistically be calculated at 1-2 years less than their maximum total experience unless the resume explicitly proves Day 1 usage. 
+                            - Default to "current" if they are still working in this general technical field. Always bridge past experience to their current tenure.
+
+                            ========================
+                            🧠 FINAL POLISH CHECKLIST (ONE PASS ONLY)
+                            ========================
+                            Before outputting the JSON, evaluate your drafted SUMMARY and SKILLS against these 7 checks:
+                            1. SIMPLIFIED: No run-on sentences or unnecessary filler.
+                            2. HUMAN TONE: No generic claims like "highly experienced."
+                            3. TOOL DENSITY: Maximum 3 tools per sentence.
+                            4. NO REPETITION: Do not repeat verbs or concepts across sentences.
+                            5. THE PITCH: Ensure a natural, confident recruiter tone.
+                            6. CURRENT JOB: Did you explicitly name their most recent employer in Sentence 2?
+                            7. ACCURATE MATH: Did you strictly round down their years of experience and use the 'X+ years' format to prevent ATS parser flags?
+
+                            Output only the final, polished JSON.
+
+                            ========================
+                            OUTPUT FORMAT (STRICT)
+                            ========================
+                            Return ONLY valid JSON:
+
+                            {{
+                              "SUMMARY": "4 sentence summary following the blueprint",
+                              "SKILL1": "Skill Area (tools)",
+                              "YEARS1": "X+ years, current",
+                              "SKILL2": "Skill Area (tools)",
+                              "YEARS2": "X+ years, current",
+                              "SKILL3": "Skill Area (tools)",
+                              "YEARS3": "X+ years, current",
+                              "SKILL4": "Skill Area (tools)",
+                              "YEARS4": "X+ years, current"
+                            }}
+
+                            ========================
+                            INPUT DATA
+                            ========================
+                            Official Job Description:
+                            {Job_Description}
+
+                            Notes:
+                            {Chat_Notes}
+
+                            Skills Matrix:
+                            {Skills_Matrix}
+
+                            Resume:
+                            {raw_text}
+                            """
+                            time.sleep(2) 
+                            summary_data = {}
+                            
+                            for attempt in range(6):
+                                current_model = models_to_try[0] if attempt == 0 else (models_to_try[1] if attempt in [1, 2] else (models_to_try[2] if attempt in [3, 4] else models_to_try[3]))
+                                try:
+                                    summary_response = client.models.generate_content(
+                                        model=current_model,
+                                        contents=summary_prompt,
+                                        config=types.GenerateContentConfig(response_mime_type="application/json")
+                                    )
+                                    summary_data = repair_and_load_json(summary_response.text)
+                                    break
+                                except Exception as api_e:
+                                    if "503" in str(api_e) and attempt < 5:
+                                        time.sleep(2 ** ((attempt % 2) + 1))
+                                        continue
+                                    else:
+                                        raise api_e
+
+                            mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
+                            mapping["SKILL1"] = summary_data.get("SKILL1", "")
+                            mapping["YEARS1"] = summary_data.get("YEARS1", "")
+                            mapping["SKILL2"] = summary_data.get("SKILL2", "")
+                            mapping["YEARS2"] = summary_data.get("YEARS2", "")
+                            mapping["SKILL3"] = summary_data.get("SKILL3", "")
+                            mapping["YEARS3"] = summary_data.get("YEARS3", "")
+                            mapping["SKILL4"] = summary_data.get("SKILL4", "")
+                            mapping["YEARS4"] = summary_data.get("YEARS4", "")
+                        except Exception as e:
+                            st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
+
+                    out_file = f"Submission_Deloitte_{final_name.replace(' ', '_')}.docx"
+                    process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
+                    
+                    with open(out_file, "rb") as file:
+                        btn = st.download_button(
+                            label="⬇️ Download Generated Document",
+                            data=file,
+                            file_name=out_file,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            type="primary"
+                        )
+                    
+                    st.success(f"✅ Success! Document is ready for download.")
+
+                    try:
+                        os.remove(resume_path)
+                    except:
+                        pass
+
+                except Exception as e:
+                    st.error(f"❌ Process Failed: {str(e)}")
+
+
+# ====================================================================
 # --- MAIN ROUTING LOGIC (The Dropdown Page) ---
 # ====================================================================
 
@@ -2957,13 +3325,15 @@ st.markdown("Please select your client account below to access the customized fo
 
 client_selection = st.selectbox(
     "Select Client Account or Tool:", 
-    ["Fannie Mae", "Peraton", "Capital One", "ADUSA", "CBRE", "BNSF", "Dallas Generic", "PDF to Word"]
+    ["Fannie Mae", "Deloitte", "Peraton", "Capital One", "ADUSA", "CBRE", "BNSF", "Dallas Generic", "PDF to Word"]
 )
 
 st.divider()
 
 if client_selection == "Fannie Mae":
     fannie_mae_app()
+elif client_selection == "Deloitte":
+    deloitte_app()
 elif client_selection == "Peraton":
     peraton_app()
 elif client_selection == "Capital One":
