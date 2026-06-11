@@ -3116,12 +3116,20 @@ def deloitte_app():
                     ai_name = data.get('FullName', '').title()
                     final_name = Legal_Name.strip() if Legal_Name.strip() else ai_name
 
+                    # --- UPDATED MAPPING TO SUPPORT 8 SKILLS + COMPANIES + 5 SUMMARIES ---
                     mapping = {
                         "FullName": final_name, "PreferredName": Preferred_Name, 
                         "TimeOff": Time_Off, "Location": Current_Location_City_ST,
-                        "Certifications": data.get("Certifications", ""),
-                        "SUMMARY": "", "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
-                        "SKILL3": "", "YEARS3": "", "SKILL4": "", "YEARS4": ""
+                        "RESUME_BODY": resume_body,
+                        "SUMMARY1": "", "SUMMARY2": "", "SUMMARY3": "", "SUMMARY4": "", "SUMMARY5": "",
+                        "SKILL1": "", "YEARS1": "", "SKILL1COMPANIES": "",
+                        "SKILL2": "", "YEARS2": "", "SKILL2COMPANIES": "",
+                        "SKILL3": "", "YEARS3": "", "SKILL3COMPANIES": "",
+                        "SKILL4": "", "YEARS4": "", "SKILL4COMPANIES": "",
+                        "SKILL5": "", "YEARS5": "", "SKILL5COMPANIES": "",
+                        "SKILL6": "", "YEARS6": "", "SKILL6COMPANIES": "",
+                        "SKILL7": "", "YEARS7": "", "SKILL7COMPANIES": "",
+                        "SKILL8": "", "YEARS8": "", "SKILL8COMPANIES": ""
                     }
 
                     edu = data.get('Education', [])
@@ -3148,6 +3156,7 @@ def deloitte_app():
 
                     if Job_Description.strip():
                         try:
+                            # --- UPDATED SUMMARY PROMPT FOR DELOITTE ---
                             summary_prompt = f"""
                             You are an elite, no-nonsense Senior Technical Recruiter writing an executive submission summary for a Fieldglass portal. 
                             The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed, optimized for both human reading and ATS exact-match parsing.
@@ -3163,15 +3172,16 @@ def deloitte_app():
                             - ATS COMPROMISE: To satisfy the Fieldglass parsing algorithm, you must still weave in high-level, generalized keywords from the baseline Job Description where applicable, but NEVER highlight technical skills or responsibilities that the manager explicitly negated in their notes.
 
                             ========================
-                            THE NARRATIVE BLUEPRINT (4 Sentences Max)
+                            THE NARRATIVE BLUEPRINT (5 Bullet Points)
                             ========================
-                            Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
-                            - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description? (Calculate their total overall years strictly rounding DOWN to the nearest whole year formatted as 'X+ years'. Use their FIRST NAME only. You MUST use the exact job title requested in the JD if the candidate's history supports it. Avoid generic fluff).
-                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job? (Frame it as a direct 1:1 match for the manager's current challenge).
-                            - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter? (Weave the specific tools/methodologies into an "Execution Statement" that highlights the complexity, scale, or business impact. DO NOT write a comma-separated list of tools. DO NOT repeat verbs from Sentence 2).
-                            - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role? (Use a strong, direct structure like: "[First Name]'s success in [X] makes them an immediate asset for driving this team's [specific technical goal/initiative]." Do NOT mention the physical location/city).
+                            Follow this exact structure for the SUMMARY. Generate exactly 5 distinct bullet points mapped to SUMMARY1 through SUMMARY5. Every point MUST sell the candidate's fit for the role:
+                            - SUMMARY1 (The Anchor): The candidate's TOTAL progressive professional experience and dominant expertise that solves the PRIMARY technical "must-have" of the Job Description. (Use their FIRST NAME only. Calculate total overall years strictly rounding DOWN to the nearest whole year formatted as 'X+ years').
+                            - SUMMARY2 (The Alignment): Explicitly name their CURRENT or most recent employer. Frame their most impressive, relevant project as a direct 1:1 match for the manager's current challenge.
+                            - SUMMARY3 (The Execution): How did they build it? Weave the specific tools/methodologies into an "Execution Statement" that highlights complexity, scale, or business impact.
+                            - SUMMARY4 (Secondary Expertise): Highlight a secondary skill, architecture, or methodology requested in the JD that the candidate also possesses.
+                            - SUMMARY5 (The Closer): Based on their past execution, state what specific value they will deliver on Day 1 in THIS new role.
 
-                            CRITICAL ATS HACK: Across these 4 sentences, you MUST seamlessly embed 2-3 exact phrases from the Job Description to maximize the Fieldglass match score. Do not force them if they ruin the sentence flow, but prioritize exact phrase matching where supported by the resume.
+                            CRITICAL ATS HACK: Across these 5 bullets, you MUST seamlessly embed exact phrases from the Job Description to maximize the Fieldglass match score.
 
                             ========================
                             STYLE & TONE RULES (STRICT)
@@ -3179,71 +3189,69 @@ def deloitte_app():
                             - Write like a human pitching to a colleague. Confident, direct, and factual.
                             - TECH MATCHING: Strictly align the tools you highlight with the JD. 
                             - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
-                            - LEADERSHIP VERBS: Use high-authority active verbs (e.g., 'Engineered', 'Optimized', 'Architected', 'Spearheaded') instead of passive verbs like 'Assisted', 'Collaborated', or 'Helped'.
-                            - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely," "exceptionally well-prepared," "fits well," "aligns with," "enterprise-grade platforms."
-                            - Do NOT use transition crutches: "Additionally," "Furthermore," "Moreover."
+                            - LEADERSHIP VERBS: Use high-authority active verbs (e.g., 'Engineered', 'Optimized', 'Architected').
+                            - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely."
                             - Do NOT repeat or restate the job description.
 
                             ========================
-                            SKILLS SECTION
+                            SKILLS SECTION (8 SKILLS + COMPANIES)
                             ========================
-                            - EXACTLY 4 items
+                            - EXTRACT UP TO 8 SKILLS MAXIMUM.
                             - Prioritize the specific "Must-Have" technologies AND methodologies requested in the JD and the provided Skills Matrix.
-                            - Highly relevant + keyword-rich
-                            - Use only tools explicitly mentioned in resume/notes
+                            - You MUST identify all companies from the candidate's Resume Experience section where they utilized each skill.
 
-                            Format:
-                            "Skill Area (Tool1, Tool2, Tool3, Tool4)"
-
-                            Years format:
-                            "X+ years, current" OR "X+ years, 2026"
+                            Format: "Skill Area (Tool1, Tool2)"
+                            Years format: "X+ years, current" OR "X+ years"
+                            Companies format: "Company A, Company B" (Extract exact company names from the resume where the skill was used)
 
                             ========================
                             🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
                             ========================
                             1. THE RESUME IS THE ONLY SOURCE OF TRUTH. You are strictly forbidden from copying a skill, tool, or technology from the Job Description and assigning it to the candidate unless it physically appears in their Resume.
-                            2. DO NOT INFER OR ASSUME. If the JD asks for "Redshift" and the resume only says "AWS", you MUST NOT write "Redshift" under any circumstances. 
-                            3. DO NOT INFLATE TO MATCH THE JD. If the candidate lacks a requested skill, omit it completely. It is better to have an incomplete match than a fabricated one.
-                            4. FACT AUDIT: Before outputting the final JSON, you must verify every single tool mentioned in your SUMMARY and SKILLS. If a tool exists in the JD but not in the Resume, you must delete it from your output.
+                            2. DO NOT INFER OR ASSUME. 
+                            3. DO NOT INFLATE TO MATCH THE JD. If the candidate lacks a requested skill, omit it completely.
 
                             ========================
                             YEARS ACCURACY RULES (REALISTIC RECRUITER MODE)
                             ========================
                             - Use June 2026 as the current date.
-                            - STRICT MATH (DATE-DRIVEN ONLY): Calculate years strictly based on the earliest chronological date provided in the 'Professional Experience' or 'Work History' section. You MUST completely IGNORE any self-reported years of experience in the candidate's summary blurb. Round DOWN to the nearest whole year and use the exact format "X+ years". Do not use phrases like "nearly X years". 
-                            - Foundational skills should get their maximum calculated years.
-                            - Advanced/Specialized tools should realistically be calculated at 1-2 years less than their maximum total experience unless the resume explicitly proves Day 1 usage. 
-                            - Default to "current" if they are still working in this general technical field. Always bridge past experience to their current tenure.
-
-                            ========================
-                            🧠 FINAL POLISH CHECKLIST (ONE PASS ONLY)
-                            ========================
-                            Before outputting the JSON, evaluate your drafted SUMMARY and SKILLS against these 7 checks:
-                            1. SIMPLIFIED: No run-on sentences or unnecessary filler.
-                            2. HUMAN TONE: No generic claims like "highly experienced."
-                            3. TOOL DENSITY: Maximum 3 tools per sentence.
-                            4. NO REPETITION: Do not repeat verbs or concepts across sentences.
-                            5. THE PITCH: Ensure a natural, confident recruiter tone.
-                            6. CURRENT JOB: Did you explicitly name their most recent employer in Sentence 2?
-                            7. ACCURATE MATH: Did you strictly round down their years of experience and use the 'X+ years' format to prevent ATS parser flags?
-
-                            Output only the final, polished JSON.
+                            - STRICT MATH (DATE-DRIVEN ONLY): Calculate years strictly based on the earliest chronological date provided in the 'Professional Experience'. Round DOWN to the nearest whole year.
 
                             ========================
                             OUTPUT FORMAT (STRICT)
                             ========================
-                            Return ONLY valid JSON:
+                            Return ONLY valid JSON. If less than 8 skills are found, leave the remaining skill strings empty ("").
 
                             {{
-                              "SUMMARY": "4 sentence summary following the blueprint",
-                              "SKILL1": "Skill Area (tools)",
-                              "YEARS1": "X+ years, current",
-                              "SKILL2": "Skill Area (tools)",
-                              "YEARS2": "X+ years, current",
-                              "SKILL3": "Skill Area (tools)",
-                              "YEARS3": "X+ years, current",
-                              "SKILL4": "Skill Area (tools)",
-                              "YEARS4": "X+ years, current"
+                              "SUMMARY1": "Bullet 1...",
+                              "SUMMARY2": "Bullet 2...",
+                              "SUMMARY3": "Bullet 3...",
+                              "SUMMARY4": "Bullet 4...",
+                              "SUMMARY5": "Bullet 5...",
+                              "SKILL1": "Skill Area",
+                              "YEARS1": "X+ years",
+                              "SKILL1COMPANIES": "Company A, Company B",
+                              "SKILL2": "Skill Area",
+                              "YEARS2": "X+ years",
+                              "SKILL2COMPANIES": "Company C",
+                              "SKILL3": "",
+                              "YEARS3": "",
+                              "SKILL3COMPANIES": "",
+                              "SKILL4": "",
+                              "YEARS4": "",
+                              "SKILL4COMPANIES": "",
+                              "SKILL5": "",
+                              "YEARS5": "",
+                              "SKILL5COMPANIES": "",
+                              "SKILL6": "",
+                              "YEARS6": "",
+                              "SKILL6COMPANIES": "",
+                              "SKILL7": "",
+                              "YEARS7": "",
+                              "SKILL7COMPANIES": "",
+                              "SKILL8": "",
+                              "YEARS8": "",
+                              "SKILL8COMPANIES": ""
                             }}
 
                             ========================
@@ -3281,15 +3289,17 @@ def deloitte_app():
                                     else:
                                         raise api_e
 
-                            mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
-                            mapping["SKILL1"] = summary_data.get("SKILL1", "")
-                            mapping["YEARS1"] = summary_data.get("YEARS1", "")
-                            mapping["SKILL2"] = summary_data.get("SKILL2", "")
-                            mapping["YEARS2"] = summary_data.get("YEARS2", "")
-                            mapping["SKILL3"] = summary_data.get("SKILL3", "")
-                            mapping["YEARS3"] = summary_data.get("YEARS3", "")
-                            mapping["SKILL4"] = summary_data.get("SKILL4", "")
-                            mapping["YEARS4"] = summary_data.get("YEARS4", "")
+                            mapping["SUMMARY1"] = summary_data.get("SUMMARY1", "")
+                            mapping["SUMMARY2"] = summary_data.get("SUMMARY2", "")
+                            mapping["SUMMARY3"] = summary_data.get("SUMMARY3", "")
+                            mapping["SUMMARY4"] = summary_data.get("SUMMARY4", "")
+                            mapping["SUMMARY5"] = summary_data.get("SUMMARY5", "")
+                            
+                            for i in range(1, 9):
+                                mapping[f"SKILL{i}"] = summary_data.get(f"SKILL{i}", "")
+                                mapping[f"YEARS{i}"] = summary_data.get(f"YEARS{i}", "")
+                                mapping[f"SKILL{i}COMPANIES"] = summary_data.get(f"SKILL{i}COMPANIES", "")
+                                
                         except Exception as e:
                             st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
 
