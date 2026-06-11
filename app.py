@@ -3116,6 +3116,16 @@ def deloitte_app():
                     ai_name = data.get('FullName', '').title()
                     final_name = Legal_Name.strip() if Legal_Name.strip() else ai_name
 
+                    # --- ADD THIS LOGIC HERE TO DEFINE resume_body ---
+                    # We split the text to remove the Recruiter's Summary and keep the rest
+                    if "Technical Skills" in raw_text:
+                        resume_body = "Technical Skills" + raw_text.split("Technical Skills", 1)[1]
+                    elif "Links:" in raw_text:
+                        resume_body = "Links:" + raw_text.split("Links:", 1)[1]
+                    else:
+                        resume_body = raw_text 
+                    # --------------------------------------------------
+
                     # --- UPDATED MAPPING TO SUPPORT 8 SKILLS + COMPANIES + 5 SUMMARIES ---
                     mapping = {
                         "FullName": final_name, "PreferredName": Preferred_Name, 
