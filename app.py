@@ -2955,7 +2955,7 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
     doc = docx.Document(template_path)
     orig_doc = docx.Document(resume_path)
 
-    # 1. Delete empty skill rows
+    # 1. Delete empty skill rows BEFORE replacing text
     for tbl in doc.tables:
         rows_to_delete = []
         for row in tbl.rows:
@@ -2965,30 +2965,51 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
                     if not mapping.get(f"SKILL{i}", "").strip():
                         rows_to_delete.append(row)
         for row in rows_to_delete:
+            # Safer XML removal method for table rows
             row._element.getparent().remove(row._element)
 
     # 2. Replace placeholders while preserving formatting
-    def replace_with_bold_fix(paragraph, placeholder, value):
-        if placeholder in paragraph.text:
-            # Rebuild text while preserving paragraph style
-            paragraph.text = paragraph.text.replace(placeholder, str(value))
-
-    # Rebuild headers explicitly
     for p in doc.paragraphs:
-        if "{{FullName}}" in p.text:
-            p.text = p.text.replace("{{FullName}}", str(mapping.get("FullName", "")))
-        if "{{PreferredName}}" in p.text:
-            p.text = p.text.replace("{{PreferredName}}", str(mapping.get("PreferredName", "")))
-        if "{{Location}}" in p.text:
-            p.text = p.text.replace("{{Location}}", str(mapping.get("Location", "")))
-        if "{{TimeOff}}" in p.text:
-            p.text = p.text.replace("{{TimeOff}}", str(mapping.get("TimeOff", "")))
+        # Explicitly rebuild the header lines to maintain the bold prefix
+        if "Candidate Legal Name:" in p.text and "{{FullName}}" in p.text:
+            p.text = ""
+            r1 = p.add_run("Candidate Legal Name: ")
+            r1.bold = True
+            p.add_run(str(mapping.get("FullName", "")))
+            continue
+        if "Preferred Name:" in p.text and "{{PreferredName}}" in p.text:
+            p.text = ""
+            r1 = p.add_run("Preferred Name: ")
+            r1.bold = True
+            p.add_run(str(mapping.get("PreferredName", "")))
+            continue
+        if "Current Location:" in p.text and "{{Location}}" in p.text:
+            p.text = ""
+            r1 = p.add_run("Current Location: ")
+            r1.bold = True
+            p.add_run(str(mapping.get("Location", "")))
+            continue
+        if "Upcoming Scheduled Time off:" in p.text and "{{TimeOff}}" in p.text:
+            p.text = ""
+            r1 = p.add_run("Upcoming Scheduled Time off: ")
+            r1.bold = True
+            p.add_run(str(mapping.get("TimeOff", "")))
+            continue
 
+        # For all other paragraphs (like Summary points)
         for k, v in mapping.items():
             placeholder = f"{{{{{k}}}}}"
             if placeholder in p.text:
-                p.text = p.text.replace(placeholder, str(v))
+                replaced = False
+                for run in p.runs:
+                    if placeholder in run.text:
+                        run.text = run.text.replace(placeholder, str(v))
+                        replaced = True
+                # Fallback if the placeholder got split across multiple runs by Word
+                if not replaced:
+                    p.text = p.text.replace(placeholder, str(v))
 
+    # Replace placeholders in table cells
     for tbl in doc.tables:
         for row in tbl.rows:
             for cell in row.cells:
@@ -2996,9 +3017,15 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
                     for k, v in mapping.items():
                         placeholder = f"{{{{{k}}}}}"
                         if placeholder in p.text:
-                            p.text = p.text.replace(placeholder, str(v))
+                            replaced = False
+                            for run in p.runs:
+                                if placeholder in run.text:
+                                    run.text = run.text.replace(placeholder, str(v))
+                                    replaced = True
+                            if not replaced:
+                                p.text = p.text.replace(placeholder, str(v))
 
-    # 3. XML Scrubber
+    # --- XML SCRUBBER FUNCTION ---
     def clean_xml_element(element):
         for hl in element.xpath('.//w:hyperlink'):
             parent = hl.getparent()
@@ -3016,27 +3043,46 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
             parent = bm.getparent()
             if parent is not None:
                 parent.remove(bm)
+        
+        # CRITICAL FIX: Strip original section properties to prevent margin overwriting
         for sectPr in element.xpath('.//w:sectPr'):
             parent = sectPr.getparent()
             if parent is not None:
                 parent.remove(sectPr)
-        return element
 
-    # 4. Copy resume body
+        # NEW FIX: Recalculate right-aligned tabs & remove indents to prevent date wrapping
+        w_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        for tab in element.xpath('.//w:tab'):
+            if tab.get(f"{{{w_ns}}}val") == 'right':
+                # 10800 twips = exactly 7.5 inches (the printable width of an 8.5" page with 0.5" margins)
+                tab.set(f"{{{w_ns}}}pos", '10800')  
+
+        for ind in element.xpath('.//w:ind'):
+            if f"{{{w_ns}}}right" in ind.attrib:
+                ind.attrib[f"{{{w_ns}}}right"] = '0' # Strip hidden right-indents that squeeze text
+                
+        return element
+    # ----------------------------------
+
+    # 3. Extract the "Rest of Resume"
     body_elements = orig_doc._body._body
     start_copying = False
     elements_to_copy = []
+
     for element in body_elements:
         try:
             text = "".join(element.itertext())
-        except:
+        except Exception:
             text = ""
+            
         if "Links:" in text or "Technical Skills" in text:
             start_copying = True
+        
         if start_copying:
-            elements_to_copy.append(clean_xml_element(deepcopy(element)))
+            clean_el = clean_xml_element(deepcopy(element))
+            elements_to_copy.append(clean_el)
 
-    # 5. Insert
+    # 4. Insert extracted elements perfectly at {{RESUME_BODY}}
     for p in doc.paragraphs:
         if "{{RESUME_BODY}}" in p.text:
             parent = p._element.getparent()
@@ -3047,12 +3093,19 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
             parent.remove(p._element)
             break
 
-    # 6. Apply Arial 10pt (Safely)
+    # 5. Strict Formatting: Enforce Arial 10pt across the ENTIRE document
     for p in doc.paragraphs:
         for run in p.runs:
             run.font.name = 'Arial'
             run.font.size = Pt(10)
-    
+    for tbl in doc.tables:
+        for row in tbl.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for run in p.runs:
+                        run.font.name = 'Arial'
+                        run.font.size = Pt(10)
+
     doc.save(output_path)
 def deloitte_app():
     TEMPLATE_FILENAME = "Deloitte_Template.docx"
