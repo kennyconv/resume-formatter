@@ -2990,7 +2990,13 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
     elements_to_copy = []
 
     for element in body_elements:
-        text = element.text if hasattr(element, 'text') else ''
+        # FIX: lxml elements return 'None' for .text if the text is nested in child nodes.
+        # Using itertext() safely grabs all nested text as a continuous string.
+        try:
+            text = "".join(element.itertext())
+        except Exception:
+            text = ""
+
         # Trigger copying once we hit Links or Technical Skills section
         if "Links:" in text or "Technical Skills" in text:
             start_copying = True
