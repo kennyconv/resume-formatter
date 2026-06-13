@@ -2959,35 +2959,74 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
     for tbl in doc.tables:
         rows_to_delete = []
         for row in tbl.rows:
-            # Check first cell for skill placeholders
             cell_text = row.cells[0].text
             for i in range(1, 9):
                 if f"{{{{SKILL{i}}}}}" in cell_text:
-                    # If the mapped skill is empty, mark row for deletion
                     if not mapping.get(f"SKILL{i}", "").strip():
                         rows_to_delete.append(row)
         for row in rows_to_delete:
-            tbl._element.remove(row._element)
+            # Safer XML removal method for table rows
+            row._element.getparent().remove(row._element)
 
-    # 2. Replace placeholders in the entire document
-    def replace_placeholders(element):
+    # 2. Replace placeholders while preserving formatting
+    for p in doc.paragraphs:
+        # Explicitly rebuild the header lines to maintain the bold prefix
+        if "Candidate Legal Name:" in p.text and "{{FullName}}" in p.text:
+            p.text = ""
+            r1 = p.add_run("Candidate Legal Name: ")
+            r1.bold = True
+            p.add_run(str(mapping.get("FullName", "")))
+            continue
+        if "Preferred Name:" in p.text and "{{PreferredName}}" in p.text:
+            p.text = ""
+            r1 = p.add_run("Preferred Name: ")
+            r1.bold = True
+            p.add_run(str(mapping.get("PreferredName", "")))
+            continue
+        if "Current Location:" in p.text and "{{Location}}" in p.text:
+            p.text = ""
+            r1 = p.add_run("Current Location: ")
+            r1.bold = True
+            p.add_run(str(mapping.get("Location", "")))
+            continue
+        if "Upcoming Scheduled Time off:" in p.text and "{{TimeOff}}" in p.text:
+            p.text = ""
+            r1 = p.add_run("Upcoming Scheduled Time off: ")
+            r1.bold = True
+            p.add_run(str(mapping.get("TimeOff", "")))
+            continue
+
+        # For all other paragraphs (like Summary points)
         for k, v in mapping.items():
             placeholder = f"{{{{{k}}}}}"
-            if placeholder in element.text:
-                element.text = element.text.replace(placeholder, str(v))
+            if placeholder in p.text:
+                replaced = False
+                for run in p.runs:
+                    if placeholder in run.text:
+                        run.text = run.text.replace(placeholder, str(v))
+                        replaced = True
+                # Fallback if the placeholder got split across multiple runs by Word
+                if not replaced:
+                    p.text = p.text.replace(placeholder, str(v))
 
-    for p in doc.paragraphs:
-        replace_placeholders(p)
+    # Replace placeholders in table cells
     for tbl in doc.tables:
         for row in tbl.rows:
             for cell in row.cells:
                 for p in cell.paragraphs:
-                    replace_placeholders(p)
+                    for k, v in mapping.items():
+                        placeholder = f"{{{{{k}}}}}"
+                        if placeholder in p.text:
+                            replaced = False
+                            for run in p.runs:
+                                if placeholder in run.text:
+                                    run.text = run.text.replace(placeholder, str(v))
+                                    replaced = True
+                            if not replaced:
+                                p.text = p.text.replace(placeholder, str(v))
 
-    # --- NEW: XML SCRUBBER FUNCTION ---
+    # --- XML SCRUBBER FUNCTION ---
     def clean_xml_element(element):
-        """Removes hidden relationship IDs (hyperlinks, images) to prevent Word corruption."""
-        # Strip hyperlinks but keep the text runs intact
         for hl in element.xpath('.//w:hyperlink'):
             parent = hl.getparent()
             if parent is not None:
@@ -2996,23 +3035,18 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
                     parent.insert(idx, child)
                     idx += 1
                 parent.remove(hl)
-        
-        # Remove any images, drawings, or objects to avoid missing image rIds
         for drawing in element.xpath('.//w:drawing | .//w:pict | .//w:object'):
             parent = drawing.getparent()
             if parent is not None:
                 parent.remove(drawing)
-                
-        # Remove bookmarks to prevent duplicate ID conflicts
         for bm in element.xpath('.//w:bookmarkStart | .//w:bookmarkEnd'):
             parent = bm.getparent()
             if parent is not None:
                 parent.remove(bm)
-                
         return element
     # ----------------------------------
 
-    # 3. Extract the "Rest of Resume" from the original document XML
+    # 3. Extract the "Rest of Resume"
     body_elements = orig_doc._body._body
     start_copying = False
     elements_to_copy = []
@@ -3027,7 +3061,6 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
             start_copying = True
         
         if start_copying:
-            # Wrap the deepcopy in our new scrubber function
             clean_el = clean_xml_element(deepcopy(element))
             elements_to_copy.append(clean_el)
 
@@ -3042,7 +3075,14 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
             parent.remove(p._element)
             break
 
-    # 5. Strict Formatting: Enforce Arial 10pt across the ENTIRE document
+    # 5. Prevent Text Wrapping by expanding margins to 0.5 inches (Narrow)
+    for section in doc.sections:
+        section.top_margin = docx.shared.Inches(0.5)
+        section.bottom_margin = docx.shared.Inches(0.5)
+        section.left_margin = docx.shared.Inches(0.5)
+        section.right_margin = docx.shared.Inches(0.5)
+
+    # 6. Strict Formatting: Enforce Arial 10pt across the ENTIRE document
     for p in doc.paragraphs:
         for run in p.runs:
             run.font.name = 'Arial'
@@ -3298,10 +3338,12 @@ def deloitte_app():
                             - Do NOT repeat or restate the job description.
 
                             ========================
-                            SKILLS SECTION (8 SKILLS + COMPANIES)
+                            SKILLS SECTION (STRICT MATCHING)
                             ========================
-                            - EXTRACT UP TO 8 SKILLS MAXIMUM.
-                            - Prioritize the specific "Must-Have" technologies AND methodologies requested in the JD and the provided Skills Matrix.
+                            - YOU MUST ONLY EVALUATE AND EXTRACT THE EXACT SKILLS LISTED IN THE "Skills Matrix:" INPUT PROVIDED BELOW.
+                            - DO NOT invent, add, or extract any other skills from the JD or Resume. 
+                            - If the provided Skills Matrix only lists 4 skills, you MUST ONLY output those 4 skills and leave SKILL5 through SKILL8 completely empty ("").
+                            - Extract maximum up to 8 skills, but strictly limited to what the user provides in the 'Skills Matrix' input.
                             - You MUST identify all companies from the candidate's Resume Experience section where they utilized each skill.
 
                             Format: "Skill Area (Tool1, Tool2)"
