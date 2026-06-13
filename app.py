@@ -13,7 +13,7 @@ import copy
 import time
 import subprocess
 from pdf2docx import Converter
-from docx.shared import Pt
+from copy import deepcopy
 
 # ====================================================================
 # --- STREAMLIT UI & PASSWORD LOGIC ---
@@ -2951,6 +2951,80 @@ def pdf_to_word_app():
 # ====================================================================
 # --- 🔵 CLIENT APP 8: DELOITTE 🔵 ---
 # ====================================================================
+def process_deloitte_doc(template_path, mapping, resume_path, output_path):
+    doc = docx.Document(template_path)
+    orig_doc = docx.Document(resume_path)
+
+    # 1. Delete empty skill rows BEFORE replacing text
+    for tbl in doc.tables:
+        rows_to_delete = []
+        for row in tbl.rows:
+            # Check first cell for skill placeholders
+            cell_text = row.cells[0].text
+            for i in range(1, 9):
+                if f"{{{{SKILL{i}}}}}" in cell_text:
+                    # If the mapped skill is empty, mark row for deletion
+                    if not mapping.get(f"SKILL{i}", "").strip():
+                        rows_to_delete.append(row)
+        for row in rows_to_delete:
+            tbl._element.remove(row._element)
+
+    # 2. Replace placeholders in the entire document
+    def replace_placeholders(element):
+        for k, v in mapping.items():
+            placeholder = f"{{{{{k}}}}}"
+            if placeholder in element.text:
+                element.text = element.text.replace(placeholder, str(v))
+
+    for p in doc.paragraphs:
+        replace_placeholders(p)
+    for tbl in doc.tables:
+        for row in tbl.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    replace_placeholders(p)
+
+    # 3. Extract the "Rest of Resume" from the original document XML
+    body_elements = orig_doc._body._body
+    start_copying = False
+    elements_to_copy = []
+
+    for element in body_elements:
+        text = element.text if hasattr(element, 'text') else ''
+        # Trigger copying once we hit Links or Technical Skills section
+        if "Links:" in text or "Technical Skills" in text:
+            start_copying = True
+        
+        if start_copying:
+            elements_to_copy.append(deepcopy(element))
+
+    # 4. Insert extracted elements perfectly at {{RESUME_BODY}}
+    for p in doc.paragraphs:
+        if "{{RESUME_BODY}}" in p.text:
+            parent = p._element.getparent()
+            index = parent.index(p._element)
+            # Insert all copied elements before the placeholder paragraph
+            for el in elements_to_copy:
+                parent.insert(index, el)
+                index += 1
+            # Remove the {{RESUME_BODY}} placeholder paragraph entirely
+            parent.remove(p._element)
+            break
+
+    # 5. Strict Formatting: Enforce Arial 10pt across the ENTIRE document
+    for p in doc.paragraphs:
+        for run in p.runs:
+            run.font.name = 'Arial'
+            run.font.size = Pt(10)
+    for tbl in doc.tables:
+        for row in tbl.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for run in p.runs:
+                        run.font.name = 'Arial'
+                        run.font.size = Pt(10)
+
+    doc.save(output_path)
 def deloitte_app():
     TEMPLATE_FILENAME = "Deloitte_Template.docx"
     st.title("Deloitte Precision Extractor")
@@ -3116,21 +3190,10 @@ def deloitte_app():
                     ai_name = data.get('FullName', '').title()
                     final_name = Legal_Name.strip() if Legal_Name.strip() else ai_name
 
-                    # --- ADD THIS LOGIC HERE TO DEFINE resume_body ---
-                    # We split the text to remove the Recruiter's Summary and keep the rest
-                    if "Technical Skills" in raw_text:
-                        resume_body = "Technical Skills" + raw_text.split("Technical Skills", 1)[1]
-                    elif "Links:" in raw_text:
-                        resume_body = "Links:" + raw_text.split("Links:", 1)[1]
-                    else:
-                        resume_body = raw_text 
-                    # --------------------------------------------------
-
                     # --- UPDATED MAPPING TO SUPPORT 8 SKILLS + COMPANIES + 5 SUMMARIES ---
                     mapping = {
                         "FullName": final_name, "PreferredName": Preferred_Name, 
                         "TimeOff": Time_Off, "Location": Current_Location_City_ST,
-                        "RESUME_BODY": resume_body,
                         "SUMMARY1": "", "SUMMARY2": "", "SUMMARY3": "", "SUMMARY4": "", "SUMMARY5": "",
                         "SKILL1": "", "YEARS1": "", "SKILL1COMPANIES": "",
                         "SKILL2": "", "YEARS2": "", "SKILL2COMPANIES": "",
@@ -3314,7 +3377,8 @@ def deloitte_app():
                             st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
 
                     out_file = f"Submission_Deloitte_{final_name.replace(' ', '_')}.docx"
-                    process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
+                    # Pass resume_path to the new function so it can extract the raw XML elements
+                    process_deloitte_doc(TEMPLATE_FILENAME, mapping, resume_path, out_file)
                     
                     with open(out_file, "rb") as file:
                         btn = st.download_button(
