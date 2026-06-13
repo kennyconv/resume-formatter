@@ -3049,6 +3049,17 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
             parent = sectPr.getparent()
             if parent is not None:
                 parent.remove(sectPr)
+
+        # NEW FIX: Recalculate right-aligned tabs & remove indents to prevent date wrapping
+        w_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        for tab in element.xpath('.//w:tab'):
+            if tab.get(f"{{{w_ns}}}val") == 'right':
+                # 10800 twips = exactly 7.5 inches (the printable width of an 8.5" page with 0.5" margins)
+                tab.set(f"{{{w_ns}}}pos", '10800')  
+
+        for ind in element.xpath('.//w:ind'):
+            if f"{{{w_ns}}}right" in ind.attrib:
+                ind.attrib[f"{{{w_ns}}}right"] = '0' # Strip hidden right-indents that squeeze text
                 
         return element
     # ----------------------------------
@@ -3338,12 +3349,13 @@ def deloitte_app():
                             - Do NOT repeat or restate the job description.
 
                             ========================
-                            SKILLS SECTION (STRICT MATCHING)
+                            SKILLS SECTION (INTELLIGENT SEMANTIC MATCHING)
                             ========================
-                            - YOU MUST ONLY EVALUATE AND EXTRACT THE EXACT SKILLS LISTED IN THE "Skills Matrix:" INPUT PROVIDED BELOW.
-                            - DO NOT invent, add, or extract any other skills from the JD or Resume. 
+                            - You are evaluating the candidate against the exact skills listed in the "Skills Matrix:" input.
+                            - INTELLIGENT MATCHING: You MUST look for semantic equivalents, synonyms, or related frameworks in the resume (e.g., if the matrix asks for "React.js", you MUST credit the candidate if they have "React Native", "React", etc.).
+                            - Output the EXACT skill name as it is written in the Skills Matrix input, but calculate the Years and Companies based on your intelligent matching of their resume.
                             - If the provided Skills Matrix only lists 4 skills, you MUST ONLY output those 4 skills and leave SKILL5 through SKILL8 completely empty ("").
-                            - You MUST extract and populate the 'Years' and 'Companies' fields for EVERY single skill you evaluate. Do not leave 'Years' or 'Companies' blank if the candidate has experience with the tool.
+                            - You MUST extract and populate the 'Years' and 'Companies' fields for EVERY single skill you evaluate. Do not leave 'Years' or 'Companies' blank if the candidate has experience with the tool/concept.
 
                             Format: "Skill Area"
                             Years format: "X+ years" ONLY. (CRITICAL: DO NOT add ", current" or any years/dates to this string. Only output the number of years).
