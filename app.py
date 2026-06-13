@@ -2984,36 +2984,61 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
                 for p in cell.paragraphs:
                     replace_placeholders(p)
 
+    # --- NEW: XML SCRUBBER FUNCTION ---
+    def clean_xml_element(element):
+        """Removes hidden relationship IDs (hyperlinks, images) to prevent Word corruption."""
+        # Strip hyperlinks but keep the text runs intact
+        for hl in element.xpath('.//w:hyperlink'):
+            parent = hl.getparent()
+            if parent is not None:
+                idx = parent.index(hl)
+                for child in list(hl):
+                    parent.insert(idx, child)
+                    idx += 1
+                parent.remove(hl)
+        
+        # Remove any images, drawings, or objects to avoid missing image rIds
+        for drawing in element.xpath('.//w:drawing | .//w:pict | .//w:object'):
+            parent = drawing.getparent()
+            if parent is not None:
+                parent.remove(drawing)
+                
+        # Remove bookmarks to prevent duplicate ID conflicts
+        for bm in element.xpath('.//w:bookmarkStart | .//w:bookmarkEnd'):
+            parent = bm.getparent()
+            if parent is not None:
+                parent.remove(bm)
+                
+        return element
+    # ----------------------------------
+
     # 3. Extract the "Rest of Resume" from the original document XML
     body_elements = orig_doc._body._body
     start_copying = False
     elements_to_copy = []
 
     for element in body_elements:
-        # FIX: lxml elements return 'None' for .text if the text is nested in child nodes.
-        # Using itertext() safely grabs all nested text as a continuous string.
         try:
             text = "".join(element.itertext())
         except Exception:
             text = ""
-
-        # Trigger copying once we hit Links or Technical Skills section
+            
         if "Links:" in text or "Technical Skills" in text:
             start_copying = True
         
         if start_copying:
-            elements_to_copy.append(deepcopy(element))
+            # Wrap the deepcopy in our new scrubber function
+            clean_el = clean_xml_element(deepcopy(element))
+            elements_to_copy.append(clean_el)
 
     # 4. Insert extracted elements perfectly at {{RESUME_BODY}}
     for p in doc.paragraphs:
         if "{{RESUME_BODY}}" in p.text:
             parent = p._element.getparent()
             index = parent.index(p._element)
-            # Insert all copied elements before the placeholder paragraph
             for el in elements_to_copy:
                 parent.insert(index, el)
                 index += 1
-            # Remove the {{RESUME_BODY}} placeholder paragraph entirely
             parent.remove(p._element)
             break
 
