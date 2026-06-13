@@ -3043,6 +3043,13 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
             parent = bm.getparent()
             if parent is not None:
                 parent.remove(bm)
+        
+        # CRITICAL FIX: Strip original section properties to prevent margin overwriting
+        for sectPr in element.xpath('.//w:sectPr'):
+            parent = sectPr.getparent()
+            if parent is not None:
+                parent.remove(sectPr)
+                
         return element
     # ----------------------------------
 
@@ -3075,14 +3082,7 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
             parent.remove(p._element)
             break
 
-    # 5. Prevent Text Wrapping by expanding margins to 0.5 inches (Narrow)
-    for section in doc.sections:
-        section.top_margin = docx.shared.Inches(0.5)
-        section.bottom_margin = docx.shared.Inches(0.5)
-        section.left_margin = docx.shared.Inches(0.5)
-        section.right_margin = docx.shared.Inches(0.5)
-
-    # 6. Strict Formatting: Enforce Arial 10pt across the ENTIRE document
+    # 5. Strict Formatting: Enforce Arial 10pt across the ENTIRE document
     for p in doc.paragraphs:
         for run in p.runs:
             run.font.name = 'Arial'
@@ -3343,11 +3343,10 @@ def deloitte_app():
                             - YOU MUST ONLY EVALUATE AND EXTRACT THE EXACT SKILLS LISTED IN THE "Skills Matrix:" INPUT PROVIDED BELOW.
                             - DO NOT invent, add, or extract any other skills from the JD or Resume. 
                             - If the provided Skills Matrix only lists 4 skills, you MUST ONLY output those 4 skills and leave SKILL5 through SKILL8 completely empty ("").
-                            - Extract maximum up to 8 skills, but strictly limited to what the user provides in the 'Skills Matrix' input.
-                            - You MUST identify all companies from the candidate's Resume Experience section where they utilized each skill.
+                            - You MUST extract and populate the 'Years' and 'Companies' fields for EVERY single skill you evaluate. Do not leave 'Years' or 'Companies' blank if the candidate has experience with the tool.
 
-                            Format: "Skill Area (Tool1, Tool2)"
-                            Years format: "X+ years, current" OR "X+ years"
+                            Format: "Skill Area"
+                            Years format: "X+ years" ONLY. (CRITICAL: DO NOT add ", current" or any years/dates to this string. Only output the number of years).
                             Companies format: "Company A, Company B" (Extract exact company names from the resume where the skill was used)
 
                             ========================
