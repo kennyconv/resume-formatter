@@ -2952,9 +2952,9 @@ def pdf_to_word_app():
 # --- 🔵 CLIENT APP 8: DELOITTE 🔵 ---
 # ====================================================================
 def process_deloitte_doc(template_path, mapping, resume_path, output_path):
-    from docx.shared import Pt, Inches
-    from docx.enum.text import WD_TAB_ALIGNMENT
+    import docx
     import re
+    from docx.shared import Pt
     from copy import deepcopy
 
     doc = docx.Document(template_path)
@@ -2970,10 +2970,12 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
                     if not mapping.get(f"SKILL{i}", "").strip():
                         rows_to_delete.append(row)
         for row in rows_to_delete:
+            # Safer XML removal method for table rows
             row._element.getparent().remove(row._element)
 
     # 2. Replace placeholders while preserving formatting
     for p in doc.paragraphs:
+        # Explicitly rebuild the header lines to maintain the bold prefix
         if "Candidate Legal Name:" in p.text and "{{FullName}}" in p.text:
             p.text = ""
             r1 = p.add_run("Candidate Legal Name: ")
@@ -2999,6 +3001,7 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
             p.add_run(str(mapping.get("TimeOff", "")))
             continue
 
+        # For all other paragraphs (like Summary points)
         for k, v in mapping.items():
             placeholder = f"{{{{{k}}}}}"
             if placeholder in p.text:
@@ -3007,9 +3010,11 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
                     if placeholder in run.text:
                         run.text = run.text.replace(placeholder, str(v))
                         replaced = True
+                # Fallback if the placeholder got split across multiple runs by Word
                 if not replaced:
                     p.text = p.text.replace(placeholder, str(v))
 
+    # Replace placeholders in table cells
     for tbl in doc.tables:
         for row in tbl.rows:
             for cell in row.cells:
@@ -3027,7 +3032,8 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
 
     # --- XML SCRUBBER FUNCTION ---
     def clean_xml_element(element):
-        # Removed the 'namespaces' kwarg - python-docx handles w: automatically
+        w_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        
         for hl in element.xpath('.//w:hyperlink'):
             parent = hl.getparent()
             if parent is not None:
@@ -3044,19 +3050,55 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
             parent = bm.getparent()
             if parent is not None:
                 parent.remove(bm)
-
         for sectPr in element.xpath('.//w:sectPr'):
             parent = sectPr.getparent()
             if parent is not None:
                 parent.remove(sectPr)
-        
-        # XML LEVEL: Nuke duplicate tabs
+
+        # SURGICAL FIX: Date Wrapping (Tabs and Spaces targeted ONLY at copied text)
         for p in element.xpath('.//w:p'):
-            tabs = p.xpath('.//w:tab')
-            if len(tabs) > 1:
-                # Keep only the last tab, remove all preceding ones
-                for t in tabs[:-1]:
-                    t.getparent().remove(t)
+            pPr = p.find(f'{{{w_ns}}}pPr')
+            
+            # 1. Un-squeeze the right margin
+            if pPr is not None:
+                ind = pPr.find(f'{{{w_ns}}}ind')
+                if ind is not None:
+                    for attr in ['right', 'rightChars']:
+                        if f'{{{w_ns}}}{attr}' in ind.attrib:
+                            del ind.attrib[f'{{{w_ns}}}{attr}']
+            
+            # 2. Convert "Space Mashing" to real Tabs
+            for t_node in p.xpath('.//w:r/w:t'):
+                if t_node.text and '    ' in t_node.text:
+                    t_node.text = re.sub(r' {4,}', '', t_node.text)
+                    tab_el = docx.oxml.OxmlElement('w:tab')
+                    t_node.addprevious(tab_el)
+
+            # 3. Collapse "Tab Mashing"
+            tab_chars = p.xpath('.//w:r/w:tab')
+            if len(tab_chars) > 0:
+                if len(tab_chars) > 1:
+                    # Keep the first tab, destroy the rest
+                    for t in tab_chars[1:]:
+                        t.getparent().remove(t)
+                
+                # 4. Enforce ONE perfect right-aligned tab stop at 7.5 inches (10800 twips)
+                if pPr is None:
+                    pPr = docx.oxml.OxmlElement('w:pPr')
+                    p.insert(0, pPr)
+                    
+                tabs = pPr.find(f'{{{w_ns}}}tabs')
+                if tabs is not None:
+                    for old_tab in list(tabs):
+                        tabs.remove(old_tab)
+                else:
+                    tabs = docx.oxml.OxmlElement('w:tabs')
+                    pPr.append(tabs)
+                    
+                tab_stop = docx.oxml.OxmlElement('w:tab')
+                tab_stop.set(f'{{{w_ns}}}val', 'right')
+                tab_stop.set(f'{{{w_ns}}}pos', '10800')
+                tabs.append(tab_stop)
 
         return element
     # ----------------------------------
@@ -3090,26 +3132,11 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
             parent.remove(p._element)
             break
 
-    # 5. STRICT FORMATTING & NATIVE WORD TAB FIX (The Sledgehammer)
+    # 5. Strict Formatting: Enforce Arial 10pt across the ENTIRE document (Reverted to Safe Version)
     for p in doc.paragraphs:
-        # A. Force Right Margin to 0 and add ONE perfect right-aligned tab at 7.5 inches
-        try:
-            p.paragraph_format.right_indent = Inches(0)
-            p.paragraph_format.tab_stops.clear_all()
-            p.paragraph_format.tab_stops.add_tab_stop(Inches(7.5), WD_TAB_ALIGNMENT.RIGHT)
-        except Exception:
-            pass
-
-        # B. Enforce Arial 10pt and clear 'Space Mashing'
         for run in p.runs:
             run.font.name = 'Arial'
             run.font.size = Pt(10)
-            
-            if run.text:
-                # If candidate used 4+ spaces instead of a tab, convert it to a true tab stop!
-                if '    ' in run.text:
-                    run.text = re.sub(r' {4,}', '\t', run.text)
-
     for tbl in doc.tables:
         for row in tbl.rows:
             for cell in row.cells:
