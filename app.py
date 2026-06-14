@@ -3027,10 +3027,8 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
 
     # --- XML SCRUBBER FUNCTION ---
     def clean_xml_element(element):
-        w_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-        nsmap = {'w': w_ns} # CRITICAL FIX: Namespace added so XPath actually works
-        
-        for hl in element.xpath('.//w:hyperlink', namespaces=nsmap):
+        # Removed the 'namespaces' kwarg - python-docx handles w: automatically
+        for hl in element.xpath('.//w:hyperlink'):
             parent = hl.getparent()
             if parent is not None:
                 idx = parent.index(hl)
@@ -3038,23 +3036,23 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
                     parent.insert(idx, child)
                     idx += 1
                 parent.remove(hl)
-        for drawing in element.xpath('.//w:drawing | .//w:pict | .//w:object', namespaces=nsmap):
+        for drawing in element.xpath('.//w:drawing | .//w:pict | .//w:object'):
             parent = drawing.getparent()
             if parent is not None:
                 parent.remove(drawing)
-        for bm in element.xpath('.//w:bookmarkStart | .//w:bookmarkEnd', namespaces=nsmap):
+        for bm in element.xpath('.//w:bookmarkStart | .//w:bookmarkEnd'):
             parent = bm.getparent()
             if parent is not None:
                 parent.remove(bm)
 
-        for sectPr in element.xpath('.//w:sectPr', namespaces=nsmap):
+        for sectPr in element.xpath('.//w:sectPr'):
             parent = sectPr.getparent()
             if parent is not None:
                 parent.remove(sectPr)
         
         # XML LEVEL: Nuke duplicate tabs
-        for p in element.xpath('.//w:p', namespaces=nsmap):
-            tabs = p.xpath('.//w:tab', namespaces=nsmap)
+        for p in element.xpath('.//w:p'):
+            tabs = p.xpath('.//w:tab')
             if len(tabs) > 1:
                 # Keep only the last tab, remove all preceding ones
                 for t in tabs[:-1]:
