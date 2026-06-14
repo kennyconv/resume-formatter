@@ -3027,6 +3027,8 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
 
     # --- XML SCRUBBER FUNCTION ---
     def clean_xml_element(element):
+        w_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        
         for hl in element.xpath('.//w:hyperlink'):
             parent = hl.getparent()
             if parent is not None:
@@ -3043,24 +3045,52 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
             parent = bm.getparent()
             if parent is not None:
                 parent.remove(bm)
-        
-        # CRITICAL FIX: Strip original section properties to prevent margin overwriting
+
+        # Strip original section properties to prevent margin overwriting
         for sectPr in element.xpath('.//w:sectPr'):
             parent = sectPr.getparent()
             if parent is not None:
                 parent.remove(sectPr)
+        
+        # CRITICAL FIX: Stop Date Spilling (Tab Mashing & Right Align)
+        for p in element.xpath('.//w:p'):
+            tabs = p.xpath('.//w:tab')
+            if len(tabs) > 0:
+                # If they mashed the Tab key (multiple arrows), keep only the LAST one
+                # and replace the others with a standard space so words don't merge.
+                if len(tabs) > 1:
+                    for t in tabs[:-1]:
+                        space = docx.oxml.OxmlElement('w:t')
+                        space.set(f'{{http://www.w3.org/XML/1998/namespace}}space', 'preserve')
+                        space.text = ' '
+                        t.addprevious(space)
+                        t.getparent().remove(t)
 
-        # NEW FIX: Recalculate right-aligned tabs & remove indents to prevent date wrapping
-        w_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-        for tab in element.xpath('.//w:tab'):
-            if tab.get(f"{{{w_ns}}}val") == 'right':
-                # 10800 twips = exactly 7.5 inches (the printable width of an 8.5" page with 0.5" margins)
-                tab.set(f"{{{w_ns}}}pos", '10800')  
+                # Force the paragraph to have a right-aligned tab stop at exactly the margin (10800 twips)
+                pPr = p.find(f'{{{w_ns}}}pPr')
+                if pPr is None:
+                    pPr = docx.oxml.OxmlElement('w:pPr')
+                    p.insert(0, pPr)
 
-        for ind in element.xpath('.//w:ind'):
-            if f"{{{w_ns}}}right" in ind.attrib:
-                ind.attrib[f"{{{w_ns}}}right"] = '0' # Strip hidden right-indents that squeeze text
-                
+                tabs_el = pPr.find(f'{{{w_ns}}}tabs')
+                if tabs_el is None:
+                    tabs_el = docx.oxml.OxmlElement('w:tabs')
+                    pPr.append(tabs_el)
+                else:
+                    # Clear out old tab stops that might interfere
+                    for old_tab in list(tabs_el):
+                        tabs_el.remove(old_tab)
+
+                tab_stop = docx.oxml.OxmlElement('w:tab')
+                tab_stop.set(f'{{{w_ns}}}val', 'right')
+                tab_stop.set(f'{{{w_ns}}}pos', '10800')
+                tabs_el.append(tab_stop)
+
+                # Remove manual right-indents that squeeze the text
+                ind = pPr.find(f'{{{w_ns}}}ind')
+                if ind is not None and f'{{{w_ns}}}right' in ind.attrib:
+                    ind.attrib[f'{{{w_ns}}}right'] = '0'
+
         return element
     # ----------------------------------
 
