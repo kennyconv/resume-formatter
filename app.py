@@ -2952,11 +2952,6 @@ def pdf_to_word_app():
 # --- 🔵 CLIENT APP 8: DELOITTE 🔵 ---
 # ====================================================================
 def process_deloitte_doc(template_path, mapping, resume_path, output_path):
-    import docx
-    import re
-    from docx.shared import Pt
-    from copy import deepcopy
-
     doc = docx.Document(template_path)
     orig_doc = docx.Document(resume_path)
 
@@ -3050,55 +3045,51 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
             parent = bm.getparent()
             if parent is not None:
                 parent.remove(bm)
+
+        # Strip original section properties to prevent margin overwriting
         for sectPr in element.xpath('.//w:sectPr'):
             parent = sectPr.getparent()
             if parent is not None:
                 parent.remove(sectPr)
-
-        # SURGICAL FIX: Date Wrapping (Tabs and Spaces targeted ONLY at copied text)
+        
+        # CRITICAL FIX: Stop Date Spilling (Tab Mashing & Right Margin Squeezing)
         for p in element.xpath('.//w:p'):
-            pPr = p.find(f'{{{w_ns}}}pPr')
-            
             # 1. Un-squeeze the right margin
+            pPr = p.find(f'{{{w_ns}}}pPr')
             if pPr is not None:
                 ind = pPr.find(f'{{{w_ns}}}ind')
                 if ind is not None:
+                    # Delete any attribute that pushes text inward from the right
                     for attr in ['right', 'rightChars']:
                         if f'{{{w_ns}}}{attr}' in ind.attrib:
                             del ind.attrib[f'{{{w_ns}}}{attr}']
-            
-            # 2. Convert "Space Mashing" to real Tabs
-            for t_node in p.xpath('.//w:r/w:t'):
-                if t_node.text and '    ' in t_node.text:
-                    t_node.text = re.sub(r' {4,}', '', t_node.text)
-                    tab_el = docx.oxml.OxmlElement('w:tab')
-                    t_node.addprevious(tab_el)
 
-            # 3. Collapse "Tab Mashing"
-            tab_chars = p.xpath('.//w:r/w:tab')
-            if len(tab_chars) > 0:
-                if len(tab_chars) > 1:
-                    # Keep the first tab, destroy the rest
-                    for t in tab_chars[1:]:
+            # 2. Fix Tab Mashing
+            tabs = p.xpath('.//w:tab')
+            if len(tabs) > 0:
+                # If they hit "Tab" multiple times, KEEP ONLY ONE. 
+                # (We do NOT replace with spaces, as spaces add physical width).
+                if len(tabs) > 1:
+                    for t in tabs[:-1]:
                         t.getparent().remove(t)
-                
-                # 4. Enforce ONE perfect right-aligned tab stop at 7.5 inches (10800 twips)
+
+                # 3. Force the ONE remaining tab to align flush-right to the 0.5" margin (10800 twips)
                 if pPr is None:
                     pPr = docx.oxml.OxmlElement('w:pPr')
                     p.insert(0, pPr)
-                    
-                tabs = pPr.find(f'{{{w_ns}}}tabs')
-                if tabs is not None:
-                    for old_tab in list(tabs):
-                        tabs.remove(old_tab)
+
+                tabs_el = pPr.find(f'{{{w_ns}}}tabs')
+                if tabs_el is None:
+                    tabs_el = docx.oxml.OxmlElement('w:tabs')
+                    pPr.append(tabs_el)
                 else:
-                    tabs = docx.oxml.OxmlElement('w:tabs')
-                    pPr.append(tabs)
-                    
+                    for old_tab in list(tabs_el):
+                        tabs_el.remove(old_tab)
+
                 tab_stop = docx.oxml.OxmlElement('w:tab')
                 tab_stop.set(f'{{{w_ns}}}val', 'right')
                 tab_stop.set(f'{{{w_ns}}}pos', '10800')
-                tabs.append(tab_stop)
+                tabs_el.append(tab_stop)
 
         return element
     # ----------------------------------
@@ -3132,7 +3123,7 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
             parent.remove(p._element)
             break
 
-    # 5. Strict Formatting: Enforce Arial 10pt across the ENTIRE document (Reverted to Safe Version)
+    # 5. Strict Formatting: Enforce Arial 10pt across the ENTIRE document
     for p in doc.paragraphs:
         for run in p.runs:
             run.font.name = 'Arial'
