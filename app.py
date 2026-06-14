@@ -3052,22 +3052,28 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
             if parent is not None:
                 parent.remove(sectPr)
         
-        # CRITICAL FIX: Stop Date Spilling (Tab Mashing & Right Align)
+        # CRITICAL FIX: Stop Date Spilling (Tab Mashing & Right Margin Squeezing)
         for p in element.xpath('.//w:p'):
+            # 1. Un-squeeze the right margin
+            pPr = p.find(f'{{{w_ns}}}pPr')
+            if pPr is not None:
+                ind = pPr.find(f'{{{w_ns}}}ind')
+                if ind is not None:
+                    # Delete any attribute that pushes text inward from the right
+                    for attr in ['right', 'rightChars']:
+                        if f'{{{w_ns}}}{attr}' in ind.attrib:
+                            del ind.attrib[f'{{{w_ns}}}{attr}']
+
+            # 2. Fix Tab Mashing
             tabs = p.xpath('.//w:tab')
             if len(tabs) > 0:
-                # If they mashed the Tab key (multiple arrows), keep only the LAST one
-                # and replace the others with a standard space so words don't merge.
+                # If they hit "Tab" multiple times, KEEP ONLY ONE. 
+                # (We do NOT replace with spaces, as spaces add physical width).
                 if len(tabs) > 1:
                     for t in tabs[:-1]:
-                        space = docx.oxml.OxmlElement('w:t')
-                        space.set(f'{{http://www.w3.org/XML/1998/namespace}}space', 'preserve')
-                        space.text = ' '
-                        t.addprevious(space)
                         t.getparent().remove(t)
 
-                # Force the paragraph to have a right-aligned tab stop at exactly the margin (10800 twips)
-                pPr = p.find(f'{{{w_ns}}}pPr')
+                # 3. Force the ONE remaining tab to align flush-right to the 0.5" margin (10800 twips)
                 if pPr is None:
                     pPr = docx.oxml.OxmlElement('w:pPr')
                     p.insert(0, pPr)
@@ -3077,7 +3083,6 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
                     tabs_el = docx.oxml.OxmlElement('w:tabs')
                     pPr.append(tabs_el)
                 else:
-                    # Clear out old tab stops that might interfere
                     for old_tab in list(tabs_el):
                         tabs_el.remove(old_tab)
 
@@ -3085,11 +3090,6 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
                 tab_stop.set(f'{{{w_ns}}}val', 'right')
                 tab_stop.set(f'{{{w_ns}}}pos', '10800')
                 tabs_el.append(tab_stop)
-
-                # Remove manual right-indents that squeeze the text
-                ind = pPr.find(f'{{{w_ns}}}ind')
-                if ind is not None and f'{{{w_ns}}}right' in ind.attrib:
-                    ind.attrib[f'{{{w_ns}}}right'] = '0'
 
         return element
     # ----------------------------------
@@ -3360,17 +3360,18 @@ def deloitte_app():
                             THE NARRATIVE BLUEPRINT (5 Bullet Points)
                             ========================
                             Follow this exact structure for the SUMMARY. Generate exactly 5 distinct bullet points mapped to SUMMARY1 through SUMMARY5. Every point MUST sell the candidate's fit for the role:
-                            - SUMMARY1 (The Anchor): The candidate's TOTAL progressive professional experience and dominant expertise that solves the PRIMARY technical "must-have" of the Job Description. (Use their FIRST NAME only. Calculate total overall years strictly rounding DOWN to the nearest whole year formatted as 'X+ years').
-                            - SUMMARY2 (The Alignment): Explicitly name their CURRENT or most recent employer. Frame their most impressive, relevant project as a direct 1:1 match for the manager's current challenge.
-                            - SUMMARY3 (The Execution): How did they build it? Weave the specific tools/methodologies into an "Execution Statement" that highlights complexity, scale, or business impact.
-                            - SUMMARY4 (Secondary Expertise): Highlight a secondary skill, architecture, or methodology requested in the JD that the candidate also possesses.
-                            - SUMMARY5 (The Closer): Based on their past execution, state what specific value they will deliver on Day 1 in THIS new role.
+                            - SUMMARY1 (The Anchor): Use their FIRST NAME. State their total progressive professional experience, their core title, and dominant expertise solving the PRIMARY technical "must-have" of the Job Description. (Format years strictly rounded DOWN to the nearest whole year as 'X+ years').
+                            - SUMMARY2 (The Alignment): NO PRONOUNS. Start directly with an action verb or adverb (e.g., "Recently architected..."). Explicitly name their CURRENT or most recent employer and frame their most relevant project as a 1:1 match for the manager's challenge.
+                            - SUMMARY3 (The Execution): NO PRONOUNS. Start directly with an action verb (e.g., "Engineered..."). Weave the specific tools/methodologies into an "Execution Statement" highlighting complexity, scale, or business impact.
+                            - SUMMARY4 (Secondary Expertise): NO PRONOUNS. Start directly with a verb (e.g., "Possesses secondary expertise in..."). Highlight a secondary skill, architecture, or methodology requested in the JD that they possess.
+                            - SUMMARY5 (The Closer): NO PRONOUNS. Start directly with a verb (e.g., "Will deliver immediate value by..."). State what specific value they will deliver on Day 1 based on their past execution track record.
 
                             CRITICAL ATS HACK: Across these 5 bullets, you MUST seamlessly embed exact phrases from the Job Description to maximize the Fieldglass match score.
 
                             ========================
                             STYLE & TONE RULES (STRICT)
                             ========================
+                            - TELEGRAPHIC STYLE: Bullet 1 MUST use the candidate's name. Bullets 2, 3, 4, and 5 MUST strictly drop all pronouns (he/she/they) and names, starting directly with an action verb.
                             - Write like a human pitching to a colleague. Confident, direct, and factual.
                             - TECH MATCHING: Strictly align the tools you highlight with the JD. 
                             - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
