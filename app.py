@@ -2952,6 +2952,12 @@ def pdf_to_word_app():
 # --- 🔵 CLIENT APP 8: DELOITTE 🔵 ---
 # ====================================================================
 def process_deloitte_doc(template_path, mapping, resume_path, output_path):
+    import docx
+    import re
+    from docx.shared import Pt, Inches
+    from docx.enum.text import WD_TAB_ALIGNMENT
+    from copy import deepcopy
+
     doc = docx.Document(template_path)
     orig_doc = docx.Document(resume_path)
 
@@ -3027,8 +3033,6 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
 
     # --- XML SCRUBBER FUNCTION ---
     def clean_xml_element(element):
-        w_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-        
         for hl in element.xpath('.//w:hyperlink'):
             parent = hl.getparent()
             if parent is not None:
@@ -3045,52 +3049,10 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
             parent = bm.getparent()
             if parent is not None:
                 parent.remove(bm)
-
-        # Strip original section properties to prevent margin overwriting
         for sectPr in element.xpath('.//w:sectPr'):
             parent = sectPr.getparent()
             if parent is not None:
                 parent.remove(sectPr)
-        
-        # CRITICAL FIX: Stop Date Spilling (Tab Mashing & Right Margin Squeezing)
-        for p in element.xpath('.//w:p'):
-            # 1. Un-squeeze the right margin
-            pPr = p.find(f'{{{w_ns}}}pPr')
-            if pPr is not None:
-                ind = pPr.find(f'{{{w_ns}}}ind')
-                if ind is not None:
-                    # Delete any attribute that pushes text inward from the right
-                    for attr in ['right', 'rightChars']:
-                        if f'{{{w_ns}}}{attr}' in ind.attrib:
-                            del ind.attrib[f'{{{w_ns}}}{attr}']
-
-            # 2. Fix Tab Mashing
-            tabs = p.xpath('.//w:tab')
-            if len(tabs) > 0:
-                # If they hit "Tab" multiple times, KEEP ONLY ONE. 
-                # (We do NOT replace with spaces, as spaces add physical width).
-                if len(tabs) > 1:
-                    for t in tabs[:-1]:
-                        t.getparent().remove(t)
-
-                # 3. Force the ONE remaining tab to align flush-right to the 0.5" margin (10800 twips)
-                if pPr is None:
-                    pPr = docx.oxml.OxmlElement('w:pPr')
-                    p.insert(0, pPr)
-
-                tabs_el = pPr.find(f'{{{w_ns}}}tabs')
-                if tabs_el is None:
-                    tabs_el = docx.oxml.OxmlElement('w:tabs')
-                    pPr.append(tabs_el)
-                else:
-                    for old_tab in list(tabs_el):
-                        tabs_el.remove(old_tab)
-
-                tab_stop = docx.oxml.OxmlElement('w:tab')
-                tab_stop.set(f'{{{w_ns}}}val', 'right')
-                tab_stop.set(f'{{{w_ns}}}pos', '10800')
-                tabs_el.append(tab_stop)
-
         return element
     # ----------------------------------
 
@@ -3123,18 +3085,45 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
             parent.remove(p._element)
             break
 
-    # 5. Strict Formatting: Enforce Arial 10pt across the ENTIRE document
-    for p in doc.paragraphs:
-        for run in p.runs:
+    # 5. STRICT FORMATTING & TAB STOP FIX
+    def apply_strict_formatting(paragraph):
+        # A. Set Tab Stop to 7.5" Right-Aligned and remove right indent margins
+        try:
+            paragraph.paragraph_format.tab_stops.clear_all()
+            paragraph.paragraph_format.tab_stops.add_tab_stop(Inches(7.5), WD_TAB_ALIGNMENT.RIGHT)
+            paragraph.paragraph_format.right_indent = Inches(0)
+        except Exception:
+            pass
+
+        # B. Clean up runs: Set Arial 10pt and collapse multiple tabs/spaces
+        for run in paragraph.runs:
             run.font.name = 'Arial'
             run.font.size = Pt(10)
+            if run.text:
+                # Convert 3 or more spaces to a single tab
+                run.text = re.sub(r' {3,}', '\t', run.text)
+                # Collapse multiple tabs into a single tab
+                run.text = re.sub(r'\t{2,}', '\t', run.text)
+                # Remove spaces that are directly next to tabs
+                run.text = re.sub(r' \t|\t ', '\t', run.text)
+
+        # C. Cross-Run Cleanup: Catch tabs that are split across formatting boundaries
+        for i in range(len(paragraph.runs) - 1):
+            if paragraph.runs[i].text and paragraph.runs[i].text.endswith('\t'):
+                j = i + 1
+                while j < len(paragraph.runs) and paragraph.runs[j].text.startswith('\t'):
+                    paragraph.runs[j].text = paragraph.runs[j].text.lstrip('\t')
+                    j += 1
+
+    # Apply the formatting sweep across the entire generated document
+    for p in doc.paragraphs:
+        apply_strict_formatting(p)
+
     for tbl in doc.tables:
         for row in tbl.rows:
             for cell in row.cells:
                 for p in cell.paragraphs:
-                    for run in p.runs:
-                        run.font.name = 'Arial'
-                        run.font.size = Pt(10)
+                    apply_strict_formatting(p)
 
     doc.save(output_path)
 def deloitte_app():
