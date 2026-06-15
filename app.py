@@ -2976,15 +2976,6 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
 
     # 2. Replace placeholders while preserving formatting
     for p in doc.paragraphs:
-        
-        # --- NEW FIX: Force the standalone Top Header Name to stay bold ---
-        if p.text.strip() == "{{FullName}}":
-            p.text = ""
-            r1 = p.add_run(str(mapping.get("FullName", "")))
-            r1.bold = True
-            continue
-        # ------------------------------------------------------------------
-
         # Explicitly rebuild the header lines to maintain the bold prefix
         if "Candidate Legal Name:" in p.text and "{{FullName}}" in p.text:
             p.text = ""
