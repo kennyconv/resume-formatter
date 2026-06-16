@@ -666,8 +666,8 @@ def fannie_mae_app():
                             ========================
                             Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
                             - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description? (Calculate their total overall years strictly rounding DOWN to the nearest whole year formatted as 'X+ years'. Use their FIRST NAME only. You MUST use the exact job title requested in the JD if the candidate's history supports it. Avoid generic fluff).
-                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job? (Frame it as a direct 1:1 match for the manager's current challenge).
-                            - Sentence 3: The Execution & Impact (The Proof). How did they build it, and why does it matter? (Weave the specific tools/methodologies into an "Execution Statement" that highlights the complexity, scale, or business impact. DO NOT write a comma-separated list of tools. DO NOT repeat verbs from Sentence 2).
+                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name their current or most relevant recent employer. Highlight the most relevant accomplishment or responsibility that demonstrates success performing the core duties of this role. Show why this experience provides strong evidence they can perform the responsibilities of the target position.
+                            - Sentence 3: The Execution & Impact (The Proof). Explain how they executed the work and why it mattered. Highlight the scale, complexity, operational ownership, or business impact. Weave tools and methodologies naturally into the sentence. DO NOT write a comma-separated list of tools. DO NOT repeat verbs from Sentence 2.
                             - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role? (Use a strong, direct structure like: "[First Name]'s success in [X] makes them an immediate asset for driving this team's [specific technical goal/initiative]." Do NOT mention the physical location/city).
 
                             CRITICAL ATS HACK: Across these 4 sentences, you MUST seamlessly embed 2-3 exact phrases from the Job Description (including soft skills like "changing priorities" or "system analysis") to maximize the Fieldglass match score. Do not force them if they ruin the sentence flow, but prioritize exact phrase matching where supported by the resume.
@@ -678,13 +678,15 @@ def fannie_mae_app():
                             - Write like a human pitching to a colleague. Confident, direct, and factual.
                             - TECH MATCHING: Strictly align the tools you highlight with the JD. If the JD asks for AWS, highlight AWS. Do not highlight competing tech (like Azure or GCP) just because it's prominent in the resume, unless it is their only experience.
                             - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
-                            - LEADERSHIP VERBS: Use high-authority active verbs (e.g., 'Engineered', 'Optimized', 'Architected', 'Spearheaded') instead of passive verbs like 'Assisted', 'Collaborated', or 'Helped'.
                             - SHOW, DON'T TELL. 
                               🔴 Bad: "John's background in AWS makes him a great fit for this role."
                               🟢 Good: "Because John spent the last three years building highly available data lakes in AWS, he can immediately step in to optimize your current infrastructure."
                             - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely," "exceptionally well-prepared," "fits well," "aligns with," "enterprise-grade platforms."
                             - Do NOT use transition crutches: "Additionally," "Furthermore," "Moreover."
                             - Do NOT repeat or restate the job description.
+                            - Prefer clear business language over consultant buzzwords.
+                            - Favor evidence and ownership over dramatic wording.
+                            - Use verbs that naturally fit the work performed. Do not force "leadership verbs."
 
                             ========================
                             EXAMPLE OF A PERFECT SUMMARY
@@ -750,6 +752,7 @@ def fannie_mae_app():
                             5. THE PITCH: Ensure a natural, confident recruiter tone.
                             6. CURRENT JOB: Did you explicitly name their most recent employer in Sentence 2?
                             7. ACCURATE MATH: Did you strictly round down their years of experience and use the 'X+ years' format to prevent ATS parser flags?
+                            8. OWNERSHIP TEST: Did I emphasize what the candidate repeatedly owned and executed, rather than simply the most impressive-sounding project?
 
                             Output only the final, polished JSON.
 
