@@ -893,19 +893,31 @@ def peraton_app():
             st.info("Paste your Gemini API key here to run the tool.")
 
     st.header("🎤 Supplier Technical Interview Results")
-    qa_col1, qa_col2 = st.columns(2)
-    with qa_col1:
-        Question_1 = st.text_input("Question 1", key="per_q1")
-        Question_2 = st.text_input("Question 2", key="per_q2")
-        Question_3 = st.text_input("Question 3", key="per_q3")
-        Question_4 = st.text_input("Question 4", key="per_q4")
-        Question_5 = st.text_input("Question 5", key="per_q5")
-    with qa_col2:
-        Answer_1 = st.text_area("Answer 1", height=68, key="per_a1")
-        Answer_2 = st.text_area("Answer 2", height=68, key="per_a2")
-        Answer_3 = st.text_area("Answer 3", height=68, key="per_a3")
-        Answer_4 = st.text_area("Answer 4", height=68, key="per_a4")
-        Answer_5 = st.text_area("Answer 5", height=68, key="per_a5")
+    
+    # Row 1
+    row1_c1, row1_c2 = st.columns(2)
+    Question_1 = row1_c1.text_input("Question 1", key="per_q1")
+    Answer_1 = row1_c2.text_area("Answer 1", height=68, key="per_a1")
+
+    # Row 2
+    row2_c1, row2_c2 = st.columns(2)
+    Question_2 = row2_c1.text_input("Question 2", key="per_q2")
+    Answer_2 = row2_c2.text_area("Answer 2", height=68, key="per_a2")
+
+    # Row 3
+    row3_c1, row3_c2 = st.columns(2)
+    Question_3 = row3_c1.text_input("Question 3", key="per_q3")
+    Answer_3 = row3_c2.text_area("Answer 3", height=68, key="per_a3")
+
+    # Row 4
+    row4_c1, row4_c2 = st.columns(2)
+    Question_4 = row4_c1.text_input("Question 4", key="per_q4")
+    Answer_4 = row4_c2.text_area("Answer 4", height=68, key="per_a4")
+
+    # Row 5
+    row5_c1, row5_c2 = st.columns(2)
+    Question_5 = row5_c1.text_input("Question 5", key="per_q5")
+    Answer_5 = row5_c2.text_area("Answer 5", height=68, key="per_a5")
 
     st.header("📝 Job Description & Notes")
     Job_Description_Notes_etc = st.text_area("Paste JD, Manager Notes, etc. here:", height=200, key="per_jd")
@@ -1248,19 +1260,31 @@ def capital_one_app():
         former_co_val = "N"
 
     st.header("🎤 Supplier Technical Interview Results")
-    qa_col1, qa_col2 = st.columns(2)
-    with qa_col1:
-        Question_1 = st.text_input("Question 1", key="co_q1")
-        Question_2 = st.text_input("Question 2", key="co_q2")
-        Question_3 = st.text_input("Question 3", key="co_q3")
-        Question_4 = st.text_input("Question 4", key="co_q4")
-        Question_5 = st.text_input("Question 5", key="co_q5")
-    with qa_col2:
-        Answer_1 = st.text_area("Answer 1", height=68, key="co_a1")
-        Answer_2 = st.text_area("Answer 2", height=68, key="co_a2")
-        Answer_3 = st.text_area("Answer 3", height=68, key="co_a3")
-        Answer_4 = st.text_area("Answer 4", height=68, key="co_a4")
-        Answer_5 = st.text_area("Answer 5", height=68, key="co_a5")
+    
+    # Row 1
+    row1_c1, row1_c2 = st.columns(2)
+    Question_1 = row1_c1.text_input("Question 1", key="co_q1")
+    Answer_1 = row1_c2.text_area("Answer 1", height=68, key="co_a1")
+
+    # Row 2
+    row2_c1, row2_c2 = st.columns(2)
+    Question_2 = row2_c1.text_input("Question 2", key="co_q2")
+    Answer_2 = row2_c2.text_area("Answer 2", height=68, key="co_a2")
+
+    # Row 3
+    row3_c1, row3_c2 = st.columns(2)
+    Question_3 = row3_c1.text_input("Question 3", key="co_q3")
+    Answer_3 = row3_c2.text_area("Answer 3", height=68, key="co_a3")
+
+    # Row 4
+    row4_c1, row4_c2 = st.columns(2)
+    Question_4 = row4_c1.text_input("Question 4", key="co_q4")
+    Answer_4 = row4_c2.text_area("Answer 4", height=68, key="co_a4")
+
+    # Row 5
+    row5_c1, row5_c2 = st.columns(2)
+    Question_5 = row5_c1.text_input("Question 5", key="co_q5")
+    Answer_5 = row5_c2.text_area("Answer 5", height=68, key="co_a5")
 
     st.header("📝 Job Description & Notes")
     Job_Description_Notes_etc = st.text_area("Paste JD, Manager Notes, etc. here:", height=200, key="co_jd")
@@ -1612,19 +1636,31 @@ def adusa_app():
         former_adusa_val = "N"
 
     st.header("🎤 Supplier Technical Interview Results")
-    qa_col1, qa_col2 = st.columns(2)
-    with qa_col1:
-        Question_1 = st.text_input("Question 1", key="ad_q1")
-        Question_2 = st.text_input("Question 2", key="ad_q2")
-        Question_3 = st.text_input("Question 3", key="ad_q3")
-        Question_4 = st.text_input("Question 4", key="ad_q4")
-        Question_5 = st.text_input("Question 5", key="ad_q5")
-    with qa_col2:
-        Answer_1 = st.text_area("Answer 1", height=68, key="ad_a1")
-        Answer_2 = st.text_area("Answer 2", height=68, key="ad_a2")
-        Answer_3 = st.text_area("Answer 3", height=68, key="ad_a3")
-        Answer_4 = st.text_area("Answer 4", height=68, key="ad_a4")
-        Answer_5 = st.text_area("Answer 5", height=68, key="ad_a5")
+    
+    # Row 1
+    row1_c1, row1_c2 = st.columns(2)
+    Question_1 = row1_c1.text_input("Question 1", key="ad_q1")
+    Answer_1 = row1_c2.text_area("Answer 1", height=68, key="ad_a1")
+
+    # Row 2
+    row2_c1, row2_c2 = st.columns(2)
+    Question_2 = row2_c1.text_input("Question 2", key="ad_q2")
+    Answer_2 = row2_c2.text_area("Answer 2", height=68, key="ad_a2")
+
+    # Row 3
+    row3_c1, row3_c2 = st.columns(2)
+    Question_3 = row3_c1.text_input("Question 3", key="ad_q3")
+    Answer_3 = row3_c2.text_area("Answer 3", height=68, key="ad_a3")
+
+    # Row 4
+    row4_c1, row4_c2 = st.columns(2)
+    Question_4 = row4_c1.text_input("Question 4", key="ad_q4")
+    Answer_4 = row4_c2.text_area("Answer 4", height=68, key="ad_a4")
+
+    # Row 5
+    row5_c1, row5_c2 = st.columns(2)
+    Question_5 = row5_c1.text_input("Question 5", key="ad_q5")
+    Answer_5 = row5_c2.text_area("Answer 5", height=68, key="ad_a5")
 
     st.header("📝 Job Description & Notes")
     Job_Description_Notes_etc = st.text_area("Paste JD, Manager Notes, etc. here:", height=200, key="ad_jd")
@@ -1951,19 +1987,31 @@ def cbre_app():
         former_cbre_val = "N"
 
     st.header("🎤 Supplier Technical Interview Results")
-    qa_col1, qa_col2 = st.columns(2)
-    with qa_col1:
-        Question_1 = st.text_input("Question 1", key="cb_q1")
-        Question_2 = st.text_input("Question 2", key="cb_q2")
-        Question_3 = st.text_input("Question 3", key="cb_q3")
-        Question_4 = st.text_input("Question 4", key="cb_q4")
-        Question_5 = st.text_input("Question 5", key="cb_q5")
-    with qa_col2:
-        Answer_1 = st.text_area("Answer 1", height=68, key="cb_a1")
-        Answer_2 = st.text_area("Answer 2", height=68, key="cb_a2")
-        Answer_3 = st.text_area("Answer 3", height=68, key="cb_a3")
-        Answer_4 = st.text_area("Answer 4", height=68, key="cb_a4")
-        Answer_5 = st.text_area("Answer 5", height=68, key="cb_a5")
+    
+    # Row 1
+    row1_c1, row1_c2 = st.columns(2)
+    Question_1 = row1_c1.text_input("Question 1", key="cb_q1")
+    Answer_1 = row1_c2.text_area("Answer 1", height=68, key="cb_a1")
+
+    # Row 2
+    row2_c1, row2_c2 = st.columns(2)
+    Question_2 = row2_c1.text_input("Question 2", key="cb_q2")
+    Answer_2 = row2_c2.text_area("Answer 2", height=68, key="cb_a2")
+
+    # Row 3
+    row3_c1, row3_c2 = st.columns(2)
+    Question_3 = row3_c1.text_input("Question 3", key="cb_q3")
+    Answer_3 = row3_c2.text_area("Answer 3", height=68, key="cb_a3")
+
+    # Row 4
+    row4_c1, row4_c2 = st.columns(2)
+    Question_4 = row4_c1.text_input("Question 4", key="cb_q4")
+    Answer_4 = row4_c2.text_area("Answer 4", height=68, key="cb_a4")
+
+    # Row 5
+    row5_c1, row5_c2 = st.columns(2)
+    Question_5 = row5_c1.text_input("Question 5", key="cb_q5")
+    Answer_5 = row5_c2.text_area("Answer 5", height=68, key="cb_a5")
 
     st.header("📝 Job Description & Notes")
     Job_Description_Notes_etc = st.text_area("Paste JD, Manager Notes, etc. here:", height=200, key="cb_jd")
@@ -2294,19 +2342,31 @@ def bnsf_app():
         former_bnsf_val = "N"
 
     st.header("🎤 Supplier Technical Interview Results")
-    qa_col1, qa_col2 = st.columns(2)
-    with qa_col1:
-        Question_1 = st.text_input("Question 1", key="bn_q1")
-        Question_2 = st.text_input("Question 2", key="bn_q2")
-        Question_3 = st.text_input("Question 3", key="bn_q3")
-        Question_4 = st.text_input("Question 4", key="bn_q4")
-        Question_5 = st.text_input("Question 5", key="bn_q5")
-    with qa_col2:
-        Answer_1 = st.text_area("Answer 1", height=68, key="bn_a1")
-        Answer_2 = st.text_area("Answer 2", height=68, key="bn_a2")
-        Answer_3 = st.text_area("Answer 3", height=68, key="bn_a3")
-        Answer_4 = st.text_area("Answer 4", height=68, key="bn_a4")
-        Answer_5 = st.text_area("Answer 5", height=68, key="bn_a5")
+    
+    # Row 1
+    row1_c1, row1_c2 = st.columns(2)
+    Question_1 = row1_c1.text_input("Question 1", key="bn_q1")
+    Answer_1 = row1_c2.text_area("Answer 1", height=68, key="bn_a1")
+
+    # Row 2
+    row2_c1, row2_c2 = st.columns(2)
+    Question_2 = row2_c1.text_input("Question 2", key="bn_q2")
+    Answer_2 = row2_c2.text_area("Answer 2", height=68, key="bn_a2")
+
+    # Row 3
+    row3_c1, row3_c2 = st.columns(2)
+    Question_3 = row3_c1.text_input("Question 3", key="bn_q3")
+    Answer_3 = row3_c2.text_area("Answer 3", height=68, key="bn_a3")
+
+    # Row 4
+    row4_c1, row4_c2 = st.columns(2)
+    Question_4 = row4_c1.text_input("Question 4", key="bn_q4")
+    Answer_4 = row4_c2.text_area("Answer 4", height=68, key="bn_a4")
+
+    # Row 5
+    row5_c1, row5_c2 = st.columns(2)
+    Question_5 = row5_c1.text_input("Question 5", key="bn_q5")
+    Answer_5 = row5_c2.text_area("Answer 5", height=68, key="bn_a5")
 
     st.header("📝 Job Description & Notes")
     Job_Description_Notes_etc = st.text_area("Paste JD, Manager Notes, etc. here:", height=200, key="bn_jd")
@@ -2622,19 +2682,31 @@ def dallas_generic_app():
         remote_val = Remote_or_Onsite
 
     st.header("🎤 Supplier Technical Interview Results")
-    qa_col1, qa_col2 = st.columns(2)
-    with qa_col1:
-        Question_1 = st.text_input("Question 1", key="dg_q1")
-        Question_2 = st.text_input("Question 2", key="dg_q2")
-        Question_3 = st.text_input("Question 3", key="dg_q3")
-        Question_4 = st.text_input("Question 4", key="dg_q4")
-        Question_5 = st.text_input("Question 5", key="dg_q5")
-    with qa_col2:
-        Answer_1 = st.text_area("Answer 1", height=68, key="dg_a1")
-        Answer_2 = st.text_area("Answer 2", height=68, key="dg_a2")
-        Answer_3 = st.text_area("Answer 3", height=68, key="dg_a3")
-        Answer_4 = st.text_area("Answer 4", height=68, key="dg_a4")
-        Answer_5 = st.text_area("Answer 5", height=68, key="dg_a5")
+    
+    # Row 1
+    row1_c1, row1_c2 = st.columns(2)
+    Question_1 = row1_c1.text_input("Question 1", key="dg_q1")
+    Answer_1 = row1_c2.text_area("Answer 1", height=68, key="dg_a1")
+
+    # Row 2
+    row2_c1, row2_c2 = st.columns(2)
+    Question_2 = row2_c1.text_input("Question 2", key="dg_q2")
+    Answer_2 = row2_c2.text_area("Answer 2", height=68, key="dg_a2")
+
+    # Row 3
+    row3_c1, row3_c2 = st.columns(2)
+    Question_3 = row3_c1.text_input("Question 3", key="dg_q3")
+    Answer_3 = row3_c2.text_area("Answer 3", height=68, key="dg_a3")
+
+    # Row 4
+    row4_c1, row4_c2 = st.columns(2)
+    Question_4 = row4_c1.text_input("Question 4", key="dg_q4")
+    Answer_4 = row4_c2.text_area("Answer 4", height=68, key="dg_a4")
+
+    # Row 5
+    row5_c1, row5_c2 = st.columns(2)
+    Question_5 = row5_c1.text_input("Question 5", key="dg_q5")
+    Answer_5 = row5_c2.text_area("Answer 5", height=68, key="dg_a5")
 
     st.header("📝 Job Description & Notes")
     Job_Description_Notes_etc = st.text_area("Paste JD, Manager Notes, etc. here:", height=200, key="dg_jd")
