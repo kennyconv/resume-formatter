@@ -659,25 +659,50 @@ def fannie_mae_app():
                         try:
                             summary_prompt = f"""
                             You are an elite, no-nonsense Senior Technical Recruiter writing an executive submission summary for a Fieldglass portal. 
-                            The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed, optimized for both human reading and ATS exact-match parsing.
+                            The summary should read like an experienced recruiter verbally explaining to the hiring manager why this candidate deserves an interview. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed, optimized for both human reading and ATS exact-match parsing.
 
                             ========================
-                            🚨 HIERARCHY OF TRUTH: JD vs. MANAGER NOTES (CRITICAL)
+                            JD vs. MANAGER INPUT (CRITICAL)
                             ========================
-                            You are receiving up to three sources of information for this role:
-                            1. Spotlight Call Transcript (HIGHEST PRIORITY)
-                            2. Fieldglass Chat Notes (HIGH PRIORITY)
-                            3. Official Job Description (BASELINE)
 
-                            - OVERRIDE RULE: The Call Transcript and Chat Notes represent the Hiring Manager's actual, immediate needs. They are the ABSOLUTE SOURCE OF TRUTH. If they contradict or update the official Job Description (e.g., lowering required years of experience, changing the core tech stack, or negating responsibilities), you MUST strictly follow the Transcript and Notes.
-                            - ATS COMPROMISE: To satisfy the Fieldglass parsing algorithm, you must still weave in high-level, generalized keywords from the baseline Job Description where applicable, but NEVER highlight technical skills or responsibilities that the manager explicitly negated in their notes or calls.
+                            You are receiving up to three sources of information:
+
+                            1. Official Job Description
+                            2. Spotlight Call Transcript
+                            3. Fieldglass Chat Notes
+
+                            OFFICIAL JOB DESCRIPTION:
+                            Primary source for ATS keyword coverage and phrase matching.
+
+                            SPOTLIGHT CALL + CHAT NOTES:
+                            Primary source for hiring manager priorities and emphasis.
+
+                            If manager input contradicts or removes a requirement from the Job Description, follow the manager.
+
+                            Preserve strong coverage of the Official Job Description because automated shortlisting is assumed to rely primarily on Job Description terminology.
+
+                            Never highlight technical skills or responsibilities that the manager explicitly negated.
+
+                            ========================
+                            ATS COVERAGE RULE (CRITICAL)
+                            ========================
+
+                            Assume the Fieldglass AI shortlisting engine evaluates candidates primarily against the Official Job Description.
+
+                            Therefore:
+                            - The Official Job Description is the primary source for keyword coverage and phrase matching.
+                            - Spotlight Call transcripts and Chat Notes should influence emphasis and prioritization, but should not reduce coverage of important Job Description concepts.
+                            - Preserve exact terminology from the Job Description whenever supported by the resume.
+                            - Prefer exact Job Description terminology over synonyms when both are supported by the resume.
+                            - Exact phrase overlap is preferred whenever it does not distort the truth.
+                            - When multiple resume experiences are equally relevant, prefer the one that produces the greatest overlap with Job Description terminology and concepts.
 
                             ========================
                             THE NARRATIVE BLUEPRINT (4 Sentences Max)
                             ========================
                             Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
                             - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description? (Calculate their total overall years strictly rounding DOWN to the nearest whole year formatted as 'X+ years'. Use their FIRST NAME only. You MUST use the exact job title requested in the JD if the candidate's history supports it. Avoid generic fluff).
-                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name their current or most relevant recent employer. Highlight the most relevant accomplishment or responsibility that demonstrates success performing the core duties of this role. Show why this experience provides strong evidence they can perform the responsibilities of the target position.
+                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name the current employer unless an earlier role provides substantially stronger evidence for the target role. Highlight the most relevant accomplishment or responsibility that demonstrates success performing the core duties of this role. Show why this experience provides strong evidence they can perform the responsibilities of the target position.
                             - Sentence 3: The Execution & Impact (The Proof). Explain how they executed the work and why it mattered. Highlight the scale, complexity, operational ownership, or business impact. Weave tools and methodologies naturally into the sentence. DO NOT write a comma-separated list of tools. DO NOT repeat verbs from Sentence 2.
                             - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role? (Use a strong, direct structure like: "[First Name]'s success in [X] makes them an immediate asset for driving this team's [specific technical goal/initiative]." Do NOT mention the physical location/city).
 
@@ -722,6 +747,26 @@ def fannie_mae_app():
                             The summary should reflect what the candidate has DONE, not just what they can describe.
 
                             ========================
+                            EXPERIENCE PRIORITY RULE (CRITICAL)
+                            ========================
+
+                            Prefer accomplishments explicitly demonstrated in experience bullets over technologies listed only in the skills section.
+
+                            Favor things the candidate built, created, supported, deployed, maintained, optimized, or owned rather than technologies merely listed in a skills inventory.
+
+                            Prefer recent and recurring responsibilities over isolated projects whenever both are supported by the resume.
+
+                            When multiple experiences are relevant, prefer the experience that overlaps with the largest number of Job Description requirements and responsibilities.
+
+                            ========================
+                            OPERATIONAL OWNERSHIP RULE
+                            ========================
+
+                            Prefer recurring responsibilities and direct ownership over one-time projects or transformation initiatives.
+
+                            Unless the role is explicitly implementation-focused, prioritize evidence of day-to-day execution, production support, issue resolution, audits, compliance, platform ownership, and measurable business outcomes over project participation or consulting activities.
+
+                            ========================
                             SKILLS SECTION
                             ========================
                             - EXACTLY 4 items
@@ -742,6 +787,7 @@ def fannie_mae_app():
                             2. DO NOT INFER OR ASSUME. If the JD asks for "Redshift" and the resume only says "AWS", you MUST NOT write "Redshift" under any circumstances. 
                             3. DO NOT INFLATE TO MATCH THE JD. If the candidate lacks a requested skill, omit it completely. It is better to have an incomplete match than a fabricated one.
                             4. FACT AUDIT: Before outputting the final JSON, you must verify every single tool mentioned in your SUMMARY and SKILLS. If a tool exists in the JD but not in the Resume/Q&A, you must delete it from your output.
+                            5. DO NOT ELEVATE MANAGER LANGUAGE INTO CANDIDATE EXPERIENCE. If the Job Description, Chat Notes, or Spotlight Call mention technologies, responsibilities, or business goals, you may reference them as objectives of the target role, but you MUST NOT imply that the candidate performed those activities unless supported by the resume or Q&A.
 
                             ========================
                             YEARS ACCURACY RULES (REALISTIC RECRUITER MODE)
@@ -764,6 +810,9 @@ def fannie_mae_app():
                             6. CURRENT JOB: Did you explicitly name their most recent employer in Sentence 2?
                             7. ACCURATE MATH: Did you strictly round down their years of experience and use the 'X+ years' format to prevent ATS parser flags?
                             8. OWNERSHIP TEST: Did I emphasize what the candidate repeatedly owned and executed, rather than simply the most impressive-sounding project?
+                            9. ATS COVERAGE TEST: Did I naturally incorporate the most important technologies, responsibilities, and terminology from the Official Job Description that are supported by the resume?
+                            10. EVIDENCE TEST: Would every skill, tool, accomplishment, and responsibility in the summary survive a side-by-side comparison against the actual resume?
+                            11. JD OVERLAP TEST: Did I emphasize the experiences that provide the strongest overlap with the Official Job Description rather than simply the most impressive accomplishments?
 
                             Output only the final, polished JSON.
 
