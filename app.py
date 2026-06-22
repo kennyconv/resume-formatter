@@ -429,35 +429,30 @@ def fannie_mae_app():
         LinkedIn_GitHub_Portfolio_Link = st.text_input("LinkedIn/GitHub/Portfolio Link", key="fm_link")
 
     st.header("🎤 Supplier Technical Interview Results")
-    qa_col1, qa_col2 = st.columns(2)
-    with qa_col1:
-        Question_1 = st.text_input("Question 1", key="fm_q1")
-    with col2:
-        Answer_1 = st.text_area("Answer 1", height=68, key="fm_a1")
+    # Row 1
+    row1_c1, row1_c2 = st.columns(2)
+    Question_1 = row1_c1.text_input("Question 1", key="fm_q1")
+    Answer_1 = row1_c2.text_area("Answer 1", height=68, key="fm_a1")
 
-    col3, col4 = st.columns(2)
-    with col3:
-        Question_2 = st.text_input("Question 2", key="fm_q2")
-    with col4:
-        Answer_2 = st.text_area("Answer 2", height=68, key="fm_a2")
+    # Row 2
+    row2_c1, row2_c2 = st.columns(2)
+    Question_2 = row2_c1.text_input("Question 2", key="fm_q2")
+    Answer_2 = row2_c2.text_area("Answer 2", height=68, key="fm_a2")
 
-    col5, col6 = st.columns(2)
-    with col5:
-        Question_3 = st.text_input("Question 3", key="fm_q3")
-    with col6:
-        Answer_3 = st.text_area("Answer 3", height=68, key="fm_a3")
+    # Row 3
+    row3_c1, row3_c2 = st.columns(2)
+    Question_3 = row3_c1.text_input("Question 3", key="fm_q3")
+    Answer_3 = row3_c2.text_area("Answer 3", height=68, key="fm_a3")
 
-    col7, col8 = st.columns(2)
-    with col7:
-        Question_4 = st.text_input("Question 4", key="fm_q4")
-    with col8:
-        Answer_4 = st.text_area("Answer 4", height=68, key="fm_a4")
+    # Row 4
+    row4_c1, row4_c2 = st.columns(2)
+    Question_4 = row4_c1.text_input("Question 4", key="fm_q4")
+    Answer_4 = row4_c2.text_area("Answer 4", height=68, key="fm_a4")
 
-    col9, col10 = st.columns(2)
-    with col9:
-        Question_5 = st.text_input("Question 5", key="fm_q5")
-    with col10:
-        Answer_5 = st.text_area("Answer 5", height=68, key="fm_a5")
+    # Row 5
+    row5_c1, row5_c2 = st.columns(2)
+    Question_5 = row5_c1.text_input("Question 5", key="fm_q5")
+    Answer_5 = row5_c2.text_area("Answer 5", height=68, key="fm_a5")
 
     st.header("📝 Job Description & Notes")
 
