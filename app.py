@@ -792,7 +792,7 @@ def fannie_mae_app():
                             ========================
                             YEARS ACCURACY RULES (REALISTIC RECRUITER MODE)
                             ========================
-                            - Use June 2026 as the current date.
+                            - Use July 2026 as the current date.
                             - STRICT MATH (DATE-DRIVEN ONLY): Calculate years strictly based on the earliest chronological date provided in the 'Professional Experience' or 'Work History' section. You MUST completely IGNORE any self-reported years of experience in the candidate's summary blurb (e.g., if their summary claims "12+ years" but their listed jobs only go back to 2019, you must calculate from 2019). Round DOWN to the nearest whole year and use the exact format "X+ years". Do not use phrases like "nearly X years". (e.g., If the job history calculates to 7 years and 10 months, output "7+ years". NEVER round up to 8+). 
                             - Foundational skills (e.g., Python, SQL, general engineering) should get their maximum calculated years.
                             - Advanced/Specialized tools (e.g., SageMaker, Kubernetes, Cloud Architecture) should realistically be calculated at 1-2 years less than their maximum total experience unless the resume explicitly proves Day 1 usage. 
@@ -2789,7 +2789,7 @@ def dallas_generic_app():
                     3. Education: Extract School, Degree, and DegreeStatus.
                         - DegreeStatus: Evaluate if the degree is completed or in progress.
                         - Return "Yes" if the resume indicates the degree is finished.
-                        - Return "Pursuing" if the resume indicates ongoing study, contains the word "Pursuing", "In-progress", or lists a graduation date in the future (relative to June 2026).
+                        - Return "Pursuing" if the resume indicates ongoing study, contains the word "Pursuing", "In-progress", or lists a graduation date in the future (relative to July 2026).
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
                         - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
@@ -3526,7 +3526,7 @@ def deloitte_app():
                             ========================
                             YEARS ACCURACY RULES (REALISTIC RECRUITER MODE)
                             ========================
-                            - Use June 2026 as the current date.
+                            - Use July 2026 as the current date.
                             - STRICT MATH (DATE-DRIVEN ONLY): Calculate years strictly based on the earliest chronological date provided in the 'Professional Experience'. Round DOWN to the nearest whole year.
 
                             ========================
