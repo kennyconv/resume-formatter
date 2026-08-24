@@ -946,13 +946,13 @@ def freddie_mac_app():
     with col1:
         Current_Location = st.text_input("Current Location:", key="fred_loc")
         Available_Onsite = st.selectbox("Available to be onsite (Yes / No):", ["Yes", "No"], index=0, key="fred_onsite")
-        Auth_US = st.selectbox("Do you currently possess unrestricted lawful authorization to work in the U.S indefinitely?", ["Yes", "No"], index=0, key="fred_auth")
-        Sponsorship = st.selectbox("Will you now or in the future require sponsorship for an immigration-related employment benefit?", ["Yes", "No"], index=1, key="fred_spon")
         Site = st.text_input("If yes, at which locations:", key="fred_site")
+        Auth_US = st.selectbox("Do you currently possess unrestricted lawful authorization to work in the U.S indefinitely?", ["Yes", "No"], index=0, key="fred_auth")
     with col2:
+        Interview = st.text_input("Interview Availability for next 7 days:", key="fred_int")
         Former_CW = st.selectbox("Former CW/Employee?", ["Yes", "No"], index=1, key="fred_form")
         Eligibility = st.selectbox("If Yes, Rehire Eligibility Check Completed?", ["Yes", "N/A"], index=1, key="fred_elig")
-        Interview = st.text_input("Interview Availability for next 7 days:", key="fred_int")
+        Sponsorship = st.selectbox("Will you now or in the future require sponsorship for an immigration-related employment benefit?", ["Yes", "No"], index=1, key="fred_spon")
 
     st.header("🎤 Supplier Technical Interview Results")
     # Row 1
