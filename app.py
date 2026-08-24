@@ -945,14 +945,24 @@ def freddie_mac_app():
     col1, col2 = st.columns(2)
     with col1:
         Current_Location = st.text_input("Current Location:", key="fred_loc")
-        Available_Onsite = st.selectbox("Available to be onsite (Yes / No):", ["Yes", "No"], index=0, key="fred_onsite")
-        Site = st.text_input("If yes, at which locations:", key="fred_site")
         Auth_US = st.selectbox("Do you currently possess unrestricted lawful authorization to work in the U.S indefinitely?", ["Yes", "No"], index=0, key="fred_auth")
+
+        # Group 1: Onsite & Locations
+        with st.container(border=True):
+            Available_Onsite = st.selectbox("Available to be onsite (Yes / No):", ["Yes", "No"], index=0, key="fred_onsite")
+
+            # Auto-populate N/A if they select "No"
+            default_site = "N/A" if Available_Onsite == "No" else ""
+            Site = st.text_input("If yes, at which locations:", value=default_site, key="fred_site")
+
     with col2:
         Interview = st.text_input("Interview Availability for next 7 days:", key="fred_int")
-        Former_CW = st.selectbox("Former CW/Employee?", ["Yes", "No"], index=1, key="fred_form")
-        Eligibility = st.selectbox("If Yes, Rehire Eligibility Check Completed?", ["Yes", "N/A"], index=1, key="fred_elig")
         Sponsorship = st.selectbox("Will you now or in the future require sponsorship for an immigration-related employment benefit?", ["Yes", "No"], index=1, key="fred_spon")
+
+        # Group 2: Former Employee & Eligibility
+        with st.container(border=True):
+            Former_CW = st.selectbox("Former CW/Employee?", ["Yes", "No"], index=1, key="fred_form")
+            Eligibility = st.selectbox("If Yes, Rehire Eligibility Check Completed?", ["Yes", "N/A"], index=1, key="fred_elig")
 
     st.header("🎤 Supplier Technical Interview Results")
     # Row 1
