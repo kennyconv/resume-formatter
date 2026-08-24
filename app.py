@@ -4183,7 +4183,7 @@ st.divider()
 
 if client_selection == "Fannie Mae":
     fannie_mae_app()
-elif app_choice == "Freddie Mac":
+elif client_selection == "Freddie Mac":
     freddie_mac_app()
 elif client_selection == "Deloitte":
     deloitte_app()
