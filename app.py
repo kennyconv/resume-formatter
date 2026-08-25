@@ -2278,7 +2278,7 @@ def freddie_mac_app():
             # have to restructure the sheet today. It simply represents
             # Freddie MSP/VNDLY notes inside this app.
             notes = str(
-                row.get("FG Notes", "")
+                row.get("VNDLY Notes", "")
             )
 
             transcript = str(
