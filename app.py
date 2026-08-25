@@ -1138,6 +1138,15 @@ For OFFICIAL MUST-HAVE IDENTIFICATION:
 - First look for Freddie's explicitly labeled "Must Have Qualifications",
   "Must Have", "Must-Have", or equivalent section.
 - Treat explicitly labeled Must Haves as the primary formal matching criteria.
+- Classify requirements at the INDIVIDUAL CLAUSE level, even when multiple
+  requirements appear inside Freddie's "Must Have Qualifications" paragraph.
+- Wording such as "preferred", "nice to have", "a plus", "desired", or
+  "preferred but not required" MUST be placed under preferred_requirements,
+  even if that sentence appears physically inside a section labeled
+  "Must Have Qualifications".
+- Only requirements expressed as required, must have, minimum, required
+  experience, or otherwise clearly mandatory may appear in
+  explicit_must_have_requirements.
 - Do NOT promote Preferred, Nice-to-Have, or optional items into Must Haves.
 - If there is no explicit Must Have section, derive the core required
   competencies from Required Qualifications and the central responsibilities.
