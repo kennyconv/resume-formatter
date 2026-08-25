@@ -1088,7 +1088,7 @@ def fred_normalize_question_list(raw_questions):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fred_analyze_requisition(
-    api_key,
+    _api_key,
     job_description,
     msp_notes="",
     spotlight_transcript="",
@@ -1265,7 +1265,27 @@ SPOTLIGHT CALL TRANSCRIPT:
 {spotlight_transcript}
 """
 
-    data = fred_generate_json(api_key, prompt)
+    data = fred_generate_json(_api_key, prompt)
+
+    required_keys = {
+        "target_title",
+        "explicit_must_have_requirements",
+        "must_have_competency_groups",
+        "required_requirements",
+        "preferred_requirements",
+        "domain_requirements",
+        "manager_priorities",
+        "deemphasized_or_negated_requirements",
+        "supplier_vetting_questions",
+    }
+
+    missing_keys = required_keys - set(data.keys())
+
+    if missing_keys:
+        raise RuntimeError(
+            "Freddie requisition analysis returned incomplete JSON. "
+            f"Missing fields: {', '.join(sorted(missing_keys))}"
+        )
 
     # Defensive normalization.
     data["supplier_vetting_questions"] = fred_normalize_question_list(
