@@ -2602,7 +2602,26 @@ DATES:
 
 5. CERTIFICATIONS
 - Extract certifications into one comma-separated string.
-- If none, return "".
+- Preserve completion status exactly when the resume distinguishes completed
+  certifications from credentials that are still "In Progress", "Pursuing",
+  "Expected", "Pending", or otherwise not yet earned.
+- NEVER present an in-progress or pending credential as completed.
+- For an unfinished credential, append the status directly to the credential
+  name using this format:
+  "PMP — In Progress"
+  "CBAP — In Progress"
+- If the resume explicitly labels a group of certifications as "In Progress",
+  apply "— In Progress" to every credential under that heading until the next
+  clear section heading or status change.
+- Do not invent an in-progress status for completed credentials.
+- Do not remove a credential solely because it is in progress; preserve it with
+  the explicit status.
+- If none are found, return "".
+
+CERTIFICATION TRUTH CHECK:
+Before returning Certifications, compare every credential against the original
+resume and confirm that no credential labeled In Progress/Pursuing/Pending has
+been output as though it were completed.
 
 OUTPUT:
 
@@ -2904,8 +2923,20 @@ Sentence 1 — ANCHOR
   Freddie's requisition title. Target-role terminology may be used when the
   candidate's actual work clearly supports that functional identity.
 - If PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE above is populated, use
-  that EXACT value for total professional experience.
+  that EXACT value for TOTAL CAREER EXPERIENCE only.
 - Never independently calculate or alter the total-years figure.
+- CRITICAL GRAMMAR RULE: The total-career experience figure must NOT be written
+  in a way that grammatically implies the candidate has that same number of
+  years with every skill named later in the sentence.
+- Do NOT write constructions such as:
+  "7+ years of experience in Python, SQL, and Excel"
+  unless EACH named skill independently supports 7+ years.
+- Prefer:
+  "7+ years of professional experience, including 4+ years of Python scripting
+  and extensive SQL and Excel data analysis"
+  when the individual skills have different tenures.
+- It is also acceptable to state only the total-career figure in Sentence 1 and
+  describe the Must-Have skills without attaching years to them.
 - Immediately connect the candidate to the highest-priority Freddie Must Haves.
 
 Sentence 2 — STRONGEST PROOF
@@ -2956,6 +2987,11 @@ STYLE:
   "X+ years" based on completed years as of the CURRENT DATE above.
   Example: 7 years and 10 months must be written as "7+ years", NOT
   "over 7 years", "nearly 8 years", or "8+ years".
+- TOTAL EXPERIENCE VS. SKILL TENURE:
+  A total-career figure such as "7+ years" describes the candidate's overall
+  professional experience only. Never allow sentence grammar to convert that
+  number into claimed tenure for named skills whose evidence supports fewer
+  years.
 
 ======================================================================
 SKILLS TABLE — EXACTLY 4 HIGH-SIGNAL ROWS WHEN SUPPORTED
@@ -3019,6 +3055,40 @@ GROUPED-SKILL RULE:
   ServiceNow, Snowflake, etc. should NOT be grouped with a much newer specialty
   when the combined label would cause the long-tenure Must Have itself to appear
   artificially inexperienced.
+
+DOMAIN-GROUPING RULE:
+- Apply the SAME tenure discipline to business/domain competencies as to
+  technologies.
+- Do not combine a narrower domain with a broader domain and assign the broader
+  domain's longer tenure to the entire row.
+
+EXAMPLES OF NARROWER VS. BROADER DOMAINS:
+- Fixed Income vs. Financial Services
+- Mortgage vs. Financial Services
+- Appraisal vs. Mortgage
+- IRM/GRC vs. ServiceNow
+- Capital Markets vs. Banking
+- Regulatory Reporting vs. General Data Analytics
+
+If the candidate has:
+- 4+ years of Regulatory Analytics
+- but only 2+ years of Fixed Income
+
+DO NOT write:
+"Fixed Income & Regulatory Analytics" — "4+ years, current"
+
+Instead either write:
+"Financial & Regulatory Analytics" — "4+ years, current"
+
+if that broader label is fully supported,
+
+OR:
+"Fixed Income & Capital Markets" — "2+ years, 2023"
+
+if the narrower Freddie-relevant domain is the more important signal.
+
+The label and YEARS value must describe the SAME defensible scope of
+experience.
 
 MANDATORY SPLIT RULE:
 - If one material component has substantially longer tenure than another
@@ -3120,6 +3190,12 @@ Ask BOTH questions:
 2. "Does this grouping accidentally make an important long-tenure Freddie
    requirement appear to have LESS experience merely because it was grouped
    with a newer specialty?"
+
+3. "If this row combines two business/domain concepts, does the YEARS value
+   genuinely apply to BOTH concepts as written?"
+
+If not, broaden the label to a truthful shared category, narrow the YEARS value,
+or split the concepts.
 
 If either answer reveals a misleading result:
 - split the competency,
