@@ -2078,9 +2078,10 @@ def freddie_mac_app():
     # Optional transparency for recruiters.
     if req_analysis.get("explicit_must_have_requirements"):
         with st.expander(
-            "🎯 Freddie Must-Have Requirements Identified",
+            "🎯 Freddie Requirement Analysis",
             expanded=False,
         ):
+            st.markdown("**Explicit Must-Have Requirements:**")
             for requirement in req_analysis[
                 "explicit_must_have_requirements"
             ]:
