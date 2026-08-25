@@ -1158,6 +1158,36 @@ def fred_normalize_question_list(raw_questions):
     return cleaned
 
 
+def fred_vetting_response_required(question):
+    """
+    Determine whether an official Freddie Supplier Vetting item requires
+    a candidate response.
+
+    Conservative rule:
+    - Explicitly optional / not-required items do NOT require a response.
+    - Everything else defaults to REQUIRED.
+    """
+
+    text = str(question or "").strip().lower()
+
+    if not text:
+        return False
+
+    optional_phrases = [
+        "not required",
+        "not mandatory",
+        "optional",
+        "encouraged to submit",
+        "encouraged but not required",
+        "may submit",
+    ]
+
+    if any(phrase in text for phrase in optional_phrases):
+        return False
+
+    return True
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fred_analyze_requisition(
     _api_key,
@@ -2476,6 +2506,7 @@ def freddie_mac_app():
     )
 
     vetting_answers = []
+    vetting_required_flags = []
 
     if analysis_error:
         st.warning(
@@ -2513,17 +2544,32 @@ def freddie_mac_app():
             vetting_questions,
             start=1,
         ):
-            st.markdown(
-                f"**{idx}. {question}**"
-            )
+            response_required = fred_vetting_response_required(question)
+            vetting_required_flags.append(response_required)
+
+            if response_required:
+                st.markdown(
+                    f"**{idx}. {question}**"
+                )
+                response_label = f"Candidate Response {idx}"
+                response_placeholder = (
+                    "Paste the candidate's direct response here..."
+                )
+            else:
+                st.markdown(
+                    f"**{idx}. {question}**  \n"
+                    "*Optional — Freddie/MSP does not require a response.*"
+                )
+                response_label = f"Candidate Response {idx} (Optional)"
+                response_placeholder = (
+                    "Optional — leave blank if nothing is being submitted."
+                )
 
             answer = st.text_area(
-                f"Candidate Response {idx}",
+                response_label,
                 height=100,
                 key=f"fred_vetting_answer_{safe_req_key}_{idx}",
-                placeholder=(
-                    "Paste the candidate's direct response here..."
-                ),
+                placeholder=response_placeholder,
             )
 
             vetting_answers.append(answer)
@@ -2616,17 +2662,20 @@ def freddie_mac_app():
         if vetting_questions:
             missing_answers = [
                 str(idx)
-                for idx, answer in enumerate(
-                    vetting_answers,
+                for idx, (answer, response_required) in enumerate(
+                    zip(
+                        vetting_answers,
+                        vetting_required_flags,
+                    ),
                     start=1,
                 )
-                if not str(answer).strip()
+                if response_required and not str(answer).strip()
             ]
 
             if missing_answers:
                 validation_errors.append(
-                    "Candidate responses are required for all official "
-                    "Supplier Vetting Questions. Missing response(s): "
+                    "Candidate responses are required for the mandatory "
+                    "Supplier Vetting Question(s). Missing response(s): "
                     + ", ".join(missing_answers)
                 )
 
@@ -2914,6 +2963,7 @@ ORIGINAL RESUME:
                         vetting_questions,
                         vetting_answers,
                     )
+                    if str(answer).strip()
                 ]
 
                 vetting_for_ai = "\n\n".join(
@@ -2929,8 +2979,8 @@ ORIGINAL RESUME:
 
                 if not vetting_for_ai:
                     vetting_for_ai = (
-                        "No official Supplier Vetting Questions "
-                        "were provided for this requisition."
+                        "No candidate-supplied Supplier Vetting responses "
+                        "were provided or required for this requisition."
                     )
 
                 # ====================================================
@@ -3272,6 +3322,70 @@ Before returning the Summary, ask:
 If any answer is no, revise the Summary before returning it.
 
 ======================================================================
+HIGH-PRIORITY REQUIREMENT EVIDENCE STANDARD
+======================================================================
+
+The importance of a Freddie requirement does NOT lower the evidence threshold.
+It raises it.
+
+When a requirement is a Must Have, manager priority, or specifically emphasized
+in MSP/VNDLY notes:
+
+- Require direct resume evidence before presenting the candidate as possessing
+  that competency.
+- Do NOT upgrade related, adjacent, administrative, coordination, support,
+  oversight, or exposure-level experience into hands-on ownership merely
+  because the requirement is important to Freddie.
+- Do NOT merge two separate resume facts into a stronger composite claim unless
+  the resume explicitly connects them.
+
+Examples:
+
+If the resume says:
+"Ensured published documents were stored in SharePoint libraries"
+
+you may accurately describe:
+- SharePoint exposure
+- use of SharePoint libraries
+- supporting document availability in SharePoint
+
+but you may NOT automatically claim:
+- SharePoint content management
+- building SharePoint sites/pages
+- publishing content in SharePoint
+- administering SharePoint
+- hands-on SharePoint development
+
+unless the resume provides that evidence.
+
+Likewise, if one bullet says the candidate created job aids and another says
+documents were stored in SharePoint, do NOT combine those facts into:
+"created and maintained job aids in SharePoint"
+unless the resume explicitly connects the job aids to SharePoint.
+
+For high-priority requirements, distinguish carefully between:
+
+1. DIRECT HANDS-ON EVIDENCE
+   The resume explicitly shows the candidate personally performed the required
+   work.
+
+2. RELATED / PARTIAL EVIDENCE
+   The resume shows adjacent, supporting, coordinating, oversight, or
+   exposure-level experience but does not prove the full requirement.
+
+3. NO EVIDENCE
+   The resume does not support the requirement.
+
+Only DIRECT HANDS-ON EVIDENCE may be stated as full possession of the
+requirement in SUMMARY or SKILLS.
+
+RELATED / PARTIAL EVIDENCE may be described accurately at its demonstrated
+level, but must never be upgraded into the full Freddie requirement.
+
+When evidence is partial, it is better to omit the requirement from the Skills
+table than to overstate the candidate.
+
+======================================================================
 SKILLS TABLE — EXACTLY 4 HIGH-SIGNAL ROWS WHEN SUPPORTED
 ======================================================================
 
@@ -3333,6 +3447,12 @@ CANDIDATE-EVIDENCE RULE:
   experience already grounded in the resume, but must not manufacture a skill.
 - If a Must Have group is not supported, DO NOT fabricate it merely to fill a
   row.
+- A related or adjacent activity does NOT count as full support for a more
+  specific Freddie requirement.
+- If Freddie requires hands-on execution, the resume must explicitly support
+  hands-on execution before that requirement can appear as a Skills-row label.
+- Do not infer full competency from a single incidental mention of a tool,
+  platform, methodology, or domain.
 - Move to the next relevant Required or Preferred competency the candidate
   genuinely possesses.
 - If fewer than four defensible relevant groups exist, leave the unused
