@@ -1568,6 +1568,58 @@ def fred_calculate_total_experience(experience, current_date):
     return f"{completed_years}+ years"
 
 
+def fred_clean_summary(summary, candidate_name):
+    """
+    Final deterministic cleanup for Freddie Mac summaries.
+
+    - Forces the candidate's name to use the same Title Case spelling
+      extracted from the resume.
+    - Removes/replaces recruiter-style phrases Gemini was explicitly
+      instructed not to use.
+    """
+    if not summary:
+        return ""
+
+    cleaned = str(summary).strip()
+
+    # ------------------------------------------------------------
+    # 1. NORMALIZE CANDIDATE NAME CAPITALIZATION
+    # ------------------------------------------------------------
+
+    if candidate_name:
+        # Replace any capitalization variation of the full candidate name
+        # with the normalized Title Case version extracted from the resume.
+        cleaned = re.sub(
+            re.escape(candidate_name),
+            candidate_name,
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+
+    # ------------------------------------------------------------
+    # 2. REMOVE / REPLACE BANNED RECRUITER PHRASES
+    # ------------------------------------------------------------
+
+    phrase_replacements = {
+        "proven history in": "experience in",
+        "proven history of": "experience with",
+        "proven history": "experience",
+    }
+
+    for old_phrase, new_phrase in phrase_replacements.items():
+        cleaned = re.sub(
+            re.escape(old_phrase),
+            new_phrase,
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+
+    # Clean up any accidental double spaces.
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+
+    return cleaned
+
+
 def fred_safe_reorder_bullets(bullets, requested_order):
     """
     Reorder existing bullets ONLY.
@@ -2953,9 +3005,9 @@ Sentence 3 — EXECUTION / CONTEXT
 - Maximum 3 named tools in this sentence.
 
 Sentence 4 — IMMEDIATE VALUE
-- State the specific value the person's proven history indicates they can
-  provide to THIS Freddie role.
-- Keep it evidence based.
+- State the specific value the candidate's demonstrated experience indicates
+  they can provide to THIS Freddie role.
+- Keep it evidence based and grounded in specific prior execution.
 - Do not mention city, onsite requirement, interview availability, rate,
   authorization, or sponsorship.
 
@@ -3349,6 +3401,11 @@ FULL ORIGINAL RESUME
                         "",
                     )
                 ).strip()
+
+                final_summary = fred_clean_summary(
+                    final_summary,
+                    name,
+                )
 
                 if not final_summary:
                     raise RuntimeError(
