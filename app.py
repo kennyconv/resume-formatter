@@ -14,6 +14,7 @@ import time
 import subprocess
 from pdf2docx import Converter
 from copy import deepcopy
+from datetime import date
 
 # ====================================================================
 # --- STREAMLIT UI & PASSWORD LOGIC ---
@@ -2121,6 +2122,12 @@ def freddie_mac_app():
             "The question wording is intentionally read-only."
         )
 
+        safe_req_key = re.sub(
+            r"[^A-Za-z0-9_\-]+",
+            "_",
+            selected_req or "manual"
+        )
+        
         for idx, question in enumerate(
             vetting_questions,
             start=1,
@@ -2132,7 +2139,7 @@ def freddie_mac_app():
             answer = st.text_area(
                 f"Candidate Response {idx}",
                 height=100,
-                key=f"fred_vetting_answer_{idx}",
+                key=f"fred_vetting_answer_{safe_req_key}_{idx}",
                 placeholder=(
                     "Paste the candidate's direct response here..."
                 ),
@@ -2543,11 +2550,19 @@ ORIGINAL RESUME:
                     ensure_ascii=False,
                 )
 
+                current_date = date.today().isoformat()
+
                 tailoring_prompt = f"""
 Return a valid JSON object ONLY.
 
 You are an elite Senior Technical Recruiter preparing a Freddie Mac
 contingent-worker submission through Workday VNDLY.
+
+CURRENT DATE FOR ALL EXPERIENCE CALCULATIONS:
+{current_date}
+
+Use this date when calculating experience through "Present" or "Current".
+Never assume a different current date.
 
 There are TWO simultaneous goals:
 
