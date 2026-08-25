@@ -2658,7 +2658,8 @@ Write exactly FOUR sentences as one paragraph.
 Sentence 1 — ANCHOR
 - Use the candidate's FIRST NAME.
 - Use the target functional title when the work history supports it.
-- State total progressive professional experience using date-driven evidence.
+- State total progressive professional experience using date-driven evidence
+  and the conservative "X+ years" completed-years format defined below.
 - Immediately connect the candidate to the highest-priority Freddie Must Haves.
 
 Sentence 2 — STRONGEST PROOF
@@ -2684,15 +2685,31 @@ Sentence 4 — IMMEDIATE VALUE
 STYLE:
 - Human recruiter voice.
 - Direct, factual, concise.
-- No generic filler such as:
-  "strong background"
+- Evidence over praise. Let the candidate's actual experience demonstrate fit.
+- Do NOT use promotional or generic recruiter language such as:
+  "highly accomplished"
   "highly experienced"
+  "strong background"
   "excellent fit"
+  "ideal candidate"
+  "perfect candidate"
+  "strong candidate"
+  "directly aligns"
+  "directly aligning"
+  "aligns with"
+  "aligns perfectly"
   "positions them uniquely"
   "exceptionally well prepared"
-  "aligns perfectly"
+  "proven history"
+- Do not say that the candidate "meets Freddie Mac's requirements" or
+  "directly aligns with Freddie Mac's core requirements." Demonstrate the
+  alignment through specific evidence instead.
 - Do not use "Additionally", "Furthermore", or "Moreover".
 - Do not simply restate the JD.
+- When stating total professional experience, use the conservative format
+  "X+ years" based on completed years as of the CURRENT DATE above.
+  Example: 7 years and 10 months must be written as "7+ years", NOT
+  "over 7 years", "nearly 8 years", or "8+ years".
 
 ======================================================================
 SKILLS TABLE — EXACTLY 4 HIGH-SIGNAL ROWS WHEN SUPPORTED
@@ -2725,23 +2742,76 @@ CANDIDATE-EVIDENCE RULE:
 - If fewer than four defensible relevant groups exist, leave the unused
   SKILL/YEARS fields blank. The Word processor will remove those rows.
 
-YEARS / LAST USED:
-- Determine years from actual dated roles where that specific competency is
-  evidenced.
-- Do NOT assign the candidate's total career length to every skill.
+YEARS / LAST USED — STRICT EVIDENCE-BASED CALCULATION:
+
+For every Skills-table row, calculate the displayed experience conservatively
+from the dated work history.
+
+CORE RULE:
+- The YEARS value must be defensible for the ENTIRE competency label as written.
+- Never use the tenure of one broad component to imply equal tenure with every
+  named technology or specialty in the same row.
+
+EXAMPLE OF WHAT NOT TO DO:
+If the candidate has 7+ years of Python/Data Engineering but only began using
+OpenCV and TensorFlow in 2026, DO NOT write:
+"Python, Computer Vision & Image Analytics (OpenCV, TensorFlow) —
+7+ years, current"
+
+because that falsely implies 7+ years of Computer Vision/OpenCV/TensorFlow.
+
+GROUPED-SKILL RULE:
+- When a row contains multiple material named technologies, specialties, or
+  domains, the displayed YEARS value must reflect the shortest clearly
+  supported tenure among the material components that define that row.
+- Do not allow a long-tenure broad skill such as Python, SQL, Data Engineering,
+  QA, or Financial Services to inflate the tenure of a newer specialized skill
+  such as OpenCV, TensorFlow, Snowflake, ServiceNow ATF, Kubernetes, etc.
+- If materially different tenures would make one combined row misleading,
+  SPLIT the concepts into separate Skills rows when possible.
+- Prefer a narrower, accurate row over a broader row with an overstated tenure.
+
+EXAMPLE:
+If Python is supported for 7+ years but Computer Vision/OpenCV/TensorFlow only
+since February 2026, prefer:
+"Python & Data Engineering" — "7+ years, current"
+and
+"Computer Vision & Image Analytics (OpenCV, TensorFlow)" —
+"<1 year, current"
+
+rather than combining them under "7+ years".
+
+CALCULATION RULES:
+- Determine experience only from actual dated roles where that specific skill,
+  technology, methodology, or domain competency is evidenced.
+- Do NOT assign total career length to a skill merely because the candidate
+  worked in a related occupation.
 - Do NOT automatically subtract 1-2 years as a heuristic.
-- Do NOT call a skill "current" merely because the candidate remains in the
-  same general profession.
-- "current" is allowed ONLY when the skill/competency is evidenced in the
-  candidate's actual current role.
-- Otherwise give the actual latest year in which the competency is evidenced.
 - Avoid double-counting overlapping employment periods.
-- Round DOWN rather than up.
-- If clearly under one year, use "<1 year, YYYY/current".
+- Calculate through the CURRENT DATE supplied above for roles marked Present
+  or Current.
+- Round DOWN to completed years rather than up.
+- If clearly less than one completed year, use:
+  "<1 year, current"
+  or
+  "<1 year, YYYY"
 - Otherwise use:
   "X+ years, current"
-  OR
+  or
   "X+ years, YYYY"
+
+YEAR LAST USED:
+- "current" is allowed ONLY when that exact competency, or every material
+  component represented by the row, is evidenced in the candidate's actual
+  current role.
+- Otherwise give the latest actual year in which the competency is evidenced.
+
+FINAL AUDIT BEFORE RETURNING EACH ROW:
+Ask:
+"If a Freddie Mac MSP reviewer reads this Skill label and its Years value
+literally, would the candidate's dated resume support that interpretation?"
+If not, reduce the years, narrow the label, split the competency, or leave the
+row blank.
 
 ======================================================================
 OFFICIAL FREDDIE VETTING ANSWERS
