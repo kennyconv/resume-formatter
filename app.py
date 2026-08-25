@@ -1343,6 +1343,230 @@ SPOTLIGHT CALL TRANSCRIPT:
 
     return data
 
+def fred_standardize_dates(date_str):
+    """
+    Standardize Freddie Mac work-history dates to:
+    MMM YYYY - MMM YYYY
+    or
+    MMM YYYY - CURRENT
+
+    Examples:
+    2026-02 - Current      -> FEB 2026 - CURRENT
+    2021-08 - 2026-02      -> AUG 2021 - FEB 2026
+    07/2019 - 08/2021      -> JUL 2019 - AUG 2021
+    February 2026 - Present -> FEB 2026 - CURRENT
+    """
+    if not date_str:
+        return ""
+
+    text = str(date_str)
+
+    # Normalize line breaks, spacing, and dash characters.
+    text = text.replace("\r", " ").replace("\n", " ")
+    text = text.replace("–", "-").replace("—", "-")
+    text = re.sub(r"\s+", " ", text).strip()
+
+    month_names = {
+        1: "JAN",
+        2: "FEB",
+        3: "MAR",
+        4: "APR",
+        5: "MAY",
+        6: "JUN",
+        7: "JUL",
+        8: "AUG",
+        9: "SEP",
+        10: "OCT",
+        11: "NOV",
+        12: "DEC",
+    }
+
+    text_months = {
+        "january": "JAN",
+        "jan": "JAN",
+        "february": "FEB",
+        "feb": "FEB",
+        "march": "MAR",
+        "mar": "MAR",
+        "april": "APR",
+        "apr": "APR",
+        "may": "MAY",
+        "june": "JUN",
+        "jun": "JUN",
+        "july": "JUL",
+        "jul": "JUL",
+        "august": "AUG",
+        "aug": "AUG",
+        "september": "SEP",
+        "sept": "SEP",
+        "sep": "SEP",
+        "october": "OCT",
+        "oct": "OCT",
+        "november": "NOV",
+        "nov": "NOV",
+        "december": "DEC",
+        "dec": "DEC",
+    }
+
+    # Current / Present
+    text = re.sub(
+        r"\b(?:current|present)\b",
+        "CURRENT",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # YYYY-MM or YYYY/MM -> MMM YYYY
+    def replace_year_month(match):
+        year = int(match.group(1))
+        month = int(match.group(2))
+        return f"{month_names[month]} {year}"
+
+    text = re.sub(
+        r"\b((?:19|20)\d{2})[-/](0?[1-9]|1[0-2])\b",
+        replace_year_month,
+        text,
+    )
+
+    # MM/YYYY -> MMM YYYY
+    def replace_month_year(match):
+        month = int(match.group(1))
+        year = int(match.group(2))
+        return f"{month_names[month]} {year}"
+
+    text = re.sub(
+        r"\b(0?[1-9]|1[0-2])/((?:19|20)\d{2})\b",
+        replace_month_year,
+        text,
+    )
+
+    # Written month names -> three-letter uppercase months.
+    month_pattern = (
+        r"\b("
+        r"January|Jan|February|Feb|March|Mar|April|Apr|May|"
+        r"June|Jun|July|Jul|August|Aug|September|Sept|Sep|"
+        r"October|Oct|November|Nov|December|Dec"
+        r")\b"
+    )
+
+    text = re.sub(
+        month_pattern,
+        lambda m: text_months[m.group(1).lower()],
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Normalize spacing around the range dash.
+    text = re.sub(r"\s*-\s*", " - ", text)
+
+    return text.strip()
+
+
+def fred_calculate_total_experience(experience, current_date):
+    """
+    Calculate total professional experience deterministically from dated roles.
+
+    Overlapping employment periods are merged so they are not double-counted.
+    Returns the conservative completed-years format used in the Freddie
+    summary, e.g. "7+ years".
+    """
+
+    month_lookup = {
+        "JAN": 1,
+        "FEB": 2,
+        "MAR": 3,
+        "APR": 4,
+        "MAY": 5,
+        "JUN": 6,
+        "JUL": 7,
+        "AUG": 8,
+        "SEP": 9,
+        "OCT": 10,
+        "NOV": 11,
+        "DEC": 12,
+    }
+
+    def parse_month_year(value):
+        value = str(value).strip().upper()
+
+        if value in {"CURRENT", "PRESENT"}:
+            return current_date.year, current_date.month
+
+        match = re.fullmatch(
+            r"(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+"
+            r"((?:19|20)\d{2})",
+            value,
+        )
+
+        if not match:
+            return None
+
+        month = month_lookup[match.group(1)]
+        year = int(match.group(2))
+
+        return year, month
+
+    intervals = []
+
+    for role in experience:
+        dates = str(role.get("Dates", "") or "").strip()
+
+        if not dates:
+            continue
+
+        match = re.fullmatch(
+            r"\s*(.+?)\s+-\s+(.+?)\s*",
+            dates,
+        )
+
+        if not match:
+            continue
+
+        start_parsed = parse_month_year(match.group(1))
+        end_parsed = parse_month_year(match.group(2))
+
+        if not start_parsed or not end_parsed:
+            continue
+
+        start_year, start_month = start_parsed
+        end_year, end_month = end_parsed
+
+        start_index = (start_year * 12) + (start_month - 1)
+        end_index = (end_year * 12) + (end_month - 1)
+
+        if end_index < start_index:
+            continue
+
+        intervals.append((start_index, end_index))
+
+    if not intervals:
+        return ""
+
+    intervals.sort()
+
+    merged = []
+
+    for start, end in intervals:
+        if not merged or start > merged[-1][1]:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(
+                merged[-1][1],
+                end,
+            )
+
+    total_months = sum(
+        end - start
+        for start, end in merged
+    )
+
+    completed_years = total_months // 12
+
+    if completed_years < 1:
+        return "<1 year"
+
+    return f"{completed_years}+ years"
+
 
 def fred_safe_reorder_bullets(bullets, requested_order):
     """
@@ -2518,7 +2742,7 @@ ORIGINAL RESUME:
                                     "",
                                 )
                             ).strip(),
-                            "Dates": standardize_dates(
+                            "Dates": fred_standardize_dates(
                                 str(
                                     role.get(
                                         "Dates",
@@ -2580,7 +2804,13 @@ ORIGINAL RESUME:
                     ensure_ascii=False,
                 )
 
-                current_date = date.today().isoformat()
+                current_date_obj = date.today()
+                current_date = current_date_obj.isoformat()
+
+                calculated_total_experience = fred_calculate_total_experience(
+                    experience,
+                    current_date_obj,
+                )
 
                 tailoring_prompt = f"""
 Return a valid JSON object ONLY.
@@ -2588,11 +2818,23 @@ Return a valid JSON object ONLY.
 You are an elite Senior Technical Recruiter preparing a Freddie Mac
 contingent-worker submission through Workday VNDLY.
 
-CURRENT DATE FOR ALL EXPERIENCE CALCULATIONS:
+CURRENT DATE:
 {current_date}
 
-Use this date when calculating experience through "Present" or "Current".
-Never assume a different current date.
+PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE:
+{calculated_total_experience}
+
+The total professional experience value above was calculated deterministically
+from the candidate's dated work history.
+
+CRITICAL:
+- If PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE is populated, use that
+  EXACT value when stating total career experience in the Summary.
+- Do NOT independently recalculate it.
+- Do NOT round it up.
+- Do NOT change "7+ years" to "8+ years", "over 7 years", "nearly 8 years",
+  or any other variation.
+- If the calculated value is blank, do not invent a total-years figure.
 
 There are TWO simultaneous goals:
 
@@ -2657,9 +2899,13 @@ Write exactly FOUR sentences as one paragraph.
 
 Sentence 1 — ANCHOR
 - Use the candidate's FIRST NAME.
-- Use the target functional title when the work history supports it.
-- State total progressive professional experience using date-driven evidence
-  and the conservative "X+ years" completed-years format defined below.
+- Use the candidate's actual functional professional identity when possible.
+  Do not relabel a Data Engineer as a Data Scientist solely because that is
+  Freddie's requisition title. Target-role terminology may be used when the
+  candidate's actual work clearly supports that functional identity.
+- If PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE above is populated, use
+  that EXACT value for total professional experience.
+- Never independently calculate or alter the total-years figure.
 - Immediately connect the candidate to the highest-priority Freddie Must Haves.
 
 Sentence 2 — STRONGEST PROOF
@@ -2762,14 +3008,72 @@ because that falsely implies 7+ years of Computer Vision/OpenCV/TensorFlow.
 
 GROUPED-SKILL RULE:
 - When a row contains multiple material named technologies, specialties, or
-  domains, the displayed YEARS value must reflect the shortest clearly
-  supported tenure among the material components that define that row.
-- Do not allow a long-tenure broad skill such as Python, SQL, Data Engineering,
-  QA, or Financial Services to inflate the tenure of a newer specialized skill
-  such as OpenCV, TensorFlow, Snowflake, ServiceNow ATF, Kubernetes, etc.
-- If materially different tenures would make one combined row misleading,
-  SPLIT the concepts into separate Skills rows when possible.
-- Prefer a narrower, accurate row over a broader row with an overstated tenure.
+  domains, the displayed YEARS value must be literally defensible for the
+  entire label.
+
+- Do NOT solve a tenure mismatch merely by assigning the shortest tenure to a
+  combined row if doing so would materially UNDERSTATE an important long-tenure
+  Freddie Must Have.
+
+- In particular, a high-priority Must Have such as Python, SQL, Java,
+  ServiceNow, Snowflake, etc. should NOT be grouped with a much newer specialty
+  when the combined label would cause the long-tenure Must Have itself to appear
+  artificially inexperienced.
+
+MANDATORY SPLIT RULE:
+- If one material component has substantially longer tenure than another
+  material component in the proposed row, and either component is important to
+  Freddie's requirements, SPLIT them into separate Skills rows whenever there
+  are available rows.
+
+- Treat a difference of approximately 2 or more completed years as materially
+  different unless the resume evidence clearly supports treating the items as
+  one inseparable competency.
+
+EXAMPLE:
+Candidate has:
+- Python: 7+ years, current
+- Computer Vision/OpenCV/TensorFlow: <1 year, current
+
+DO NOT write:
+"Python & Computer Vision (OpenCV, TensorFlow)" — "<1 year, current"
+
+because that incorrectly makes the candidate appear to have less than one year
+of Python.
+
+Instead prefer:
+"Python & Data Engineering" — "7+ years, current"
+"Computer Vision & Image Analytics (OpenCV, TensorFlow)" —
+"<1 year, current"
+
+Likewise, if:
+- SQL = 7+ years
+- Snowflake = <1 year
+
+do not combine them into:
+"SQL & Snowflake" — "<1 year"
+
+when separate rows can represent the candidate more accurately.
+
+ROW-ALLOCATION PRIORITY:
+When deciding how to use the four available Skills rows, prioritize:
+
+1. Freddie's explicit Must Have competencies that the candidate genuinely has.
+2. High-signal specialized competencies central to the actual role.
+3. Required domain expertise.
+4. Relevant secondary / preferred competencies.
+
+The objective is NOT to force Freddie's four planned competency groups directly
+into four resume rows. The planned competency groups are guidance. The final
+candidate Skills rows must be reorganized when necessary to represent the
+candidate's actual experience accurately and advantageously.
+
+Prefer:
+- a truthful long-tenure Must Have row,
+- plus a truthful short-tenure specialty row,
+
+over one combined row whose YEARS value materially understates or overstates
+either skill.
 
 EXAMPLE:
 If Python is supported for 7+ years but Computer Vision/OpenCV/TensorFlow only
@@ -2807,11 +3111,24 @@ YEAR LAST USED:
 - Otherwise give the latest actual year in which the competency is evidenced.
 
 FINAL AUDIT BEFORE RETURNING EACH ROW:
-Ask:
-"If a Freddie Mac MSP reviewer reads this Skill label and its Years value
-literally, would the candidate's dated resume support that interpretation?"
-If not, reduce the years, narrow the label, split the competency, or leave the
-row blank.
+
+Ask BOTH questions:
+
+1. "If a Freddie Mac MSP reviewer reads this Skill label and its Years value
+   literally, would the candidate's dated resume support that interpretation?"
+
+2. "Does this grouping accidentally make an important long-tenure Freddie
+   requirement appear to have LESS experience merely because it was grouped
+   with a newer specialty?"
+
+If either answer reveals a misleading result:
+- split the competency,
+- narrow the label,
+- reduce the years when necessary,
+- or leave the row blank.
+
+Never solve an overstatement problem by creating a new material
+understatement.
 
 ======================================================================
 OFFICIAL FREDDIE VETTING ANSWERS
