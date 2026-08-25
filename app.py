@@ -926,541 +926,2166 @@ def fannie_mae_app():
 
 
 # ====================================================================
+# --- 🟣 FREDDIE MAC HELPER FUNCTIONS 🟣 ---
+# ====================================================================
+
+def fred_generate_json(api_key, prompt, max_attempts=6):
+    """
+    Freddie-specific Gemini JSON helper with the same retry philosophy
+    already used throughout the app.
+    """
+    client = genai.Client(api_key=api_key)
+
+    models_to_try = [
+        "gemini-2.5-flash",
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-pro-latest",
+    ]
+
+    last_error = None
+
+    for attempt in range(max_attempts):
+        if attempt == 0:
+            current_model = models_to_try[0]
+        elif attempt in [1, 2]:
+            current_model = models_to_try[1]
+        elif attempt in [3, 4]:
+            current_model = models_to_try[2]
+        else:
+            current_model = models_to_try[3]
+
+        try:
+            response = client.models.generate_content(
+                model=current_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json"
+                ),
+            )
+
+            data = repair_and_load_json(response.text)
+
+            if data:
+                return data
+
+        except Exception as e:
+            last_error = e
+
+            if "503" in str(e) and attempt < max_attempts - 1:
+                time.sleep(2 ** ((attempt % 2) + 1))
+                continue
+
+            if attempt < max_attempts - 1:
+                time.sleep(1)
+                continue
+
+    raise RuntimeError(
+        f"Gemini could not return usable Freddie Mac JSON after retries. "
+        f"Last error: {last_error}"
+    )
+
+
+def fred_extract_vetting_block(job_description):
+    """
+    Deterministic first-pass locator for Freddie's Supplier Vetting Questions.
+    This does NOT decide what constitutes a question. It only gives Gemini
+    a high-signal excerpt while Gemini also receives the complete JD.
+    """
+    if not job_description:
+        return ""
+
+    text = str(job_description).replace("\r\n", "\n").replace("\r", "\n")
+
+    heading_pattern = re.compile(
+        r"(?im)^[ \t]*"
+        r"(?:required[ \t]+)?"
+        r"supplier[ \t]+vetting[ \t]+questions?"
+        r"[ \t]*(?:[:\-–—])[ \t]*(.*)?$"
+    )
+
+    match = heading_pattern.search(text)
+
+    if not match:
+        return ""
+
+    start = match.start()
+
+    # Common Freddie headings that usually terminate the vetting block.
+    stop_pattern = re.compile(
+        r"(?im)^[ \t]*("
+        r"job description|"
+        r"position overview|"
+        r"position description|"
+        r"responsibilities|"
+        r"key responsibilities|"
+        r"required qualifications|"
+        r"preferred qualifications|"
+        r"qualifications|"
+        r"must have|"
+        r"must-have|"
+        r"nice to have|"
+        r"nice-to-have|"
+        r"keys to success|"
+        r"key success in the role"
+        r")[ \t]*:?[ \t]*$"
+    )
+
+    remainder = text[match.end():]
+    stop_match = stop_pattern.search(remainder)
+
+    if stop_match:
+        end = match.end() + stop_match.start()
+    else:
+        # Safety cap. Gemini still receives the full JD separately.
+        end = min(len(text), start + 5000)
+
+    return text[start:end].strip()
+
+
+def fred_normalize_question_list(raw_questions):
+    """
+    Sanitizes Gemini's vetting-question output without rewriting its substance.
+    """
+    if not isinstance(raw_questions, list):
+        return []
+
+    cleaned = []
+
+    for item in raw_questions:
+        if isinstance(item, dict):
+            question = (
+                item.get("question")
+                or item.get("text")
+                or item.get("instruction")
+                or ""
+            )
+        else:
+            question = str(item)
+
+        question = str(question).strip()
+
+        # Strip duplicated numbering only. Do NOT rewrite the wording.
+        question = re.sub(
+            r"^\s*(?:question\s*)?\d+\s*[\.\)\:\-]\s*",
+            "",
+            question,
+            flags=re.IGNORECASE,
+        ).strip()
+
+        if question and question.lower() not in {
+            "n/a",
+            "na",
+            "none",
+            "not applicable",
+            "no",
+        }:
+            cleaned.append(question)
+
+    return cleaned
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fred_analyze_requisition(
+    api_key,
+    job_description,
+    msp_notes="",
+    spotlight_transcript="",
+):
+    """
+    Analyze the Freddie requisition ONCE and return structured job intelligence.
+
+    Cached by the JD/notes/transcript so Streamlit does not re-call Gemini
+    whenever a recruiter types into another field.
+    """
+    if not job_description or not str(job_description).strip():
+        return {
+            "target_title": "",
+            "explicit_must_have_requirements": [],
+            "must_have_competency_groups": [],
+            "required_requirements": [],
+            "preferred_requirements": [],
+            "domain_requirements": [],
+            "manager_priorities": [],
+            "deemphasized_or_negated_requirements": [],
+            "supplier_vetting_questions": [],
+        }
+
+    vetting_hint = fred_extract_vetting_block(job_description)
+
+    prompt = f"""
+Return a valid JSON object ONLY.
+
+You are analyzing a Freddie Mac contingent-worker requisition from Workday VNDLY.
+
+Your job in this step is NOT to evaluate a candidate and NOT to write resume
+content. Your only job is to convert the requisition into accurate structured
+job intelligence that will later be used for candidate matching.
+
+======================================================================
+SOURCE HIERARCHY
+======================================================================
+
+You are receiving:
+
+1. OFFICIAL VNDLY JOB DESCRIPTION
+2. MSP / VNDLY NOTES, if present
+3. SPOTLIGHT CALL TRANSCRIPT, if present
+
+For OFFICIAL MUST-HAVE IDENTIFICATION:
+
+- First look for Freddie's explicitly labeled "Must Have Qualifications",
+  "Must Have", "Must-Have", or equivalent section.
+- Treat explicitly labeled Must Haves as the primary formal matching criteria.
+- Do NOT promote Preferred, Nice-to-Have, or optional items into Must Haves.
+- If there is no explicit Must Have section, derive the core required
+  competencies from Required Qualifications and the central responsibilities.
+
+For ACTUAL HIRING-MANAGER EMPHASIS:
+
+- Spotlight call information and MSP clarifications can identify which formal
+  requirements matter most in practice.
+- If the hiring manager explicitly says a JD item is not needed, outdated,
+  optional, or incorrectly stated, place that item under
+  "deemphasized_or_negated_requirements".
+- Do NOT silently erase formal JD requirements. Keep formal Must Haves and
+  manager priorities as separate concepts.
+
+======================================================================
+MUST-HAVE COMPETENCY GROUPS
+======================================================================
+
+Create up to FOUR logical competency groups representing the highest-signal
+Must Have requirements.
+
+Examples of good grouping:
+
+"Application Development (Python, Java, Spring Boot)"
+"Data & Analytics (SQL, Snowflake, JSON)"
+"ServiceNow Testing & ATF"
+"Mortgage / Financial Services"
+
+Rules:
+
+- Group closely related Freddie requirements together.
+- Preserve Freddie's exact terminology wherever practical.
+- Do not invent a technology or competency.
+- These are JOB requirements only. Do not evaluate whether a candidate has
+  them in this step.
+- A group may contain technologies, methodologies, domain expertise, or
+  operational competencies.
+- Rank the groups from most important to least important.
+
+Return each group as:
+{{
+    "name": "",
+    "terms": [],
+    "reason": ""
+}}
+
+======================================================================
+SUPPLIER VETTING QUESTIONS — ZERO INVENTION
+======================================================================
+
+Extract ONLY supplier vetting questions/instructions actually supplied by
+Freddie/MSP in the Official Job Description.
+
+Rules:
+
+- Preserve the substantive wording and original order.
+- Remove only leading numbering such as "1." or "Question 1:".
+- Correcting obvious whitespace is allowed.
+- Do NOT rewrite, improve, expand, split, or invent questions.
+- If Freddie provides one assessment instruction rather than conventional
+  questions, return that instruction as ONE item.
+- If the JD says Supplier Vetting Questions are N/A / None, return [].
+- Do NOT mistake interview information, candidate-template questions,
+  qualifications, or ordinary JD bullets for Supplier Vetting Questions.
+- The standard candidate-template questions at the top of Freddie JDs
+  (Former CW, work authorization, location, etc.) are NOT supplier vetting
+  questions.
+
+A deterministic parser found this possible vetting block. It is ONLY a hint;
+validate it against the full JD:
+
+--- POSSIBLE VETTING BLOCK ---
+{vetting_hint}
+--- END POSSIBLE VETTING BLOCK ---
+
+======================================================================
+OUTPUT FORMAT
+======================================================================
+
+Return ONLY:
+
+{{
+  "target_title": "",
+  "explicit_must_have_requirements": [
+    ""
+  ],
+  "must_have_competency_groups": [
+    {{
+      "name": "",
+      "terms": [""],
+      "reason": ""
+    }}
+  ],
+  "required_requirements": [
+    ""
+  ],
+  "preferred_requirements": [
+    ""
+  ],
+  "domain_requirements": [
+    ""
+  ],
+  "manager_priorities": [
+    ""
+  ],
+  "deemphasized_or_negated_requirements": [
+    ""
+  ],
+  "supplier_vetting_questions": [
+    ""
+  ]
+}}
+
+======================================================================
+INPUTS
+======================================================================
+
+OFFICIAL VNDLY JOB DESCRIPTION:
+{job_description}
+
+MSP / VNDLY NOTES:
+{msp_notes}
+
+SPOTLIGHT CALL TRANSCRIPT:
+{spotlight_transcript}
+"""
+
+    data = fred_generate_json(api_key, prompt)
+
+    # Defensive normalization.
+    data["supplier_vetting_questions"] = fred_normalize_question_list(
+        data.get("supplier_vetting_questions", [])
+    )
+
+    for list_key in [
+        "explicit_must_have_requirements",
+        "required_requirements",
+        "preferred_requirements",
+        "domain_requirements",
+        "manager_priorities",
+        "deemphasized_or_negated_requirements",
+    ]:
+        value = data.get(list_key, [])
+        data[list_key] = value if isinstance(value, list) else []
+
+    groups = data.get("must_have_competency_groups", [])
+    if not isinstance(groups, list):
+        groups = []
+
+    normalized_groups = []
+
+    for group in groups[:4]:
+        if not isinstance(group, dict):
+            continue
+
+        name = str(group.get("name", "")).strip()
+        terms = group.get("terms", [])
+
+        if not isinstance(terms, list):
+            terms = []
+
+        terms = [str(x).strip() for x in terms if str(x).strip()]
+
+        if name:
+            normalized_groups.append(
+                {
+                    "name": name,
+                    "terms": terms,
+                    "reason": str(group.get("reason", "")).strip(),
+                }
+            )
+
+    data["must_have_competency_groups"] = normalized_groups
+
+    return data
+
+
+def fred_safe_reorder_bullets(bullets, requested_order):
+    """
+    Reorder existing bullets ONLY.
+
+    Gemini returns zero-based indexes. This function refuses to manufacture,
+    delete, or rewrite any bullet. Invalid indexes are ignored and every
+    unranked original bullet is appended in its original order.
+    """
+    if not isinstance(bullets, list):
+        return bullets
+
+    if not isinstance(requested_order, list):
+        return bullets
+
+    valid_order = []
+    seen = set()
+
+    for value in requested_order:
+        try:
+            idx = int(value)
+        except (TypeError, ValueError):
+            continue
+
+        if 0 <= idx < len(bullets) and idx not in seen:
+            valid_order.append(idx)
+            seen.add(idx)
+
+    if not valid_order:
+        return bullets
+
+    # Preserve every original bullet.
+    valid_order.extend(
+        idx for idx in range(len(bullets))
+        if idx not in seen
+    )
+
+    return [bullets[idx] for idx in valid_order]
+
+
+def fred_remove_table(table):
+    tbl = table._element
+    parent = tbl.getparent()
+
+    if parent is not None:
+        parent.remove(tbl)
+
+
+def fred_find_table_containing(doc, text):
+    target = str(text).lower()
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                if target in cell.text.lower():
+                    return table
+
+    return None
+
+
+def fred_get_reference_font(paragraph):
+    """
+    Capture the formatting already assigned to {{VETTING_QA}} in Word so
+    generated Q&A inherits the template's typography.
+    """
+    if paragraph.runs:
+        run = paragraph.runs[0]
+
+        return {
+            "name": run.font.name,
+            "size": run.font.size,
+            "color": (
+                run.font.color.rgb
+                if run.font.color and run.font.color.rgb
+                else None
+            ),
+        }
+
+    return {
+        "name": None,
+        "size": None,
+        "color": None,
+    }
+
+
+def fred_apply_reference_font(run, reference, bold=None):
+    if reference.get("name"):
+        run.font.name = reference["name"]
+
+    if reference.get("size"):
+        run.font.size = reference["size"]
+
+    if reference.get("color"):
+        run.font.color.rgb = reference["color"]
+
+    if bold is not None:
+        run.bold = bold
+
+
+def fred_insert_vetting_qa(cell, vetting_pairs):
+    """
+    Replace {{VETTING_QA}} with a dynamic number of bold questions and
+    normal-weight candidate answers.
+    """
+    placeholder_paragraph = None
+
+    for p in cell.paragraphs:
+        if "{{vetting_qa}}" in p.text.lower():
+            placeholder_paragraph = p
+            break
+
+    if placeholder_paragraph is None:
+        return
+
+    reference = fred_get_reference_font(placeholder_paragraph)
+
+    # Clear the placeholder paragraph while keeping the paragraph itself.
+    for run in list(placeholder_paragraph.runs):
+        run._element.getparent().remove(run._element)
+
+    placeholder_paragraph.paragraph_format.space_before = Pt(0)
+    placeholder_paragraph.paragraph_format.space_after = Pt(2)
+
+    for idx, pair in enumerate(vetting_pairs, start=1):
+        question = str(pair.get("question", "")).strip()
+        answer = str(pair.get("answer", "")).strip()
+
+        if idx == 1:
+            question_p = placeholder_paragraph
+        else:
+            question_p = cell.add_paragraph()
+
+        question_p.paragraph_format.space_before = Pt(4 if idx > 1 else 0)
+        question_p.paragraph_format.space_after = Pt(1)
+
+        q_run = question_p.add_run(f"{idx}. {question}")
+        fred_apply_reference_font(q_run, reference, bold=True)
+
+        answer_p = cell.add_paragraph()
+        answer_p.paragraph_format.left_indent = Pt(12)
+        answer_p.paragraph_format.space_before = Pt(0)
+        answer_p.paragraph_format.space_after = Pt(3)
+
+        a_run = answer_p.add_run(answer)
+        fred_apply_reference_font(a_run, reference, bold=False)
+
+
+def process_freddie_word_doc(
+    temp_path,
+    mapping,
+    vetting_pairs,
+    out_path,
+):
+    """
+    Freddie-specific Word processor.
+
+    We intentionally keep this separate from process_word_doc() so the
+    successful Fannie/other-client Q1-A1 behavior remains untouched.
+    """
+    doc = docx.Document(temp_path)
+
+    # ================================================================
+    # 1. SUPPLIER VETTING QUESTIONS
+    # ================================================================
+
+    vetting_table = fred_find_table_containing(doc, "{{VETTING_QA}}")
+
+    if vetting_table is not None:
+        if vetting_pairs:
+            inserted = False
+
+            for row in vetting_table.rows:
+                for cell in row.cells:
+                    if "{{vetting_qa}}" in cell.text.lower():
+                        fred_insert_vetting_qa(cell, vetting_pairs)
+                        inserted = True
+                        break
+
+                if inserted:
+                    break
+        else:
+            # No official Freddie vetting questions = remove entire section.
+            fred_remove_table(vetting_table)
+
+    # ================================================================
+    # 2. CERTIFICATIONS
+    # ================================================================
+
+    certifications = str(mapping.get("Certifications", "") or "").strip()
+
+    if not certifications:
+        cert_table = fred_find_table_containing(doc, "{{CERTIFICATIONS}}")
+
+        if cert_table is not None:
+            fred_remove_table(cert_table)
+
+    # ================================================================
+    # 3. EDUCATION
+    # ================================================================
+
+    has_any_education = any(
+        str(mapping.get(f"School{i}", "") or "").strip()
+        for i in range(1, 4)
+    )
+
+    education_table = fred_find_table_containing(doc, "{{School1}}")
+
+    if education_table is not None:
+        if not has_any_education:
+            fred_remove_table(education_table)
+        else:
+            rows_to_delete = []
+
+            for row in education_table.rows:
+                row_text = " ".join(
+                    cell.text for cell in row.cells
+                ).lower()
+
+                for i in range(1, 4):
+                    if (
+                        f"{{{{school{i}}}}}".lower() in row_text
+                        and not str(mapping.get(f"School{i}", "") or "").strip()
+                    ):
+                        rows_to_delete.append(row)
+                        break
+
+            for row in rows_to_delete:
+                try:
+                    education_table._tbl.remove(row._tr)
+                except Exception:
+                    pass
+
+    # ================================================================
+    # 4. SKILLS — REMOVE UNUSED ROWS INSTEAD OF LEAVING BLANKS
+    # ================================================================
+
+    skills_table = fred_find_table_containing(doc, "{{SKILL1}}")
+
+    if skills_table is not None:
+        rows_to_delete = []
+
+        for row in skills_table.rows:
+            row_text = " ".join(
+                cell.text for cell in row.cells
+            ).lower()
+
+            for i in range(1, 5):
+                if (
+                    f"{{{{skill{i}}}}}".lower() in row_text
+                    and not str(mapping.get(f"SKILL{i}", "") or "").strip()
+                ):
+                    rows_to_delete.append(row)
+                    break
+
+        for row in rows_to_delete:
+            try:
+                skills_table._tbl.remove(row._tr)
+            except Exception:
+                pass
+
+    # ================================================================
+    # 5. REPLACE TAGS IN BODY PARAGRAPHS
+    # ================================================================
+
+    paras_to_remove = []
+
+    kill_keys = [
+        "Company",
+        "Title",
+        "Bullets",
+        "Dates",
+        "Summary",
+        "Skill",
+        "Years",
+        "Certification",
+        "School",
+    ]
+
+    for p in list(doc.paragraphs):
+        for key, value in mapping.items():
+            tag = f"{{{{{key}}}}}"
+
+            if tag.lower() not in p.text.lower():
+                continue
+
+            if not value or not str(value).strip():
+                if any(k.lower() in key.lower() for k in kill_keys):
+                    if p not in paras_to_remove:
+                        paras_to_remove.append(p)
+                else:
+                    replace_tag_safely(p, tag, "")
+                continue
+
+            if "Bullets" in key:
+                for run in p.runs:
+                    if "\n" in run.text:
+                        run.text = run.text.replace("\n", "")
+
+                lines = [
+                    line.strip()
+                    for line in str(value).split("\n")
+                    if line.strip()
+                ]
+
+                if not lines:
+                    if p not in paras_to_remove:
+                        paras_to_remove.append(p)
+                    continue
+
+                replace_tag_safely(p, tag, lines[0])
+
+                curr_p = p
+
+                for line in lines[1:]:
+                    curr_p = insert_bullet_line_after(
+                        curr_p,
+                        line,
+                    )
+
+                # Preserve explicit Environment / Technologies lines only,
+                # following the same rule as your existing formatter.
+                num_match = re.search(r"\d+", key)
+
+                if num_match:
+                    env_val = mapping.get(
+                        f"Environment{num_match.group()}"
+                    )
+
+                    if env_val and str(env_val).strip():
+                        env_p = curr_p.insert_paragraph_before("")
+                        curr_p._p.addnext(env_p._p)
+
+                        try:
+                            env_p.style = doc.styles["Normal"]
+                        except Exception:
+                            pass
+
+                        env_p.paragraph_format.left_indent = Pt(0)
+                        env_p.paragraph_format.space_after = Pt(0)
+
+                        clean_env = re.sub(
+                            r"^Environment\s*:\s*",
+                            "",
+                            str(env_val).strip(),
+                            flags=re.IGNORECASE,
+                        )
+
+                        b_run = env_p.add_run("Environment: ")
+                        b_run.bold = True
+                        b_run.font.name = "Times New Roman"
+                        b_run.font.size = Pt(12)
+
+                        n_run = env_p.add_run(clean_env)
+                        n_run.bold = False
+                        n_run.font.name = "Times New Roman"
+                        n_run.font.size = Pt(12)
+
+                        curr_p = env_p
+
+                spacer = curr_p.insert_paragraph_before("")
+                curr_p._p.addnext(spacer._p)
+
+                try:
+                    spacer.style = doc.styles["Normal"]
+                except Exception:
+                    pass
+
+                spacer.paragraph_format.space_after = Pt(0)
+                spacer.paragraph_format.space_before = Pt(0)
+
+            else:
+                replace_tag_safely(
+                    p,
+                    tag,
+                    str(value).strip(),
+                )
+
+    # ================================================================
+    # 6. REPLACE TAGS INSIDE TABLE CELLS
+    # ================================================================
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for key, value in mapping.items():
+                        tag = f"{{{{{key}}}}}"
+
+                        if tag.lower() in p.text.lower():
+                            replace_tag_safely(
+                                p,
+                                tag,
+                                str(value) if value else "",
+                            )
+
+    # ================================================================
+    # 7. DELETE EMPTY WORK-HISTORY PARAGRAPHS
+    # ================================================================
+
+    for p in paras_to_remove:
+        try:
+            delete_paragraph(p)
+        except Exception:
+            pass
+
+    doc.save(out_path)
+
+    return out_path
+
+
+# ====================================================================
 # --- 🟣 CLIENT APP 1.5: FREDDIE MAC 🟣 ---
 # ====================================================================
+
 def freddie_mac_app():
     TEMPLATE_FILENAME = "Freddie_Mac_Template.docx"
+
     st.title("Freddie Mac Precision Extractor")
+
+    # ================================================================
+    # API CONFIGURATION
+    # ================================================================
 
     with st.sidebar:
         st.header("🔑 API Configuration")
+
         if "API_KEY" in st.secrets:
             API_KEY = st.secrets["API_KEY"]
             st.success("✅ API Key loaded from Secrets")
         else:
-            API_KEY = st.text_input("Gemini API Key", type="password")
-            st.info("Paste your Gemini API key here to run the tool.")
+            API_KEY = st.text_input(
+                "Gemini API Key",
+                type="password",
+                key="fred_api_key",
+            )
+
+            st.info(
+                "Paste your Gemini API key here to run the tool."
+            )
+
+    # ================================================================
+    # CANDIDATE INFORMATION
+    # ================================================================
 
     st.header("📋 Candidate Information")
+
+    # Initialize dependent fields before widgets are rendered.
+    if "fred_site" not in st.session_state:
+        st.session_state.fred_site = ""
+
+    if "fred_elig" not in st.session_state:
+        st.session_state.fred_elig = "N/A"
+
+    def fred_sync_onsite():
+        if st.session_state.get("fred_onsite") == "No":
+            st.session_state.fred_site = "N/A"
+        elif st.session_state.get("fred_site") == "N/A":
+            st.session_state.fred_site = ""
+
+    def fred_sync_former_cw():
+        if st.session_state.get("fred_form") == "No":
+            st.session_state.fred_elig = "N/A"
+        elif st.session_state.get("fred_elig") == "N/A":
+            st.session_state.fred_elig = "No"
+
     col1, col2 = st.columns(2)
+
     with col1:
-        Current_Location = st.text_input("Current Location:", key="fred_loc")
-        Auth_US = st.selectbox("Do you currently possess unrestricted lawful authorization to work in the U.S indefinitely?", ["Yes", "No"], index=0, key="fred_auth")
+        Current_Location = st.text_input(
+            "Current Location:",
+            key="fred_loc",
+        )
 
-        # Group 1: Onsite & Locations
+        Auth_US = st.selectbox(
+            "Do you currently possess unrestricted lawful authorization "
+            "to work in the U.S indefinitely?",
+            ["Yes", "No"],
+            index=0,
+            key="fred_auth",
+        )
+
         with st.container(border=True):
-            Available_Onsite = st.selectbox("Available to be onsite (Yes / No):", ["Yes", "No"], index=0, key="fred_onsite")
+            Available_Onsite = st.selectbox(
+                "Available to be onsite (Yes / No):",
+                ["Yes", "No"],
+                index=0,
+                key="fred_onsite",
+                on_change=fred_sync_onsite,
+            )
 
-            # Auto-populate N/A if they select "No"
-            default_site = "N/A" if Available_Onsite == "No" else ""
-            Site = st.text_input("If yes, at which locations:", value=default_site, key="fred_site")
+            Site = st.text_input(
+                "If yes, at which locations:",
+                key="fred_site",
+            )
 
     with col2:
-        Interview = st.text_input("Interview Availability for next 7 days:", key="fred_int")
-        Sponsorship = st.selectbox("Will you now or in the future require sponsorship for an immigration-related employment benefit?", ["Yes", "No"], index=1, key="fred_spon")
+        Interview = st.text_input(
+            "Interview Availability for next 7 days:",
+            key="fred_int",
+        )
 
-        # Group 2: Former Employee & Eligibility
+        Sponsorship = st.selectbox(
+            "Will you now or in the future require sponsorship for an "
+            "immigration-related employment benefit?",
+            ["Yes", "No"],
+            index=1,
+            key="fred_spon",
+        )
+
         with st.container(border=True):
-            Former_CW = st.selectbox("Former CW/Employee?", ["Yes", "No"], index=1, key="fred_form")
-            Eligibility = st.selectbox("If Yes, Rehire Eligibility Check Completed?", ["Yes", "N/A"], index=1, key="fred_elig")
+            Former_CW = st.selectbox(
+                "Former CW/Employee?",
+                ["Yes", "No"],
+                index=1,
+                key="fred_form",
+                on_change=fred_sync_former_cw,
+            )
 
-    st.header("🎤 Supplier Technical Interview Results")
-    # Row 1
-    row1_c1, row1_c2 = st.columns(2)
-    Question_1 = row1_c1.text_input("Question 1", key="fred_q1")
-    Answer_1 = row1_c2.text_area("Answer 1", height=68, key="fred_a1")
+            Eligibility = st.selectbox(
+                "If Yes, Rehire Eligibility Check Completed?",
+                ["Yes", "No", "N/A"],
+                key="fred_elig",
+            )
 
-    # Row 2
-    row2_c1, row2_c2 = st.columns(2)
-    Question_2 = row2_c1.text_input("Question 2", key="fred_q2")
-    Answer_2 = row2_c2.text_area("Answer 2", height=68, key="fred_a2")
+    # ================================================================
+    # REQUISITION / JOB DESCRIPTION
+    # ================================================================
 
-    # Row 3
-    row3_c1, row3_c2 = st.columns(2)
-    Question_3 = row3_c1.text_input("Question 3", key="fred_q3")
-    Answer_3 = row3_c2.text_area("Answer 3", height=68, key="fred_a3")
+    st.header("📝 Freddie Mac Requisition")
 
-    # Row 4
-    row4_c1, row4_c2 = st.columns(2)
-    Question_4 = row4_c1.text_input("Question 4", key="fred_q4")
-    Answer_4 = row4_c2.text_area("Answer 4", height=68, key="fred_a4")
-
-    # Row 5
-    row5_c1, row5_c2 = st.columns(2)
-    Question_5 = row5_c1.text_input("Question 5", key="fred_q5")
-    Answer_5 = row5_c2.text_area("Answer 5", height=68, key="fred_a5")
-
-    st.header("📝 Job Description & Notes")
-
-    # --- NEW GOOGLE SHEET LOGIC ---
-    SHEET_URL = "https://docs.google.com/spreadsheets/d/1swKaDhGdlmO0ILv7tngkRCbsK-7jF89cdCpf5bypzwM/edit?usp=sharing"
+    SHEET_URL = (
+        "https://docs.google.com/spreadsheets/d/"
+        "1swKaDhGdlmO0ILv7tngkRCbsK-7jF89cdCpf5bypzwM/"
+        "edit?usp=sharing"
+    )
 
     @st.cache_data(ttl=600)
     def load_freddie_reqs(url):
         try:
             base_url = url.split("/edit")[0]
-            csv_url = base_url + "/export?format=csv&gid=2061875560"
+
+            csv_url = (
+                base_url
+                + "/export?format=csv&gid=2061875560"
+            )
+
             df = pd.read_csv(csv_url)
+
             return df.fillna("")
+
         except Exception:
             return pd.DataFrame()
 
     df_reqs = load_freddie_reqs(SHEET_URL)
+
     options = ["None"]
     req_mapping = {}
 
     if not df_reqs.empty:
         for idx, row in df_reqs.iterrows():
-            req_id = str(row.get("ID", "")).replace(".0", "")
-            vms_id = str(row.get("VMS ID", "")).replace(".0", "")
-            title = str(row.get("Job Title", ""))
-            manager = str(row.get("Manager", "")) 
-            desc = str(row.get("Description", ""))
-            notes = str(row.get("FG Notes", ""))
-            transcript = str(row.get("Spotlight Transcript", "")) 
+            req_id = str(
+                row.get("ID", "")
+            ).replace(".0", "")
 
-            # Build the dropdown string safely, ignoring empty values
-            option_parts = [req_id, vms_id, title, manager]
-            option_str = " - ".join([p.strip() for p in option_parts if p.strip()])
-            
+            vms_id = str(
+                row.get("VMS ID", "")
+            ).replace(".0", "")
+
+            title = str(
+                row.get("Job Title", "")
+            ).strip()
+
+            manager = str(
+                row.get("Manager", "")
+            ).strip()
+
+            desc = str(
+                row.get("Description", "")
+            )
+
+            # Keep your current Google Sheet column name so you do NOT
+            # have to restructure the sheet today. It simply represents
+            # Freddie MSP/VNDLY notes inside this app.
+            notes = str(
+                row.get("FG Notes", "")
+            )
+
+            transcript = str(
+                row.get("Spotlight Transcript", "")
+            )
+
+            option_parts = [
+                req_id,
+                vms_id,
+                title,
+                manager,
+            ]
+
+            option_str = " - ".join(
+                [
+                    p.strip()
+                    for p in option_parts
+                    if p and p.strip()
+                ]
+            )
+
             if option_str and option_str != "-":
                 options.append(option_str)
-                # Added transcript to the mapping dictionary
-                req_mapping[option_str] = {"desc": desc, "notes": notes, "transcript": transcript}
+
+                req_mapping[option_str] = {
+                    "req_id": req_id,
+                    "vms_id": vms_id,
+                    "title": title,
+                    "manager": manager,
+                    "desc": desc,
+                    "notes": notes,
+                    "transcript": transcript,
+                }
 
     if "fred_jd" not in st.session_state:
         st.session_state.fred_jd = ""
+
     if "fred_notes" not in st.session_state:
         st.session_state.fred_notes = ""
+
     if "fred_trans" not in st.session_state:
         st.session_state.fred_trans = ""
 
     def update_fred_jd_text():
-        if "fred_req_selector" not in st.session_state:
-            return
+        selected = st.session_state.get(
+            "fred_req_selector",
+            "None",
+        )
 
-        selected = st.session_state.fred_req_selector
-        if selected != "None" and selected in req_mapping:
-            st.session_state.fred_jd = req_mapping[selected].get("desc", "").strip()
-            st.session_state.fred_notes = req_mapping[selected].get("notes", "").strip()
-            st.session_state.fred_trans = req_mapping[selected].get("transcript", "").strip()
+        # Clear answers whenever the requisition changes so an answer
+        # from Job A can NEVER accidentally survive into Job B.
+        for key in list(st.session_state.keys()):
+            if key.startswith("fred_vetting_answer_"):
+                del st.session_state[key]
+
+        if (
+            selected != "None"
+            and selected in req_mapping
+        ):
+            req = req_mapping[selected]
+
+            st.session_state.fred_jd = (
+                req.get("desc", "").strip()
+            )
+
+            st.session_state.fred_notes = (
+                req.get("notes", "").strip()
+            )
+
+            st.session_state.fred_trans = (
+                req.get("transcript", "").strip()
+            )
+
         else:
-            # Clear the text boxes if "None" is selected
             st.session_state.fred_jd = ""
             st.session_state.fred_notes = ""
             st.session_state.fred_trans = ""
-            
+
     selected_req = st.selectbox(
         "🔍 Select a Freddie Mac Requisition (Type to search):",
         options=options,
         key="fred_req_selector",
-        on_change=update_fred_jd_text
+        on_change=update_fred_jd_text,
     )
 
     Job_Description = st.text_area(
-        "1. Official Job Description (Paste generic JD here):", 
-        height=150, 
-        key="fred_jd"
+        "1. Official VNDLY Job Description:",
+        height=150,
+        key="fred_jd",
     )
 
-    Chat_Notes = st.text_area(
-        "2. Fieldglass Chat Notes (Optional - Overrides JD):", 
-        height=100, 
-        key="fred_notes"
+    MSP_Notes = st.text_area(
+        "2. VNDLY / MSP Notes (Optional):",
+        height=100,
+        key="fred_notes",
     )
 
     Call_Transcript = st.text_area(
-        "3. Spotlight Call Transcript (Optional - Highest Priority):", 
-        height=100, 
-        key="fred_trans"
+        "3. Spotlight Call Transcript "
+        "(Optional - Hiring Manager Priority):",
+        height=100,
+        key="fred_trans",
     )
 
+    # ================================================================
+    # STRUCTURED REQUISITION ANALYSIS
+    # ================================================================
+
+    req_analysis = {
+        "target_title": "",
+        "explicit_must_have_requirements": [],
+        "must_have_competency_groups": [],
+        "required_requirements": [],
+        "preferred_requirements": [],
+        "domain_requirements": [],
+        "manager_priorities": [],
+        "deemphasized_or_negated_requirements": [],
+        "supplier_vetting_questions": [],
+    }
+
+    analysis_error = None
+
+    if (
+        API_KEY
+        and Job_Description
+        and Job_Description.strip()
+    ):
+        try:
+            with st.spinner(
+                "Analyzing Freddie Mac requirements "
+                "and vetting questions..."
+            ):
+                req_analysis = fred_analyze_requisition(
+                    API_KEY,
+                    Job_Description,
+                    MSP_Notes,
+                    Call_Transcript,
+                )
+
+        except Exception as e:
+            analysis_error = str(e)
+
+            st.error(
+                "❌ Could not analyze the Freddie Mac requisition. "
+                f"{analysis_error}"
+            )
+
+    # Optional transparency for recruiters.
+    if req_analysis.get("explicit_must_have_requirements"):
+        with st.expander(
+            "🎯 Freddie Must-Have Requirements Identified",
+            expanded=False,
+        ):
+            for requirement in req_analysis[
+                "explicit_must_have_requirements"
+            ]:
+                st.markdown(f"- {requirement}")
+
+            groups = req_analysis.get(
+                "must_have_competency_groups",
+                [],
+            )
+
+            if groups:
+                st.markdown("**Planned Skills Priorities:**")
+
+                for idx, group in enumerate(
+                    groups,
+                    start=1,
+                ):
+                    terms = ", ".join(
+                        group.get("terms", [])
+                    )
+
+                    if terms:
+                        st.markdown(
+                            f"{idx}. **{group.get('name', '')}** "
+                            f"— {terms}"
+                        )
+                    else:
+                        st.markdown(
+                            f"{idx}. **{group.get('name', '')}**"
+                        )
+
+    # ================================================================
+    # DYNAMIC OFFICIAL SUPPLIER VETTING QUESTIONS
+    # ================================================================
+
+    st.header("🎤 Supplier Vetting Questions")
+
+    vetting_questions = req_analysis.get(
+        "supplier_vetting_questions",
+        [],
+    )
+
+    vetting_answers = []
+
+    if analysis_error:
+        st.warning(
+            "Vetting questions cannot be safely determined until "
+            "the requisition analysis succeeds."
+        )
+
+    elif not Job_Description.strip():
+        st.info(
+            "Select a Freddie Mac requisition above. "
+            "Any official supplier vetting questions will appear here "
+            "automatically."
+        )
+
+    elif not vetting_questions:
+        st.success(
+            "✅ No official Supplier Vetting Questions were identified "
+            "for this requisition."
+        )
+
+    else:
+        st.caption(
+            "Questions below were extracted from Freddie Mac's VNDLY "
+            "requisition. Enter the candidate's direct responses. "
+            "The question wording is intentionally read-only."
+        )
+
+        for idx, question in enumerate(
+            vetting_questions,
+            start=1,
+        ):
+            st.markdown(
+                f"**{idx}. {question}**"
+            )
+
+            answer = st.text_area(
+                f"Candidate Response {idx}",
+                height=100,
+                key=f"fred_vetting_answer_{idx}",
+                placeholder=(
+                    "Paste the candidate's direct response here..."
+                ),
+            )
+
+            vetting_answers.append(answer)
+
+    # ================================================================
+    # FILE UPLOAD
+    # ================================================================
+
     st.header("📂 File Uploads")
-    resume_file = st.file_uploader("📤 Upload the candidate's resume...", type=['pdf', 'docx', 'doc'], key="fred_res")
 
-    if st.button("🚀 Generate Freddie Mac Submission", type="primary"):
+    resume_file = st.file_uploader(
+        "📤 Upload the candidate's resume...",
+        type=["pdf", "docx", "doc"],
+        key="fred_res",
+    )
+
+    # ================================================================
+    # GENERATE SUBMISSION
+    # ================================================================
+
+    if st.button(
+        "🚀 Generate Freddie Mac Submission",
+        type="primary",
+    ):
+
+        # ------------------------------------------------------------
+        # PRE-GENERATION VALIDATION
+        # ------------------------------------------------------------
+
+        validation_errors = []
+
         if not API_KEY:
-            st.error("❌ Error: Please enter your Gemini API Key in the sidebar.")
-        elif not resume_file:
-            st.error("❌ Error: Please upload a resume.")
-        elif not os.path.exists(TEMPLATE_FILENAME):
-            st.error(f"❌ Error: The preloaded template '{TEMPLATE_FILENAME}' was not found. Please make sure it is uploaded to your GitHub repository.")
-        else:
-            with st.spinner("Processing document and querying AI..."):
-                try:
-                    resume_path = f"temp_{resume_file.name}"
-                    with open(resume_path, "wb") as f:
-                        f.write(resume_file.getbuffer())
+            validation_errors.append(
+                "Gemini API Key is missing."
+            )
 
-                    raw_text = extract_text(resume_path)
-                    client = genai.Client(api_key=API_KEY)
+        if not Job_Description.strip():
+            validation_errors.append(
+                "A Freddie Mac requisition / Job Description "
+                "must be selected."
+            )
 
-                    prompt = f"""
-                    Return a valid JSON object ONLY.
+        if analysis_error:
+            validation_errors.append(
+                "The requisition analysis did not complete successfully."
+            )
 
-                    RULES:
-                    1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
-                    2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line. (e.g., If the resume says "DUPONT, DELAWARE TCS", you must output exactly "DUPONT").
-                    3. Education: Extract School and Degree.
-                    4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
-                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
-                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
-                    5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
+        if not Current_Location.strip():
+            validation_errors.append(
+                "Current Location is required."
+            )
 
-                    JSON Structure:
-                    {{
-                        "FullName": "",
-                        "Certifications": "",
-                        "Education": [{{"School": "", "Degree": ""}}],
-                        "Experience": [{{"Company": "", "Title": "", "Bullets": [], "Environment": "", "Dates": ""}}]
-                    }}
+        if (
+            Available_Onsite == "Yes"
+            and (
+                not Site.strip()
+                or Site.strip().upper() == "N/A"
+            )
+        ):
+            validation_errors.append(
+                "Enter the location(s) where the candidate "
+                "can be onsite."
+            )
 
-                    RESUME: {raw_text}
-                    """
+        if not Interview.strip():
+            validation_errors.append(
+                "Interview Availability for the next 7 days "
+                "is required."
+            )
 
-                    models_to_try = [
-                        'gemini-2.5-flash', 
-                        'gemini-3-flash-preview', 
-                        'gemini-3.1-flash-lite-preview', 
-                        'gemini-pro-latest'
+        if (
+            Former_CW == "Yes"
+            and Eligibility == "N/A"
+        ):
+            validation_errors.append(
+                "Rehire Eligibility cannot be N/A when the "
+                "candidate is a former Freddie Mac CW/employee."
+            )
+
+        if not resume_file:
+            validation_errors.append(
+                "Upload the candidate's resume."
+            )
+
+        if not os.path.exists(TEMPLATE_FILENAME):
+            validation_errors.append(
+                f"The template '{TEMPLATE_FILENAME}' was not found."
+            )
+
+        if vetting_questions:
+            missing_answers = [
+                str(idx)
+                for idx, answer in enumerate(
+                    vetting_answers,
+                    start=1,
+                )
+                if not str(answer).strip()
+            ]
+
+            if missing_answers:
+                validation_errors.append(
+                    "Candidate responses are required for all official "
+                    "Supplier Vetting Questions. Missing response(s): "
+                    + ", ".join(missing_answers)
+                )
+
+        if validation_errors:
+            for error in validation_errors:
+                st.error(f"❌ {error}")
+
+            return
+
+        # ------------------------------------------------------------
+        # PROCESS
+        # ------------------------------------------------------------
+
+        with st.spinner(
+            "Building optimized Freddie Mac submission..."
+        ):
+            resume_path = None
+
+            try:
+                # ====================================================
+                # SAVE / EXTRACT ORIGINAL RESUME
+                # ====================================================
+
+                safe_original_name = os.path.basename(
+                    resume_file.name
+                )
+
+                resume_path = (
+                    f"temp_freddie_{safe_original_name}"
+                )
+
+                with open(resume_path, "wb") as f:
+                    f.write(
+                        resume_file.getbuffer()
+                    )
+
+                raw_text = extract_text(resume_path)
+
+                # ====================================================
+                # PASS 1 — STRUCTURED RESUME EXTRACTION
+                # ====================================================
+
+                extraction_prompt = f"""
+Return a valid JSON object ONLY.
+
+You are extracting a candidate's ORIGINAL resume into a clean structured
+format for a Freddie Mac VNDLY submission.
+
+CRITICAL:
+- This is an extraction step, NOT a tailoring step.
+- Preserve the candidate's factual work history.
+- Do NOT add JD terminology.
+- Do NOT rewrite accomplishments to sound more relevant.
+- Do NOT invent technologies, metrics, employers, dates, or responsibilities.
+
+RULES:
+
+1. NAME
+- Pull from the resume header.
+- Title Case.
+- If completely missing/unreadable, use the filename if possible.
+
+2. COMPANY
+- Extract the primary END-CLIENT / employer name actually represented by the
+  resume.
+- Strip geographic locations that are merely appended to the company line.
+- If a contracting vendor and end-client are clearly shown together, preserve
+  the primary end-client used by the resume experience.
+- Do not guess an end-client that is not stated.
+
+3. EDUCATION
+- Extract school and degree exactly enough to preserve meaning.
+
+4. EXPERIENCE
+Return:
+- Company
+- Title
+- Bullets as an ARRAY
+- Environment
+- Dates
+
+TITLE:
+- Remove only employment-type modifiers such as "(Contract)" or "- Contract"
+  when they are merely suffixes.
+- Do not upgrade or alter seniority.
+
+BULLETS:
+- Preserve every substantive original bullet.
+- Light cleanup of malformed bullet characters/spacing is allowed.
+- Keep bullets in ORIGINAL ORDER in this extraction response.
+- Do NOT rewrite bullets to match Freddie's JD.
+
+ENVIRONMENT:
+- Populate ONLY when the original resume explicitly has an "Environment:"
+  or "Technologies:" line.
+- Never compile an Environment line from ordinary bullets.
+
+DATES:
+- Preserve the source dates faithfully enough for later date calculations.
+
+5. CERTIFICATIONS
+- Extract certifications into one comma-separated string.
+- If none, return "".
+
+OUTPUT:
+
+{{
+  "FullName": "",
+  "Certifications": "",
+  "Education": [
+    {{
+      "School": "",
+      "Degree": ""
+    }}
+  ],
+  "Experience": [
+    {{
+      "Company": "",
+      "Title": "",
+      "Bullets": [
+        ""
+      ],
+      "Environment": "",
+      "Dates": ""
+    }}
+  ]
+}}
+
+FILENAME:
+{resume_file.name}
+
+ORIGINAL RESUME:
+{raw_text}
+"""
+
+                data = fred_generate_json(
+                    API_KEY,
+                    extraction_prompt,
+                )
+
+                name = str(
+                    data.get(
+                        "FullName",
+                        "",
+                    )
+                ).strip().title()
+
+                certifications = str(
+                    data.get(
+                        "Certifications",
+                        "",
+                    )
+                ).strip()
+
+                education = data.get(
+                    "Education",
+                    [],
+                )
+
+                if not isinstance(
+                    education,
+                    list,
+                ):
+                    education = []
+
+                experience = data.get(
+                    "Experience",
+                    [],
+                )
+
+                if not isinstance(
+                    experience,
+                    list,
+                ):
+                    experience = []
+
+                # Normalize extraction data before tailoring.
+                normalized_experience = []
+
+                for role in experience[:7]:
+                    if not isinstance(
+                        role,
+                        dict,
+                    ):
+                        continue
+
+                    bullets = role.get(
+                        "Bullets",
+                        [],
+                    )
+
+                    if isinstance(
+                        bullets,
+                        str,
+                    ):
+                        bullets = [
+                            x.strip()
+                            for x in bullets.split("\n")
+                            if x.strip()
+                        ]
+
+                    if not isinstance(
+                        bullets,
+                        list,
+                    ):
+                        bullets = []
+
+                    bullets = [
+                        re.sub(
+                            r"^[\s\-\•\*\d\.\)]+",
+                            "",
+                            str(x),
+                        ).strip()
+                        for x in bullets
+                        if str(x).strip()
                     ]
-                    data = {}
-                    
-                    for attempt in range(6):
-                        if attempt == 0:
-                            current_model = models_to_try[0]
-                        elif attempt in [1, 2]:
-                            current_model = models_to_try[1]
-                        elif attempt in [3, 4]:
-                            current_model = models_to_try[2]
-                        else:
-                            current_model = models_to_try[3]
-                        
-                        try:
-                            response = client.models.generate_content(
-                                model=current_model,
-                                contents=prompt,
-                                config=types.GenerateContentConfig(
-                                    response_mime_type="application/json"
+
+                    normalized_experience.append(
+                        {
+                            "Company": str(
+                                role.get(
+                                    "Company",
+                                    "",
+                                )
+                            ).strip(),
+                            "Title": re.sub(
+                                r"\s*\(.*$",
+                                "",
+                                str(
+                                    role.get(
+                                        "Title",
+                                        "",
+                                    )
+                                ),
+                            ).strip(),
+                            "Bullets": bullets,
+                            "Environment": str(
+                                role.get(
+                                    "Environment",
+                                    "",
+                                )
+                            ).strip(),
+                            "Dates": standardize_dates(
+                                str(
+                                    role.get(
+                                        "Dates",
+                                        "",
+                                    )
+                                ).strip()
+                            ),
+                        }
+                    )
+
+                experience = normalized_experience
+
+                # ====================================================
+                # OFFICIAL VETTING Q&A STRUCTURE
+                # ====================================================
+
+                vetting_pairs = [
+                    {
+                        "question": question,
+                        "answer": answer.strip(),
+                    }
+                    for question, answer in zip(
+                        vetting_questions,
+                        vetting_answers,
+                    )
+                ]
+
+                vetting_for_ai = "\n\n".join(
+                    [
+                        f"Q{idx}: {pair['question']}\n"
+                        f"A{idx}: {pair['answer']}"
+                        for idx, pair in enumerate(
+                            vetting_pairs,
+                            start=1,
+                        )
+                    ]
+                )
+
+                if not vetting_for_ai:
+                    vetting_for_ai = (
+                        "No official Supplier Vetting Questions "
+                        "were provided for this requisition."
+                    )
+
+                # ====================================================
+                # PASS 2 — CANDIDATE MATCH / SUMMARY / SKILLS /
+                #          SAFE BULLET PRIORITIZATION
+                # ====================================================
+
+                structured_req = json.dumps(
+                    req_analysis,
+                    indent=2,
+                    ensure_ascii=False,
+                )
+
+                structured_exp = json.dumps(
+                    experience,
+                    indent=2,
+                    ensure_ascii=False,
+                )
+
+                tailoring_prompt = f"""
+Return a valid JSON object ONLY.
+
+You are an elite Senior Technical Recruiter preparing a Freddie Mac
+contingent-worker submission through Workday VNDLY.
+
+There are TWO simultaneous goals:
+
+1. MAXIMIZE THE CHANCE THAT THE CANDIDATE ADVANCES THROUGH THE INITIAL
+   FREDDIE/MSP SHORTLISTING PROCESS.
+
+2. IF SHORTLISTED, MAKE IT EASY FOR THE FREDDIE MAC HIRING MANAGER TO
+   IMMEDIATELY SEE WHY THE CANDIDATE DESERVES AN INTERVIEW.
+
+The initial shortlisting process may involve VNDLY matching, MSP human review,
+or a combination. Therefore optimize for BOTH structured skill matching and
+fast human review.
+
+======================================================================
+HIERARCHY OF ROLE REQUIREMENTS
+======================================================================
+
+Use this priority order:
+
+1. Freddie's explicitly stated Must Have Qualifications
+2. Hiring-manager priorities / Spotlight Call clarification
+3. Detailed Required Qualifications and core recurring responsibilities
+4. Preferred / Nice-to-Have qualifications
+
+IMPORTANT:
+- A Spotlight Call can clarify emphasis or explicitly negate an outdated JD
+  item.
+- Never highlight a requirement the hiring manager explicitly said is not
+  needed.
+- Formal Must Haves should still receive strong coverage when truthful.
+
+The requisition has ALREADY been analyzed into structured job intelligence.
+Do not independently reinvent its hierarchy.
+
+STRUCTURED REQUISITION:
+{structured_req}
+
+======================================================================
+VNDLY / MATCHING STRATEGY
+======================================================================
+
+When the candidate genuinely possesses a Freddie Must Have:
+
+- Use Freddie's exact skill/technology/domain terminology when supported.
+- Prefer the exact Freddie term over a synonym when both are truthful.
+- Do NOT merely repeat keywords.
+- Pair important terms with contextual evidence of how the candidate actually
+  used them.
+- Favor demonstrated skills in work-experience bullets over a standalone skills
+  inventory.
+- Favor recent, repeated, production, operational, and hands-on use.
+- Domain requirements such as mortgage, financial services, appraisal,
+  ServiceNow IRM/GRC, fixed income, etc. can be as important as technologies.
+
+Do not engage in keyword stuffing.
+
+======================================================================
+SUMMARY — EXACTLY 4 SENTENCES
+======================================================================
+
+Write exactly FOUR sentences as one paragraph.
+
+Sentence 1 — ANCHOR
+- Use the candidate's FIRST NAME.
+- Use the target functional title when the work history supports it.
+- State total progressive professional experience using date-driven evidence.
+- Immediately connect the candidate to the highest-priority Freddie Must Haves.
+
+Sentence 2 — STRONGEST PROOF
+- Use the current/most-recent employer when it provides strong relevant proof.
+- HOWEVER, if an earlier employer provides materially stronger evidence for
+  Freddie's central need, use that stronger experience instead.
+- Show an actual accomplishment, recurring responsibility, or hands-on duty.
+
+Sentence 3 — EXECUTION / CONTEXT
+- Explain HOW the relevant work was performed.
+- Naturally incorporate the important tools/methodologies/domain terminology.
+- Emphasize scale, complexity, production ownership, validation, testing,
+  operational support, or measurable impact when the resume supports it.
+- Maximum 3 named tools in this sentence.
+
+Sentence 4 — IMMEDIATE VALUE
+- State the specific value the person's proven history indicates they can
+  provide to THIS Freddie role.
+- Keep it evidence based.
+- Do not mention city, onsite requirement, interview availability, rate,
+  authorization, or sponsorship.
+
+STYLE:
+- Human recruiter voice.
+- Direct, factual, concise.
+- No generic filler such as:
+  "strong background"
+  "highly experienced"
+  "excellent fit"
+  "positions them uniquely"
+  "exceptionally well prepared"
+  "aligns perfectly"
+- Do not use "Additionally", "Furthermore", or "Moreover".
+- Do not simply restate the JD.
+
+======================================================================
+SKILLS TABLE — EXACTLY 4 HIGH-SIGNAL ROWS WHEN SUPPORTED
+======================================================================
+
+The template has four Skills rows.
+
+PRIMARY STRATEGY:
+- Start from Freddie's highest-priority Must Have competency groups in
+  "must_have_competency_groups".
+- Build each Skills row around one high-signal Freddie competency group.
+- Consolidate related skills logically.
+- Prefer EXACT Freddie terminology when it is supported by the candidate.
+
+EXAMPLE:
+"Python & Computer Vision (Python, OpenCV, PyTorch)"
+"Data & Analytics (SQL, Snowflake, JSON)"
+"Image Analytics & Model Output Validation"
+"Mortgage / Financial Services"
+
+CANDIDATE-EVIDENCE RULE:
+- A row may contain ONLY skills, tools, methodologies, or domain expertise
+  supported by the candidate's resume.
+- Official candidate-supplied Freddie vetting answers may clarify depth of
+  experience already grounded in the resume, but must not manufacture a skill.
+- If a Must Have group is not supported, DO NOT fabricate it merely to fill a
+  row.
+- Move to the next relevant Required or Preferred competency the candidate
+  genuinely possesses.
+- If fewer than four defensible relevant groups exist, leave the unused
+  SKILL/YEARS fields blank. The Word processor will remove those rows.
+
+YEARS / LAST USED:
+- Determine years from actual dated roles where that specific competency is
+  evidenced.
+- Do NOT assign the candidate's total career length to every skill.
+- Do NOT automatically subtract 1-2 years as a heuristic.
+- Do NOT call a skill "current" merely because the candidate remains in the
+  same general profession.
+- "current" is allowed ONLY when the skill/competency is evidenced in the
+  candidate's actual current role.
+- Otherwise give the actual latest year in which the competency is evidenced.
+- Avoid double-counting overlapping employment periods.
+- Round DOWN rather than up.
+- If clearly under one year, use "<1 year, YYYY/current".
+- Otherwise use:
+  "X+ years, current"
+  OR
+  "X+ years, YYYY"
+
+======================================================================
+OFFICIAL FREDDIE VETTING ANSWERS
+======================================================================
+
+Freddie required that these responses come directly from the candidate.
+
+They are SECONDARY supporting evidence.
+
+Allowed:
+- Clarify technical depth.
+- Clarify how something already reflected in the work history was used.
+- Clarify scope, approach, or operational context.
+
+Not allowed:
+- Use an answer to invent an employer/date.
+- Calculate years solely from a candidate's unsupported statement.
+- Convert a theoretical answer into performed experience.
+- Override contradictory resume evidence.
+
+OFFICIAL CANDIDATE-SUPPLIED VETTING Q&A:
+{vetting_for_ai}
+
+======================================================================
+RESUME = PRIMARY SOURCE OF CANDIDATE TRUTH
+======================================================================
+
+ZERO-TOLERANCE RULES:
+
+1. Never assign a JD technology to the candidate merely because Freddie asks
+   for it.
+
+2. Never infer a specific tool from a broader category.
+   Example:
+   Resume says AWS -> you may NOT invent Redshift.
+
+3. Never upgrade exposure into ownership.
+
+4. Never fabricate a metric, scale, accomplishment, mortgage domain,
+   certification, platform, methodology, or responsibility.
+
+5. Technologies that appear only in the JD/Spotlight/MSP notes describe the
+   ROLE, not the candidate.
+
+6. Every candidate claim in SUMMARY and SKILLS must survive a side-by-side
+   audit against the resume, with only limited clarification from official
+   candidate vetting responses.
+
+======================================================================
+EXPERIENCE PRIORITY / OPERATIONAL OWNERSHIP
+======================================================================
+
+Prefer:
+- Things the candidate actually built, supported, maintained, tested,
+  troubleshot, validated, deployed, operated, analyzed, or owned.
+- Recurring direct responsibility.
+- Recent relevant work.
+- Production support and issue resolution when relevant.
+- Operational ownership.
+- Compliance/audit/validation responsibility when relevant.
+- Evidence covering multiple Freddie requirements at once.
+
+Avoid overweighting:
+- One-time transformation projects when the target role is operational.
+- Technologies listed only in a skills inventory.
+- Generic management language.
+- Impressive but irrelevant projects.
+
+======================================================================
+SAFE WORK-HISTORY BULLET PRIORITIZATION
+======================================================================
+
+You are NOT allowed to rewrite the work-history bullets.
+
+Instead, for each role, rank the EXISTING ORIGINAL BULLETS by relevance to
+this Freddie requisition.
+
+Return zero-based bullet indexes.
+
+Example:
+If a role has 4 bullets and bullets 2, 0, 3, 1 are the best order:
+[2, 0, 3, 1]
+
+Rules:
+- Do NOT omit bullets.
+- Do NOT create bullets.
+- Do NOT merge bullets.
+- Do NOT rewrite bullets.
+- Rank only the existing indexes.
+- If the original order is already best, return the original indexes.
+- If a role has no bullets, return [].
+
+STRUCTURED ORIGINAL EXPERIENCE:
+{structured_exp}
+
+======================================================================
+OUTPUT FORMAT
+======================================================================
+
+Return ONLY:
+
+{{
+  "SUMMARY": "",
+  "SKILL1": "",
+  "YEARS1": "",
+  "SKILL2": "",
+  "YEARS2": "",
+  "SKILL3": "",
+  "YEARS3": "",
+  "SKILL4": "",
+  "YEARS4": "",
+  "BULLET_ORDER": {{
+    "1": [],
+    "2": [],
+    "3": [],
+    "4": [],
+    "5": [],
+    "6": [],
+    "7": []
+  }}
+}}
+
+======================================================================
+FULL ORIGINAL RESUME
+======================================================================
+
+{raw_text}
+"""
+
+                summary_data = fred_generate_json(
+                    API_KEY,
+                    tailoring_prompt,
+                )
+
+                # ====================================================
+                # VALIDATE SUMMARY / SKILLS
+                # ====================================================
+
+                final_summary = str(
+                    summary_data.get(
+                        "SUMMARY",
+                        "",
+                    )
+                ).strip()
+
+                if not final_summary:
+                    raise RuntimeError(
+                        "The Freddie optimization step returned no "
+                        "candidate Summary."
+                    )
+
+                # ====================================================
+                # APPLY SAFE BULLET REORDERING
+                # ====================================================
+
+                bullet_orders = summary_data.get(
+                    "BULLET_ORDER",
+                    {},
+                )
+
+                if not isinstance(
+                    bullet_orders,
+                    dict,
+                ):
+                    bullet_orders = {}
+
+                for idx, role in enumerate(
+                    experience,
+                    start=1,
+                ):
+                    original_bullets = role.get(
+                        "Bullets",
+                        [],
+                    )
+
+                    requested_order = bullet_orders.get(
+                        str(idx),
+                        [],
+                    )
+
+                    role["Bullets"] = (
+                        fred_safe_reorder_bullets(
+                            original_bullets,
+                            requested_order,
+                        )
+                    )
+
+                # ====================================================
+                # BUILD WORD MAPPING
+                # ====================================================
+
+                mapping = {
+                    "FullName": name,
+                    "Location": Current_Location,
+                    "Remote": Available_Onsite,
+                    "FormerFM": Former_CW,
+                    "FormerCW": Former_CW,
+                    "Eligibility": Eligibility,
+                    "Authorization": Auth_US,
+                    "Sponsorship": Sponsorship,
+                    "Site": Site,
+                    "Interview": Interview,
+                    "Certifications": certifications,
+                    "SUMMARY": final_summary,
+                    "SKILL1": str(
+                        summary_data.get(
+                            "SKILL1",
+                            "",
+                        )
+                    ).strip(),
+                    "YEARS1": str(
+                        summary_data.get(
+                            "YEARS1",
+                            "",
+                        )
+                    ).strip(),
+                    "SKILL2": str(
+                        summary_data.get(
+                            "SKILL2",
+                            "",
+                        )
+                    ).strip(),
+                    "YEARS2": str(
+                        summary_data.get(
+                            "YEARS2",
+                            "",
+                        )
+                    ).strip(),
+                    "SKILL3": str(
+                        summary_data.get(
+                            "SKILL3",
+                            "",
+                        )
+                    ).strip(),
+                    "YEARS3": str(
+                        summary_data.get(
+                            "YEARS3",
+                            "",
+                        )
+                    ).strip(),
+                    "SKILL4": str(
+                        summary_data.get(
+                            "SKILL4",
+                            "",
+                        )
+                    ).strip(),
+                    "YEARS4": str(
+                        summary_data.get(
+                            "YEARS4",
+                            "",
+                        )
+                    ).strip(),
+                }
+
+                # Education
+                for i in range(1, 4):
+                    if i <= len(education):
+                        edu_item = education[i - 1]
+
+                        if not isinstance(
+                            edu_item,
+                            dict,
+                        ):
+                            edu_item = {}
+
+                        mapping[f"School{i}"] = clean_school(
+                            str(
+                                edu_item.get(
+                                    "School",
+                                    "",
                                 )
                             )
-                            data = repair_and_load_json(response.text)
-                            break
-                        except Exception as e:
-                            if "503" in str(e) and attempt < 5:
-                                time.sleep(2 ** ((attempt % 2) + 1))
-                                continue
-                            else:
-                                raise e
-
-                    name = data.get('FullName', '').title()
-                    mapping = {
-                        "FullName": name, 
-                        "Location": Current_Location, 
-                        "Remote": Available_Onsite,
-                        "Certifications": data.get("Certifications", ""),
-                        "FormerFM": Former_CW, "FormerCW": Former_CW,
-                        "Eligibility": Eligibility,
-                        "Authorization": Auth_US,
-                        "Sponsorship": Sponsorship,
-                        "Site": Site,
-                        "Interview": Interview,
-                        "Q1": Question_1, "A1": Answer_1, "Q2": Question_2, "A2": Answer_2,
-                        "Q3": Question_3, "A3": Answer_3, "Q4": Question_4, "A4": Answer_4, "Q5": Question_5, "A5": Answer_5,
-                        "SUMMARY": "", "SKILL1": "", "YEARS1": "", "SKILL2": "", "YEARS2": "",
-                        "SKILL3": "", "YEARS3": "", "SKILL4": "", "YEARS4": ""
-                    }
-
-                    edu = data.get('Education', [])
-                    for i in range(1, 4):
-                        mapping[f"School{i}"] = clean_school(edu[i-1].get('School', '')) if i <= len(edu) else ""
-                        mapping[f"Degree{i}"] = edu[i-1].get('Degree', '') if i <= len(edu) else ""
-
-                    exp = data.get('Experience', [])
-                    for i in range(1, 8):
-                        if i <= len(exp):
-                            mapping[f"Company{i}"] = exp[i-1].get('Company', '')
-                            raw_title = exp[i-1].get('Title', '')
-                            clean_title = re.sub(r'\s*\(.*$', '', raw_title).strip()
-                            mapping[f"Title{i}"] = clean_title
-                            mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
-                            mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
-                            mapping[f"Dates{i}"] = standardize_dates(exp[i-1].get('Dates', ''))
-                        else:
-                            mapping[f"Company{i}"] = ""
-                            mapping[f"Title{i}"] = ""
-                            mapping[f"Bullets{i}"] = ""
-                            mapping[f"Environment{i}"] = ""
-                            mapping[f"Dates{i}"] = ""
-
-                    if Job_Description.strip():
-                        try:
-                            summary_prompt = f"""
-                            You are an elite, no-nonsense Senior Technical Recruiter writing an executive submission summary for a Fieldglass portal. 
-                            The summary should read like an experienced recruiter verbally explaining to the hiring manager why this candidate deserves an interview. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed, optimized for both human reading and ATS exact-match parsing.
-
-                            ========================
-                            JD vs. MANAGER INPUT (CRITICAL)
-                            ========================
-
-                            You are receiving up to three sources of information:
-
-                            1. Official Job Description
-                            2. Spotlight Call Transcript
-                            3. Fieldglass Chat Notes
-
-                            OFFICIAL JOB DESCRIPTION:
-                            Primary source for ATS keyword coverage and phrase matching.
-
-                            SPOTLIGHT CALL + CHAT NOTES:
-                            Primary source for hiring manager priorities and emphasis.
-
-                            If manager input contradicts or removes a requirement from the Job Description, follow the manager.
-
-                            Preserve strong coverage of the Official Job Description because automated shortlisting is assumed to rely primarily on Job Description terminology.
-
-                            Never highlight technical skills or responsibilities that the manager explicitly negated.
-
-                            ========================
-                            ATS COVERAGE RULE (CRITICAL)
-                            ========================
-
-                            Assume the Fieldglass AI shortlisting engine evaluates candidates primarily against the Official Job Description.
-
-                            Therefore:
-                            - The Official Job Description is the primary source for keyword coverage and phrase matching.
-                            - Spotlight Call transcripts and Chat Notes should influence emphasis and prioritization, but should not reduce coverage of important Job Description concepts.
-                            - Preserve exact terminology from the Job Description whenever supported by the resume.
-                            - Prefer exact Job Description terminology over synonyms when both are supported by the resume.
-                            - Exact phrase overlap is preferred whenever it does not distort the truth.
-                            - When multiple resume experiences are equally relevant, prefer the one that produces the greatest overlap with Job Description terminology and concepts.
-
-                            ========================
-                            THE NARRATIVE BLUEPRINT (4 Sentences Max)
-                            ========================
-                            Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
-                            - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description? (Calculate their total overall years strictly rounding DOWN to the nearest whole year formatted as 'X+ years'. Use their FIRST NAME only. You MUST use the exact job title requested in the JD if the candidate's history supports it. Avoid generic fluff).
-                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name the current employer unless an earlier role provides substantially stronger evidence for the target role. Highlight the most relevant accomplishment or responsibility that demonstrates success performing the core duties of this role. Show why this experience provides strong evidence they can perform the responsibilities of the target position.
-                            - Sentence 3: The Execution & Impact (The Proof). Explain how they executed the work and why it mattered. Highlight the scale, complexity, operational ownership, or business impact. Weave tools and methodologies naturally into the sentence. DO NOT write a comma-separated list of tools. DO NOT repeat verbs from Sentence 2.
-                            - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role? (Use a strong, direct structure like: "[First Name]'s success in [X] makes them an immediate asset for driving this team's [specific technical goal/initiative]." Do NOT mention the physical location/city).
-
-                            CRITICAL ATS HACK: Across these 4 sentences, you MUST seamlessly embed 2-3 exact phrases from the Job Description (including soft skills like "changing priorities" or "system analysis") to maximize the Fieldglass match score. Do not force them if they ruin the sentence flow, but prioritize exact phrase matching where supported by the resume.
-
-                            ========================
-                            STYLE & TONE RULES (STRICT)
-                            ========================
-                            - Write like a human pitching to a colleague. Confident, direct, and factual.
-                            - TECH MATCHING: Strictly align the tools you highlight with the JD. If the JD asks for AWS, highlight AWS. Do not highlight competing tech (like Azure or GCP) just because it's prominent in the resume, unless it is their only experience.
-                            - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
-                            - SHOW, DON'T TELL. 
-                              🔴 Bad: "John's background in AWS makes him a great fit for this role."
-                              🟢 Good: "Because John spent the last three years building highly available data lakes in AWS, he can immediately step in to optimize your current infrastructure."
-                            - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely," "exceptionally well-prepared," "fits well," "aligns with," "enterprise-grade platforms."
-                            - Do NOT use transition crutches: "Additionally," "Furthermore," "Moreover."
-                            - Do NOT repeat or restate the job description.
-                            - Prefer clear business language over consultant buzzwords.
-                            - Favor evidence and ownership over dramatic wording.
-                            - Use verbs that naturally fit the work performed. Do not force "leadership verbs."
-
-                            ========================
-                            EXAMPLE OF A PERFECT SUMMARY
-                            ========================
-                            "Sarah is a Senior Data Engineer with 7+ years of experience architecting cloud-native data migrations within heavily regulated financial environments. Most recently at Capital One, she led the end-to-end migration of a legacy on-prem data warehouse to AWS, directly mirroring the scale and compliance rigor required for this team's current cloud initiative. By engineering automated ETL pipelines with Python, PySpark, and Apache Airflow, she processed 5TB of daily transaction data and reduced reporting latency by 40%. Sarah's success in navigating complex data governance structures makes her an immediate asset for driving this team's AWS migration goals."
-
-                            ========================
-                            🔴 Q&A USAGE RULES (CRITICAL)
-                            ========================
-                            - The resume is the PRIMARY source of truth for experience.
-                            - The technical interview Q&A is SECONDARY and should only be used to:
-                              • clarify depth
-                              • add supporting detail
-                              • reinforce experience already shown in the resume
-
-                            DO NOT:
-                            - Base the summary primarily on Q&A responses.
-                            - Introduce tools, systems, or concepts that are only mentioned in Q&A but not supported by the resume.
-                            - Overweight theoretical or idealized answers from Q&A.
-
-                            If there is any conflict: 👉 prioritize the resume over Q&A.
-                            The summary should reflect what the candidate has DONE, not just what they can describe.
-
-                            ========================
-                            EXPERIENCE PRIORITY RULE (CRITICAL)
-                            ========================
-
-                            Prefer accomplishments explicitly demonstrated in experience bullets over technologies listed only in the skills section.
-
-                            Favor things the candidate built, created, supported, deployed, maintained, optimized, or owned rather than technologies merely listed in a skills inventory.
-
-                            Prefer recent and recurring responsibilities over isolated projects whenever both are supported by the resume.
-
-                            When multiple experiences are relevant, prefer the experience that overlaps with the largest number of Job Description requirements and responsibilities.
-
-                            ========================
-                            OPERATIONAL OWNERSHIP RULE
-                            ========================
-
-                            Prefer recurring responsibilities and direct ownership over one-time projects or transformation initiatives.
-
-                            Unless the role is explicitly implementation-focused, prioritize evidence of day-to-day execution, production support, issue resolution, audits, compliance, platform ownership, and measurable business outcomes over project participation or consulting activities.
-
-                            ========================
-                            SKILLS SECTION
-                            ========================
-                            - EXACTLY 4 items
-                            - Prioritize the specific "Must-Have" technologies AND methodologies (e.g., Agile, Data Governance) requested in the JD.
-                            - Highly relevant + keyword-rich
-                            - Use only tools explicitly mentioned in resume/Q&A/notes
-
-                            Format:
-                            "Skill Area (Tool1, Tool2, Tool3, Tool4)"
-
-                            Years format:
-                            "X+ years, current" OR "X+ years, 2026"
-
-                            ========================
-                            🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
-                            ========================
-                            1. THE RESUME IS THE ONLY SOURCE OF TRUTH. You are strictly forbidden from copying a skill, tool, or technology from the Job Description and assigning it to the candidate unless it physically appears in their Resume or Q&A.
-                            2. DO NOT INFER OR ASSUME. If the JD asks for "Redshift" and the resume only says "AWS", you MUST NOT write "Redshift" under any circumstances. 
-                            3. DO NOT INFLATE TO MATCH THE JD. If the candidate lacks a requested skill, omit it completely. It is better to have an incomplete match than a fabricated one.
-                            4. FACT AUDIT: Before outputting the final JSON, you must verify every single tool mentioned in your SUMMARY and SKILLS. If a tool exists in the JD but not in the Resume/Q&A, you must delete it from your output.
-                            5. DO NOT ELEVATE MANAGER LANGUAGE INTO CANDIDATE EXPERIENCE. If the Job Description, Chat Notes, or Spotlight Call mention technologies, responsibilities, or business goals, you may reference them as objectives of the target role, but you MUST NOT imply that the candidate performed those activities unless supported by the resume or Q&A.
-
-                            ========================
-                            YEARS ACCURACY RULES (REALISTIC RECRUITER MODE)
-                            ========================
-                            - Use July 2026 as the current date.
-                            - STRICT MATH (DATE-DRIVEN ONLY): Calculate years strictly based on the earliest chronological date provided in the 'Professional Experience' or 'Work History' section. You MUST completely IGNORE any self-reported years of experience in the candidate's summary blurb (e.g., if their summary claims "12+ years" but their listed jobs only go back to 2019, you must calculate from 2019). Round DOWN to the nearest whole year and use the exact format "X+ years". Do not use phrases like "nearly X years". (e.g., If the job history calculates to 7 years and 10 months, output "7+ years". NEVER round up to 8+). 
-                            - Foundational skills (e.g., Python, SQL, general engineering) should get their maximum calculated years.
-                            - Advanced/Specialized tools (e.g., SageMaker, Kubernetes, Cloud Architecture) should realistically be calculated at 1-2 years less than their maximum total experience unless the resume explicitly proves Day 1 usage. 
-                            - Default to "current" if they are still working in this general technical field. Do NOT use past years (e.g., "2022"). Always bridge past experience to their current tenure.
-
-                            ========================
-                            🧠 FINAL POLISH CHECKLIST (ONE PASS ONLY)
-                            ========================
-                            Before outputting the JSON, evaluate your drafted SUMMARY and SKILLS against these 7 checks:
-                            1. SIMPLIFIED: No run-on sentences or unnecessary filler.
-                            2. HUMAN TONE: No generic claims like "highly experienced."
-                            3. TOOL DENSITY: Maximum 3 tools per sentence.
-                            4. NO REPETITION: Do not repeat verbs or concepts across sentences.
-                            5. THE PITCH: Ensure a natural, confident recruiter tone.
-                            6. CURRENT JOB: Did you explicitly name their most recent employer in Sentence 2?
-                            7. ACCURATE MATH: Did you strictly round down their years of experience and use the 'X+ years' format to prevent ATS parser flags?
-                            8. OWNERSHIP TEST: Did I emphasize what the candidate repeatedly owned and executed, rather than simply the most impressive-sounding project?
-                            9. ATS COVERAGE TEST: Did I naturally incorporate the most important technologies, responsibilities, and terminology from the Official Job Description that are supported by the resume?
-                            10. EVIDENCE TEST: Would every skill, tool, accomplishment, and responsibility in the summary survive a side-by-side comparison against the actual resume?
-                            11. JD OVERLAP TEST: Did I emphasize the experiences that provide the strongest overlap with the Official Job Description rather than simply the most impressive accomplishments?
-
-                            Output only the final, polished JSON.
-
-                            ========================
-                            OUTPUT FORMAT (STRICT)
-                            ========================
-                            Return ONLY valid JSON:
-
-                            {{
-                              "SUMMARY": "4 sentence summary following the blueprint",
-                              "SKILL1": "Skill Area (tools)",
-                              "YEARS1": "X+ years, current",
-                              "SKILL2": "Skill Area (tools)",
-                              "YEARS2": "X+ years, current",
-                              "SKILL3": "Skill Area (tools)",
-                              "YEARS3": "X+ years, current",
-                              "SKILL4": "Skill Area (tools)",
-                              "YEARS4": "X+ years, current"
-                            }}
-
-                            ========================
-                            INPUT DATA
-                            ========================
-                            Official Job Description:
-                            {Job_Description}
-
-                            Fieldglass Chat Notes:
-                            {Chat_Notes}
-
-                            Spotlight Call Transcript:
-                            {Call_Transcript}
-
-                            Technical Interview Q&A:
-                            Q1: {Question_1}
-                            A1: {Answer_1}
-                            Q2: {Question_2}
-                            A2: {Answer_2}
-                            Q3: {Question_3}
-                            A3: {Answer_3}
-                            Q4: {Question_4}
-                            A4: {Answer_4}
-                            Q5: {Question_5}
-                            A5: {Answer_5}
-
-                            Resume:
-                            {raw_text}
-                            """
-                            time.sleep(2) 
-                            summary_data = {}
-                            
-                            for attempt in range(6):
-                                if attempt == 0:
-                                    current_model = models_to_try[0]
-                                elif attempt in [1, 2]:
-                                    current_model = models_to_try[1]
-                                elif attempt in [3, 4]:
-                                    current_model = models_to_try[2]
-                                else:
-                                    current_model = models_to_try[3]
-                                
-                                try:
-                                    summary_response = client.models.generate_content(
-                                        model=current_model,
-                                        contents=summary_prompt,
-                                        config=types.GenerateContentConfig(
-                                            response_mime_type="application/json"
-                                        )
-                                    )
-                                    summary_data = repair_and_load_json(summary_response.text)
-                                    break
-                                except Exception as api_e:
-                                    if "503" in str(api_e) and attempt < 5:
-                                        time.sleep(2 ** ((attempt % 2) + 1))
-                                        continue
-                                    else:
-                                        raise api_e
-
-                            mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
-                            mapping["SKILL1"] = summary_data.get("SKILL1", "")
-                            mapping["YEARS1"] = summary_data.get("YEARS1", "")
-                            mapping["SKILL2"] = summary_data.get("SKILL2", "")
-                            mapping["YEARS2"] = summary_data.get("YEARS2", "")
-                            mapping["SKILL3"] = summary_data.get("SKILL3", "")
-                            mapping["YEARS3"] = summary_data.get("YEARS3", "")
-                            mapping["SKILL4"] = summary_data.get("SKILL4", "")
-                            mapping["YEARS4"] = summary_data.get("YEARS4", "")
-                        except Exception as e:
-                            st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
-
-                    out_file = f"Submission_FreddieMac_{name.replace(' ', '_')}.docx"
-                    process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
-                    
-                    with open(out_file, "rb") as file:
-                        btn = st.download_button(
-                            label="⬇️ Download Generated Document",
-                            data=file,
-                            file_name=out_file,
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            type="primary"
                         )
-                    
-                    st.success(f"✅ Success! Document is ready for download.")
 
+                        mapping[f"Degree{i}"] = str(
+                            edu_item.get(
+                                "Degree",
+                                "",
+                            )
+                        ).strip()
+
+                    else:
+                        mapping[f"School{i}"] = ""
+                        mapping[f"Degree{i}"] = ""
+
+                # Work History
+                for i in range(1, 8):
+                    if i <= len(experience):
+                        role = experience[i - 1]
+
+                        mapping[f"Company{i}"] = (
+                            role.get(
+                                "Company",
+                                "",
+                            )
+                        )
+
+                        mapping[f"Title{i}"] = (
+                            role.get(
+                                "Title",
+                                "",
+                            )
+                        )
+
+                        mapping[f"Bullets{i}"] = clean_bullets(
+                            role.get(
+                                "Bullets",
+                                [],
+                            )
+                        )
+
+                        mapping[f"Environment{i}"] = (
+                            role.get(
+                                "Environment",
+                                "",
+                            )
+                        )
+
+                        mapping[f"Dates{i}"] = (
+                            role.get(
+                                "Dates",
+                                "",
+                            )
+                        )
+
+                    else:
+                        mapping[f"Company{i}"] = ""
+                        mapping[f"Title{i}"] = ""
+                        mapping[f"Bullets{i}"] = ""
+                        mapping[f"Environment{i}"] = ""
+                        mapping[f"Dates{i}"] = ""
+
+                # ====================================================
+                # GENERATE WORD DOCUMENT
+                # ====================================================
+
+                safe_name = (
+                    re.sub(
+                        r"[^A-Za-z0-9_\-]+",
+                        "_",
+                        name,
+                    ).strip("_")
+                    or "Candidate"
+                )
+
+                out_file = (
+                    f"Submission_FreddieMac_{safe_name}.docx"
+                )
+
+                process_freddie_word_doc(
+                    TEMPLATE_FILENAME,
+                    mapping,
+                    vetting_pairs,
+                    out_file,
+                )
+
+                with open(
+                    out_file,
+                    "rb",
+                ) as file:
+                    st.download_button(
+                        label="⬇️ Download Generated Document",
+                        data=file,
+                        file_name=out_file,
+                        mime=(
+                            "application/vnd.openxmlformats-"
+                            "officedocument.wordprocessingml.document"
+                        ),
+                        type="primary",
+                    )
+
+                st.success(
+                    "✅ Freddie Mac submission is ready."
+                )
+
+            except Exception as e:
+                st.error(
+                    f"❌ Freddie Mac processing failed: {str(e)}"
+                )
+
+            finally:
+                if (
+                    resume_path
+                    and os.path.exists(resume_path)
+                ):
                     try:
                         os.remove(resume_path)
-                    except:
+                    except Exception:
                         pass
-
-                except Exception as e:
-                    st.error(f"❌ Process Failed: {str(e)}")
 
 
 # ====================================================================
