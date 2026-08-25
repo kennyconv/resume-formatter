@@ -2982,17 +2982,41 @@ CRITICAL:
   or any other variation.
 - If the calculated value is blank, do not invent a total-years figure.
 
-There are TWO simultaneous goals:
+There are THREE sequential audiences for this submission:
 
-1. MAXIMIZE THE CHANCE THAT THE CANDIDATE ADVANCES THROUGH THE INITIAL
-   FREDDIE/MSP SHORTLISTING PROCESS.
+1. VNDLY / AUTOMATED MATCHING
+   Make the candidate's genuine match to Freddie's highest-priority
+   requirements easy for an automated matching system to detect.
 
-2. IF SHORTLISTED, MAKE IT EASY FOR THE FREDDIE MAC HIRING MANAGER TO
-   IMMEDIATELY SEE WHY THE CANDIDATE DESERVES AN INTERVIEW.
+2. MSP HUMAN SHORTLIST REVIEW
+   Assume an MSP recruiter understands the requisition and staffing process
+   but may NOT have the hiring manager's depth of technical knowledge.
+   The MSP reviewer should be able to determine within approximately
+   20-30 seconds:
+   - Does this candidate clearly possess Freddie's most important Must Haves?
+   - Is the required specialized experience genuinely demonstrated?
+   - Is the required business/domain background present?
+   - Is there concrete evidence behind the keywords?
+   - Is there any obvious reason NOT to shortlist the candidate?
 
-The initial shortlisting process may involve VNDLY matching, MSP human review,
-or a combination. Therefore optimize for BOTH structured skill matching and
-fast human review.
+3. FREDDIE MAC HIRING MANAGER REVIEW
+   If shortlisted, preserve enough specific technical and operational evidence
+   for the hiring manager to immediately understand the candidate's depth and
+   want to interview them.
+
+DUAL-AUDIENCE WRITING PRINCIPLE:
+- Do NOT dumb down or remove meaningful technical evidence.
+- Instead, TRANSLATE specialized technical work into clear functional language
+  that an MSP recruiter can understand, then support it with the exact
+  technologies, methodologies, and domain terminology that matter to Freddie.
+- The MSP recruiter should understand WHY the experience is relevant without
+  needing to understand every underlying technology.
+- The hiring manager should still see HOW the candidate performed the work and
+  which technologies were actually used.
+- Optimize for:
+  clear match first,
+  technical proof second,
+  promotional language never.
 
 ======================================================================
 HIERARCHY OF ROLE REQUIREMENTS
@@ -3041,9 +3065,22 @@ Do not engage in keyword stuffing.
 SUMMARY — EXACTLY 4 SENTENCES
 ======================================================================
 
-Write exactly FOUR sentences as one paragraph.
+Write exactly FOUR sentences as ONE paragraph.
 
-Sentence 1 — ANCHOR
+The Summary serves TWO human readers in sequence:
+
+1. An MSP recruiter who knows Freddie's requirements but may not be deeply
+   technical.
+2. The Freddie Mac hiring manager who can evaluate the technical depth.
+
+The first half of the Summary must make the shortlist decision easy.
+The second half must provide the concrete proof that preserves hiring-manager
+credibility.
+
+----------------------------------------------------------------------
+Sentence 1 — MSP MATCH ANCHOR
+----------------------------------------------------------------------
+
 - Use the candidate's FIRST NAME.
 - Use the candidate's actual functional professional identity when possible.
   Do not relabel a Data Engineer as a Data Scientist solely because that is
@@ -3053,46 +3090,142 @@ Sentence 1 — ANCHOR
   that EXACT value for TOTAL CAREER EXPERIENCE only.
 - Never independently calculate or alter the total-years figure.
 - CRITICAL GRAMMAR RULE: The total-career experience figure must NOT be written
-  in a way that grammatically implies the candidate has that same number of
-  years with every skill named later in the sentence.
-- Do NOT write constructions such as:
+  in a way that implies the candidate has that same number of years with every
+  skill named later in the sentence.
+- Do NOT write:
   "7+ years of experience in Python, SQL, and Excel"
   unless EACH named skill independently supports 7+ years.
 - Prefer:
   "7+ years of professional experience, including 4+ years of Python scripting
   and extensive SQL and Excel data analysis"
   when the individual skills have different tenures.
-- It is also acceptable to state only the total-career figure in Sentence 1 and
-  describe the Must-Have skills without attaching years to them.
-- Immediately connect the candidate to the highest-priority Freddie Must Haves.
+- Give the MSP reviewer an immediate checklist-level view of the candidate's
+  match to Freddie's highest-priority requirements.
+- Prioritize approximately 2-4 of the most important supported Must Have
+  competencies rather than trying to mention everything.
+- Keep this sentence understandable without requiring deep technical knowledge.
 
-Sentence 2 — STRONGEST PROOF
+----------------------------------------------------------------------
+Sentence 2 — SPECIALIZED MATCH IN PLAIN ENGLISH
+----------------------------------------------------------------------
+
 - Use the current/most-recent employer when it provides strong relevant proof.
 - HOWEVER, if an earlier employer provides materially stronger evidence for
   Freddie's central need, use that stronger experience instead.
-- Show an actual accomplishment, recurring responsibility, or hands-on duty.
+- Explain the candidate's most unusually relevant experience in clear
+  functional language.
+- Focus first on WHAT the candidate actually did and WHY it is relevant to
+  Freddie's need.
+- Do not require the MSP reviewer to interpret specialized technical jargon to
+  understand the match.
+- If a specialized technical concept is important, translate its practical
+  meaning.
 
-Sentence 3 — EXECUTION / CONTEXT
+Example principle:
+
+Instead of relying only on:
+"parsed bounding boxes, labels, confidence scores, and metadata"
+
+prefer a construction such as:
+"worked directly with appraisal PDFs and property images, validating
+information extracted by computer vision models against the source documents"
+
+when that is supported by the resume.
+
+The technical specifics can then appear in Sentence 3.
+
+----------------------------------------------------------------------
+Sentence 3 — TECHNICAL / OPERATIONAL PROOF
+----------------------------------------------------------------------
+
+- Now provide the concrete technical proof behind the plain-English match.
 - Explain HOW the relevant work was performed.
-- Naturally incorporate the important tools/methodologies/domain terminology.
-- Emphasize scale, complexity, production ownership, validation, testing,
-  operational support, or measurable impact when the resume supports it.
-- Maximum 3 named tools in this sentence.
+- Naturally incorporate Freddie's most important exact technologies,
+  methodologies, operational concepts, or domain terminology when supported.
+- Favor demonstrated hands-on use over standalone skills-list mentions.
+- Emphasize production ownership, validation, testing, troubleshooting,
+  reconciliation, scale, measurable impact, or operational responsibility when
+  relevant.
+- Use technical terminology where it adds evidence rather than complexity.
+- Do NOT create a dense keyword list.
+- Normally use no more than 4 material named technologies/tools in this
+  sentence. A fifth is allowed only when necessary to describe one coherent
+  workflow accurately.
 
-Sentence 4 — IMMEDIATE VALUE
+----------------------------------------------------------------------
+Sentence 4 — DOMAIN + IMMEDIATE VALUE
+----------------------------------------------------------------------
+
+- Tie together the strongest remaining evidence that increases confidence in
+  the shortlist decision.
+- When Freddie requires or strongly values domain experience such as mortgage,
+  financial services, appraisal, capital markets, fixed income, ServiceNow
+  IRM/GRC, etc., make that domain connection explicit when genuinely supported.
 - State the specific value the candidate's demonstrated experience indicates
   they can provide to THIS Freddie role.
-- Keep it evidence based and grounded in specific prior execution.
+- The conclusion should make the candidate's relevance obvious rather than
+  merely praise the candidate.
+- Keep it evidence based and grounded in prior execution.
+- Do not say "meets the requirements", "great fit", "ideal candidate",
+  "strong candidate", or similar evaluative conclusions.
 - Do not mention city, onsite requirement, interview availability, rate,
   authorization, or sponsorship.
 
-STYLE:
+======================================================================
+MSP TRANSLATION RULE
+======================================================================
+
+For specialized technical experience:
+
+PLAIN-LANGUAGE RELEVANCE FIRST -> TECHNICAL PROOF SECOND.
+
+The Summary should answer both:
+
+"What does this experience mean for the work Freddie needs done?"
+
+and
+
+"What specific evidence proves the candidate can do it?"
+
+Do not assume that an MSP reviewer understands why a technology is relevant
+merely because the technology name appears.
+
+Do not remove important technical terminology simply to make the Summary
+easier to read.
+
+Translate the relevance; preserve the evidence.
+
+======================================================================
+VETTING-ANSWER INTERACTION
+======================================================================
+
+If official Freddie Supplier Vetting Questions exist:
+
+- Assume the MSP reviewer may read those responses before or alongside the
+  Summary.
+- Do NOT waste Summary space repeating detailed vetting answers.
+- Use the Summary to make the CONCLUSION of the candidate's match immediately
+  visible.
+- Let the vetting answers provide additional depth and confirmation.
+- Candidate-supplied vetting responses remain secondary evidence and may not
+  override contradictory resume evidence.
+
+======================================================================
+STYLE
+======================================================================
+
 - Human recruiter voice.
 - Direct, factual, concise.
-- Evidence over praise. Let the candidate's actual experience demonstrate fit.
+- Evidence over praise.
+- Clear enough for a knowledgeable staffing professional who is not a subject
+  matter expert in the underlying technology.
+- Technically credible enough for the Freddie hiring manager.
+- Do NOT make the Summary sound simplistic or generic merely to accommodate
+  the MSP reader.
 - Do NOT use promotional or generic recruiter language such as:
   "highly accomplished"
   "highly experienced"
+  "highly skilled"
   "strong background"
   "excellent fit"
   "ideal candidate"
@@ -3112,13 +3245,31 @@ STYLE:
 - Do not simply restate the JD.
 - When stating total professional experience, use the conservative format
   "X+ years" based on completed years as of the CURRENT DATE above.
-  Example: 7 years and 10 months must be written as "7+ years", NOT
-  "over 7 years", "nearly 8 years", or "8+ years".
 - TOTAL EXPERIENCE VS. SKILL TENURE:
   A total-career figure such as "7+ years" describes the candidate's overall
   professional experience only. Never allow sentence grammar to convert that
   number into claimed tenure for named skills whose evidence supports fewer
   years.
+
+FINAL SUMMARY TEST:
+
+Before returning the Summary, ask:
+
+1. Could an MSP recruiter who understands the requisition but is not deeply
+   technical explain in plain English WHY this candidate should be shortlisted?
+
+2. Can that reviewer quickly identify Freddie's most important supported
+   Must Haves without searching through technical prose?
+
+3. Does the Summary provide concrete evidence behind those claims rather than
+   merely saying the candidate is qualified?
+
+4. Would the Freddie hiring manager still see meaningful technical,
+   operational, and domain-specific depth?
+
+5. Is every candidate claim defensible against the resume?
+
+If any answer is no, revise the Summary before returning it.
 
 ======================================================================
 SKILLS TABLE — EXACTLY 4 HIGH-SIGNAL ROWS WHEN SUPPORTED
@@ -3126,18 +3277,54 @@ SKILLS TABLE — EXACTLY 4 HIGH-SIGNAL ROWS WHEN SUPPORTED
 
 The template has four Skills rows.
 
-PRIMARY STRATEGY:
-- Start from Freddie's highest-priority Must Have competency groups in
-  "must_have_competency_groups".
-- Build each Skills row around one high-signal Freddie competency group.
-- Consolidate related skills logically.
-- Prefer EXACT Freddie terminology when it is supported by the candidate.
+The Skills table serves as the MSP reviewer's FASTEST VISUAL CHECKLIST of the
+candidate's match to Freddie's requisition.
 
-EXAMPLE:
-"Python & Computer Vision (Python, OpenCV, PyTorch)"
-"Data & Analytics (SQL, Snowflake, JSON)"
-"Image Analytics & Model Output Validation"
-"Mortgage / Financial Services"
+PRIMARY STRATEGY:
+- Start from Freddie's highest-priority supported Must Haves.
+- Use the four rows to make the strongest genuine Freddie requirements
+  immediately visible.
+- Prefer Freddie's exact terminology when supported by the candidate.
+- Write labels so a nontechnical MSP recruiter can compare them directly
+  against Freddie's Must Have / Required Qualifications language.
+- Keep labels short, specific, and easy to scan.
+- Do not make the reviewer decode a vague umbrella category to determine
+  whether a Must Have is present.
+- Do not bury a critical Freddie Must Have among several less-important tools
+  inside parentheses.
+- A Skills row should communicate ONE clear shortlist signal.
+- Technical detail in parentheses is useful only when it strengthens or proves
+  that signal.
+- The Skills table is not intended to summarize the candidate's entire career.
+  It is a four-row shortlist checklist.
+
+MSP-SCAN PRIORITY:
+
+When multiple truthful Skills-row options exist, prefer the row that lets an
+MSP reviewer most quickly answer:
+"Does this candidate have the thing Freddie specifically asked for?"
+
+For example, prefer a clear label such as:
+"Computer Vision & Image Analytics (OpenCV, TensorFlow)"
+
+over a broad label such as:
+"Advanced Data Technologies (Python, OpenCV, TensorFlow, JSON)"
+
+when Computer Vision / Image Analytics is what Freddie specifically requires.
+
+Likewise, prefer:
+"Mortgage / Financial Services Data"
+
+over:
+"Domain Expertise"
+
+when Freddie specifically requires mortgage or financial-services experience.
+
+IMPORTANT:
+- This does NOT mean blindly copying Freddie's requirements.
+- Every label must still be supported by candidate evidence.
+- Do not manufacture a missing Must Have merely to create a visually perfect
+  checklist.
 
 CANDIDATE-EVIDENCE RULE:
 - A row may contain ONLY skills, tools, methodologies, or domain expertise
@@ -3332,6 +3519,37 @@ If either answer reveals a misleading result:
 
 Never solve an overstatement problem by creating a new material
 understatement.
+
+======================================================================
+FINAL MSP / HIRING-MANAGER SKILLS CHECK
+======================================================================
+
+After the accuracy audit above, review the four Skills rows as a SET.
+
+Ask:
+
+1. If an MSP recruiter looked ONLY at these four rows and Freddie's Must Have
+   requirements, would the candidate's strongest genuine matches be obvious?
+
+2. Are Freddie's most important supported requirements named directly enough
+   that the reviewer does not need to interpret a vague category?
+
+3. Did any broad or impressive-sounding secondary competency consume a row
+   that would be better used for a more important Freddie Must Have?
+
+4. Does each row still contain enough specificity to be meaningful to the
+   hiring manager?
+
+5. Are the four rows complementary rather than redundant?
+
+If a row is accurate but unnecessarily vague, rename it more directly using
+Freddie's terminology when supported.
+
+If a row is accurate but substantially less important than another supported
+Freddie Must Have, replace it with the higher-priority supported competency.
+
+Never sacrifice truthfulness or the strict YEARS rules merely to improve
+scanability.
 
 ======================================================================
 OFFICIAL FREDDIE VETTING ANSWERS
