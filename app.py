@@ -238,6 +238,74 @@ def delete_paragraph(paragraph):
     p.getparent().remove(p)
     paragraph._p = paragraph._element = None
 
+def collapse_extra_blank_paragraphs(doc):
+    """
+    Collapse consecutive empty BODY paragraphs to a single blank paragraph.
+
+    This is intentionally conservative:
+    - Only operates on top-level document-body paragraphs.
+    - Does NOT touch paragraphs inside tables.
+    - Does NOT remove page-break or section-break paragraphs.
+    - Preserves one intentional blank paragraph between sections.
+    """
+
+    body = doc.element.body
+    previous_was_blank = False
+
+    for element in list(body):
+
+        # A table or other non-paragraph element breaks the blank-paragraph run.
+        if not element.tag.endswith("}p"):
+            previous_was_blank = False
+            continue
+
+        # ------------------------------------------------------------
+        # DO NOT TOUCH STRUCTURAL PARAGRAPHS
+        # ------------------------------------------------------------
+
+        # Preserve section breaks.
+        if element.xpath(".//w:sectPr"):
+            previous_was_blank = False
+            continue
+
+        # Preserve explicit page/column/line breaks.
+        if element.xpath(".//w:br"):
+            previous_was_blank = False
+            continue
+
+        # Preserve drawings/images/shapes.
+        if (
+            element.xpath(".//w:drawing")
+            or element.xpath(".//w:pict")
+            or element.xpath(".//w:object")
+        ):
+            previous_was_blank = False
+            continue
+
+        # ------------------------------------------------------------
+        # DETERMINE WHETHER PARAGRAPH IS VISUALLY EMPTY
+        # ------------------------------------------------------------
+
+        text_nodes = element.xpath(".//w:t")
+        text = "".join(
+            node.text or ""
+            for node in text_nodes
+        ).strip()
+
+        is_blank = not text
+
+        # ------------------------------------------------------------
+        # COLLAPSE ONLY CONSECUTIVE BLANKS
+        # ------------------------------------------------------------
+
+        if is_blank:
+            if previous_was_blank:
+                body.remove(element)
+            else:
+                previous_was_blank = True
+        else:
+            previous_was_blank = False
+
 def process_word_doc(temp_path, mapping, out_path):
     doc = docx.Document(temp_path)
     
@@ -400,6 +468,10 @@ def process_word_doc(temp_path, mapping, out_path):
             delete_paragraph(p)
         except:
             pass
+
+    # Collapse extra blank lines created when optional sections/tables were removed.
+    collapse_extra_blank_paragraphs(doc)
+    
     doc.save(out_path)
     return out_path
 
@@ -2023,6 +2095,9 @@ def process_freddie_word_doc(
             delete_paragraph(p)
         except Exception:
             pass
+
+    # Collapse extra blank lines created when optional Freddie sections were removed.
+    collapse_extra_blank_paragraphs(doc)
 
     doc.save(out_path)
 
@@ -5988,6 +6063,9 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
                 for p in cell.paragraphs:
                     apply_strict_formatting(p)
 
+    # Collapse extra blank body paragraphs left by removed/empty sections.
+    collapse_extra_blank_paragraphs(doc)
+    
     doc.save(output_path)
 def deloitte_app():
     TEMPLATE_FILENAME = "Deloitte_Template.docx"
