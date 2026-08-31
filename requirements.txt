@@ -6,3 +6,4 @@ pypdf>=6.9.2
 pdf2docx
 pdfservices-sdk
 pandas
+st-gsheets-connection
