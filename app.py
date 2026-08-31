@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+from streamlit_gsheets import GSheetsConnection
 from google import genai
 from google.genai import types
 import docx
@@ -2425,8 +2426,8 @@ def freddie_mac_app():
 
     st.header("📝 Freddie Mac Requisition")
 
-    # Freddie ONLY: VNDLY/API operational tracker.
-    # Fannie/Deloitte/other client sheet logic remains untouched.
+    # Freddie ONLY: private authenticated connection to the VNDLY/API
+    # Google Sheet. Fannie/Deloitte/other client sheet logic remains untouched.
     SHEET_URL = (
         "https://docs.google.com/spreadsheets/d/"
         "1yMQmqYRl_wa6ynXZrORCMOFwHRPwC2GVFKCTGzMfAe4/"
@@ -2436,11 +2437,24 @@ def freddie_mac_app():
     @st.cache_data(ttl=600)
     def load_freddie_reqs(url):
         try:
-            base_url = url.split("/edit")[0]
-            csv_url = base_url + "/export?format=csv&gid=0"
-            df = pd.read_csv(csv_url)
+            conn = st.connection(
+                "gsheets",
+                type=GSheetsConnection,
+            )
+
+            df = conn.read(
+                spreadsheet=url,
+                worksheet="VNDLY Jobs",
+                ttl=600,
+            )
+
             return df.fillna("")
-        except Exception:
+
+        except Exception as e:
+            st.error(
+                "❌ Unable to load the private Freddie Mac VNDLY sheet. "
+                f"{str(e)}"
+            )
             return pd.DataFrame()
 
     df_reqs = load_freddie_reqs(SHEET_URL)
