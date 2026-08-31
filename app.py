@@ -1194,13 +1194,22 @@ def fred_analyze_requisition(
     job_description,
     msp_notes="",
     spotlight_transcript="",
+    vndly_context=None,
 ):
     """
     Analyze the Freddie requisition ONCE and return structured job intelligence.
 
-    Cached by the JD/notes/transcript so Streamlit does not re-call Gemini
+    Freddie-only design:
+    - Official VNDLY JD + structured VNDLY fields establish formal requirements.
+    - Dated Spotlight / MSP notes establish current manager emphasis and changes.
+    - Internal Notes provide recruiter context, but cannot manufacture requirements.
+    - Operational staffing noise is deliberately separated from selection intelligence.
+
+    Cached by the JD/notes/transcript/context so Streamlit does not re-call Gemini
     whenever a recruiter types into another field.
     """
+    vndly_context = vndly_context or {}
+
     if not job_description or not str(job_description).strip():
         return {
             "target_title": "",
@@ -1209,12 +1218,45 @@ def fred_analyze_requisition(
             "required_requirements": [],
             "preferred_requirements": [],
             "domain_requirements": [],
-            "manager_priorities": [],
+            "current_manager_priorities": [],
+            "selection_feedback": [],
+            "role_clarifications": [],
+            "role_evolution": [],
             "deemphasized_or_negated_requirements": [],
             "supplier_vetting_questions": [],
         }
 
     vetting_hint = fred_extract_vetting_block(job_description)
+
+    # Only the role-relevant structured VNDLY fields are sent to Gemini here.
+    # Competition/admin fields remain available in the app but do not become
+    # candidate requirements.
+    matching_context = {
+        "job_id": vndly_context.get("job_id", ""),
+        "job_title": vndly_context.get("job_title", ""),
+        "resource_manager": vndly_context.get("resource_manager", ""),
+        "organization_unit": vndly_context.get("organization_unit", ""),
+        "cost_center": vndly_context.get("cost_center", ""),
+        "workday_cost_center": vndly_context.get("workday_cost_center", ""),
+        "job_category": vndly_context.get("job_category", ""),
+        "min_experience": vndly_context.get("min_experience", ""),
+        "max_experience": vndly_context.get("max_experience", ""),
+        "must_have_skills": vndly_context.get("must_have_skills", ""),
+        "nice_to_have_skills": vndly_context.get("nice_to_have_skills", ""),
+        "work_site_name": vndly_context.get("work_site_name", ""),
+        "city": vndly_context.get("city", ""),
+        "state": vndly_context.get("state", ""),
+        "time_type": vndly_context.get("time_type", ""),
+        "mnpi": vndly_context.get("mnpi", ""),
+        "internal_notes": vndly_context.get("internal_notes", ""),
+    }
+
+    matching_context_json = json.dumps(
+        matching_context,
+        indent=2,
+        ensure_ascii=False,
+        default=str,
+    )
 
     prompt = f"""
 Return a valid JSON object ONLY.
@@ -1229,64 +1271,156 @@ job intelligence that will later be used for candidate matching.
 SOURCE HIERARCHY
 ======================================================================
 
-You are receiving:
+You are receiving FOUR kinds of role intelligence:
 
 1. OFFICIAL VNDLY JOB DESCRIPTION
-2. MSP / VNDLY NOTES, if present
-3. SPOTLIGHT CALL TRANSCRIPT, if present
+2. STRUCTURED VNDLY JOB FIELDS
+3. DATED MSP / VNDLY NOTES and SPOTLIGHT CALL TRANSCRIPTS
+4. INTERNAL RECRUITER NOTES, if present
 
-For OFFICIAL MUST-HAVE IDENTIFICATION:
+Use them differently.
 
-- First look for Freddie's explicitly labeled "Must Have Qualifications",
-  "Must Have", "Must-Have", or equivalent section.
-- Treat explicitly labeled Must Haves as the primary formal matching criteria.
-- Classify requirements at the INDIVIDUAL CLAUSE level, even when multiple
-  requirements appear inside Freddie's "Must Have Qualifications" paragraph.
+FORMAL REQUIREMENTS:
+- The Official VNDLY Job Description and populated structured VNDLY
+  Must Have Skills / Nice To Have Skills / experience fields establish formal
+  job requirements.
+- Structured "Must Have Skills" are formal requirements when populated.
+- Structured "Nice To Have Skills" are preferred requirements when populated.
+- Do NOT promote a Nice To Have into a Must Have.
+- First look in the JD for Freddie's explicitly labeled "Must Have
+  Qualifications", "Must Have", "Must-Have", or equivalent section.
+- Treat explicitly labeled Must Haves as primary formal matching criteria.
+- Classify requirements at the INDIVIDUAL CLAUSE level, even when several
+  requirements appear inside one paragraph.
 - Wording such as "preferred", "nice to have", "a plus", "desired", or
-  "preferred but not required" MUST be placed under preferred_requirements,
-  even if that sentence appears physically inside a section labeled
-  "Must Have Qualifications".
-- Only requirements expressed as required, must have, minimum, required
-  experience, or otherwise clearly mandatory may appear in
-  explicit_must_have_requirements.
-- Do NOT promote Preferred, Nice-to-Have, or optional items into Must Haves.
-- If there is no explicit Must Have section, derive the core required
-  competencies from Required Qualifications and the central responsibilities.
+  "preferred but not required" belongs under preferred_requirements even if
+  physically located inside a Must Have paragraph.
+- Only clearly mandatory items may appear in explicit_must_have_requirements.
+- If there is no explicit Must Have section, derive core required competencies
+  from Required Qualifications and central recurring responsibilities.
 
-For ACTUAL HIRING-MANAGER EMPHASIS:
+ACTUAL HIRING-MANAGER / SELECTION EMPHASIS:
+- Spotlight calls and role-relevant MSP/VNDLY clarifications can reveal which
+  formal requirements matter most in practice.
+- Give especially high weight to explicit feedback explaining WHY prior
+  candidates were not shortlisted, did not advance, or failed interviews, and
+  what future submissions must demonstrate.
+- Examples of high-signal selection intelligence include:
+  "too IT-PM heavy", "needs stronger Angular", "lacked technical depth",
+  "must be able to explain technologies on the resume", "mortgage required",
+  "business operations PM is the critical requirement", or "model building is
+  not the focus".
+- If the manager explicitly says a JD item is not needed, outdated, optional,
+  incorrectly stated, or no longer relevant, place it under
+  deemphasized_or_negated_requirements.
+- Do NOT silently erase formal JD requirements. Keep formal requirements and
+  current manager priorities as separate concepts.
 
-- Spotlight call information and MSP clarifications can identify which formal
-  requirements matter most in practice.
-- If the hiring manager explicitly says a JD item is not needed, outdated,
-  optional, or incorrectly stated, place that item under
-  "deemphasized_or_negated_requirements".
-- Do NOT silently erase formal JD requirements. Keep formal Must Haves and
-  manager priorities as separate concepts.
+======================================================================
+RECENCY / ROLE-EVOLUTION RULE — CRITICAL
+======================================================================
+
+The MSP/VNDLY Notes and Spotlight Call Transcript may contain multiple dated
+entries over the lifecycle of one requisition.
+
+- Treat the date attached to each entry as meaningful.
+- When two entries conflict, a NEWER explicit hiring-manager clarification or
+  selection-feedback statement normally represents the current direction.
+- Do NOT let an older Spotlight statement override a newer manager/MSP
+  clarification.
+- When a newer update merely reports scheduling or staffing activity and does
+  NOT change the candidate profile, it must NOT override older substantive role
+  guidance.
+- Capture material changes over time in role_evolution.
+- current_manager_priorities must represent what appears to matter NOW after
+  considering chronology.
+- role_clarifications should capture concise current clarifications such as
+  "40% UI / 60% backend" or "business operations PM, not IT PM".
+- selection_feedback should capture evidence about why prior submissions or
+  interviewees did or did not advance.
+
+======================================================================
+OPERATIONAL-NOISE FILTER — CRITICAL
+======================================================================
+
+MSP/VNDLY notes mix job-selection intelligence with staffing-process updates.
+
+Do NOT turn any of the following into candidate requirements unless the wording
+explicitly changes or clarifies the desired candidate profile:
+
+- manager OOO / availability
+- interview scheduling or placeholders
+- debrief scheduling
+- shortlisting deadlines by themselves
+- offer status / offer processing
+- candidate counts
+- positions filled / slots added
+- keeping candidates warm
+- supplier administration
+- vendor distribution timing
+- role hold / closure risk
+- routine follow-up status
+- billing/rate administration
+
+A sentence such as "interviews scheduled Monday" is operational noise.
+
+A sentence such as "manager rejected candidates because they were too
+backend-heavy and now requires stronger Angular" is HIGH-SIGNAL selection
+intelligence.
+
+======================================================================
+INTERNAL NOTES RULE
+======================================================================
+
+Internal Notes are recruiter context, not an authoritative Freddie source.
+
+Allowed:
+- use them to resolve ambiguity,
+- surface known recruiter context,
+- improve emphasis when consistent with official/manager evidence.
+
+Not allowed:
+- manufacture a formal requirement,
+- override an explicit hiring-manager statement with speculation,
+- assign an unsupported skill to the role merely because an internal note
+  speculates about it.
+
+======================================================================
+STRUCTURED VNDLY CONTEXT RULE
+======================================================================
+
+The structured VNDLY fields may help interpret the role.
+
+- Job Title, Min/Max Experience, Must Have Skills, Nice To Have Skills are
+  direct matching inputs.
+- Organization Unit, Cost Center, Workday Cost Center, Job Category, Work Site,
+  Time Type, and MNPI are CONTEXTUAL evidence only.
+- Contextual metadata may help interpret an ambiguous JD, but it cannot create
+  a candidate requirement absent from formal or manager guidance.
+- Resource Manager is identification/context only.
 
 ======================================================================
 MUST-HAVE COMPETENCY GROUPS
 ======================================================================
 
 Create up to FOUR logical competency groups representing the highest-signal
-Must Have requirements.
+current Must Have requirements.
 
-Examples of good grouping:
-
+Examples:
 "Application Development (Python, Java, Spring Boot)"
 "Data & Analytics (SQL, Snowflake, JSON)"
 "ServiceNow Testing & ATF"
 "Mortgage / Financial Services"
 
 Rules:
-
 - Group closely related Freddie requirements together.
 - Preserve Freddie's exact terminology wherever practical.
 - Do not invent a technology or competency.
-- These are JOB requirements only. Do not evaluate whether a candidate has
-  them in this step.
+- These are JOB requirements only. Do not evaluate a candidate in this step.
 - A group may contain technologies, methodologies, domain expertise, or
   operational competencies.
-- Rank the groups from most important to least important.
+- Rank groups using the current requirement hierarchy after applying substantive
+  dated manager clarifications.
 
 Return each group as:
 {{
@@ -1296,6 +1430,20 @@ Return each group as:
 }}
 
 ======================================================================
+ROLE EVOLUTION FORMAT
+======================================================================
+
+Only include material changes or clarifications.
+
+Each role_evolution item must be:
+{{
+    "date": "YYYY-MM-DD or best available date",
+    "change": "Concise description of the substantive change/clarification"
+}}
+
+Do NOT add routine operational updates to role_evolution.
+
+======================================================================
 SUPPLIER VETTING QUESTIONS — ZERO INVENTION
 ======================================================================
 
@@ -1303,8 +1451,7 @@ Extract ONLY supplier vetting questions/instructions actually supplied by
 Freddie/MSP in the Official Job Description.
 
 Rules:
-
-- Preserve the substantive wording and original order.
+- Preserve substantive wording and original order.
 - Remove only leading numbering such as "1." or "Question 1:".
 - Correcting obvious whitespace is allowed.
 - Do NOT rewrite, improve, expand, split, or invent questions.
@@ -1332,9 +1479,7 @@ Return ONLY:
 
 {{
   "target_title": "",
-  "explicit_must_have_requirements": [
-    ""
-  ],
+  "explicit_must_have_requirements": [""],
   "must_have_competency_groups": [
     {{
       "name": "",
@@ -1342,37 +1487,36 @@ Return ONLY:
       "reason": ""
     }}
   ],
-  "required_requirements": [
-    ""
+  "required_requirements": [""],
+  "preferred_requirements": [""],
+  "domain_requirements": [""],
+  "current_manager_priorities": [""],
+  "selection_feedback": [""],
+  "role_clarifications": [""],
+  "role_evolution": [
+    {{
+      "date": "",
+      "change": ""
+    }}
   ],
-  "preferred_requirements": [
-    ""
-  ],
-  "domain_requirements": [
-    ""
-  ],
-  "manager_priorities": [
-    ""
-  ],
-  "deemphasized_or_negated_requirements": [
-    ""
-  ],
-  "supplier_vetting_questions": [
-    ""
-  ]
+  "deemphasized_or_negated_requirements": [""],
+  "supplier_vetting_questions": [""]
 }}
 
 ======================================================================
 INPUTS
 ======================================================================
 
+STRUCTURED VNDLY JOB FIELDS:
+{matching_context_json}
+
 OFFICIAL VNDLY JOB DESCRIPTION:
 {job_description}
 
-MSP / VNDLY NOTES:
+DATED MSP / VNDLY NOTES:
 {msp_notes}
 
-SPOTLIGHT CALL TRANSCRIPT:
+DATED SPOTLIGHT CALL TRANSCRIPT:
 {spotlight_transcript}
 """
 
@@ -1385,7 +1529,10 @@ SPOTLIGHT CALL TRANSCRIPT:
         "required_requirements",
         "preferred_requirements",
         "domain_requirements",
-        "manager_priorities",
+        "current_manager_priorities",
+        "selection_feedback",
+        "role_clarifications",
+        "role_evolution",
         "deemphasized_or_negated_requirements",
         "supplier_vetting_questions",
     }
@@ -1398,7 +1545,6 @@ SPOTLIGHT CALL TRANSCRIPT:
             f"Missing fields: {', '.join(sorted(missing_keys))}"
         )
 
-    # Defensive normalization.
     data["supplier_vetting_questions"] = fred_normalize_question_list(
         data.get("supplier_vetting_questions", [])
     )
@@ -1408,11 +1554,35 @@ SPOTLIGHT CALL TRANSCRIPT:
         "required_requirements",
         "preferred_requirements",
         "domain_requirements",
-        "manager_priorities",
+        "current_manager_priorities",
+        "selection_feedback",
+        "role_clarifications",
         "deemphasized_or_negated_requirements",
     ]:
         value = data.get(list_key, [])
         data[list_key] = value if isinstance(value, list) else []
+
+    role_evolution = data.get("role_evolution", [])
+    if not isinstance(role_evolution, list):
+        role_evolution = []
+
+    normalized_evolution = []
+    for item in role_evolution:
+        if not isinstance(item, dict):
+            continue
+
+        change = str(item.get("change", "") or "").strip()
+        change_date = str(item.get("date", "") or "").strip()
+
+        if change:
+            normalized_evolution.append(
+                {
+                    "date": change_date,
+                    "change": change,
+                }
+            )
+
+    data["role_evolution"] = normalized_evolution
 
     groups = data.get("must_have_competency_groups", [])
     if not isinstance(groups, list):
@@ -1444,6 +1614,7 @@ SPOTLIGHT CALL TRANSCRIPT:
     data["must_have_competency_groups"] = normalized_groups
 
     return data
+
 
 def fred_standardize_dates(date_str):
     """
@@ -2254,26 +2425,21 @@ def freddie_mac_app():
 
     st.header("📝 Freddie Mac Requisition")
 
+    # Freddie ONLY: VNDLY/API operational tracker.
+    # Fannie/Deloitte/other client sheet logic remains untouched.
     SHEET_URL = (
         "https://docs.google.com/spreadsheets/d/"
-        "1swKaDhGdlmO0ILv7tngkRCbsK-7jF89cdCpf5bypzwM/"
-        "edit?usp=sharing"
+        "1yMQmqYRl_wa6ynXZrORCMOFwHRPwC2GVFKCTGzMfAe4/"
+        "edit?gid=0"
     )
 
     @st.cache_data(ttl=600)
     def load_freddie_reqs(url):
         try:
             base_url = url.split("/edit")[0]
-
-            csv_url = (
-                base_url
-                + "/export?format=csv&gid=2061875560"
-            )
-
+            csv_url = base_url + "/export?format=csv&gid=0"
             df = pd.read_csv(csv_url)
-
             return df.fillna("")
-
         except Exception:
             return pd.DataFrame()
 
@@ -2284,63 +2450,103 @@ def freddie_mac_app():
 
     if not df_reqs.empty:
         for idx, row in df_reqs.iterrows():
-            req_id = str(
-                row.get("ID", "")
-            ).replace(".0", "")
+            req_id = str(row.get("Job ID", "")).replace(".0", "").strip()
+            title = str(row.get("Job Title", "")).strip()
+            manager = str(row.get("Resource Manager", "")).strip()
+            status = str(row.get("Status", "")).strip()
 
-            vms_id = str(
-                row.get("VMS ID", "")
-            ).replace(".0", "")
+            if not req_id:
+                continue
 
-            title = str(
-                row.get("Job Title", "")
-            ).strip()
+            desc = str(row.get("Official Job Description", ""))
+            notes = str(row.get("VNDLY / MSP Notes", ""))
+            transcript = str(row.get("Spotlight Call Transcript", ""))
+            internal_notes = str(row.get("Internal Notes", ""))
 
-            manager = str(
-                row.get("Manager", "")
-            ).strip()
-
-            desc = str(
-                row.get("Description", "")
-            )
-
-            # Keep your current Google Sheet column name so you do NOT
-            # have to restructure the sheet today. It simply represents
-            # Freddie MSP/VNDLY notes inside this app.
-            notes = str(
-                row.get("VNDLY Notes", "")
-            )
-
-            transcript = str(
-                row.get("Spotlight Transcript", "")
-            )
-
-            option_parts = [
-                req_id,
-                vms_id,
-                title,
-                manager,
-            ]
-
+            # Clean VNDLY-native dropdown: Job ID - Job Title - Resource Manager.
+            option_parts = [req_id, title, manager]
             option_str = " - ".join(
-                [
-                    p.strip()
-                    for p in option_parts
-                    if p and p.strip()
-                ]
+                [part.strip() for part in option_parts if part and part.strip()]
             )
 
             if option_str and option_str != "-":
                 options.append(option_str)
 
                 req_mapping[option_str] = {
-                    "req_id": req_id,
-                    "vms_id": vms_id,
-                    "title": title,
-                    "manager": manager,
+                    "job_id": req_id,
+                    "status": status,
+                    "job_title": title,
+                    "resource_manager": manager,
+                    "job_posted_date": str(row.get("Job Posted Date", "")),
+                    "distributed_to_convergenz": str(
+                        row.get("Distributed to Convergenz", "")
+                    ),
+                    "distribution_lag_hours": row.get(
+                        "Distribution Lag (Hours)",
+                        "",
+                    ),
+                    "distribution_timing": str(
+                        row.get("Distribution Timing", "")
+                    ),
+                    "open_positions": row.get("Open Positions", ""),
+                    "total_positions": row.get("Total Positions", ""),
+                    "pending_positions": row.get("Pending Positions", ""),
+                    "max_submissions_per_vendor": row.get(
+                        "Max Submissions / Vendor",
+                        "",
+                    ),
+                    "total_supplier_candidates": row.get(
+                        "Total Supplier Candidates",
+                        "",
+                    ),
+                    "min_suppliers_submitted": row.get(
+                        "Min Suppliers Submitted",
+                        "",
+                    ),
+                    "closed_date": str(row.get("Closed Date", "")),
+                    "reason_for_ending": str(row.get("Reason for Ending", "")),
+                    "organization_unit": str(
+                        row.get("Organization Unit", "")
+                    ),
+                    "cost_center": str(row.get("Cost Center", "")),
+                    "workday_cost_center": str(
+                        row.get("Workday Cost Center", "")
+                    ),
+                    "work_site_name": str(row.get("Work Site Name", "")),
+                    "city": str(row.get("City", "")),
+                    "state": str(row.get("State", "")),
+                    "start_date": str(row.get("Start Date", "")),
+                    "end_date": str(row.get("End Date", "")),
+                    "min_experience": row.get("Min Experience", ""),
+                    "max_experience": row.get("Max Experience", ""),
+                    "must_have_skills": str(row.get("Must Have Skills", "")),
+                    "nice_to_have_skills": str(
+                        row.get("Nice To Have Skills", "")
+                    ),
+                    "rate": row.get("Rate", ""),
+                    "max_bill_rate": row.get("Max Bill Rate", ""),
+                    "created_on": str(row.get("Created On", "")),
+                    "job_approved_date": str(
+                        row.get("Job Approved Date", "")
+                    ),
+                    "status_date": str(row.get("Status Date", "")),
+                    "job_category": str(row.get("Job Category", "")),
+                    "time_type": str(row.get("Time Type", "")),
+                    "single_sourced": str(row.get("Single Sourced", "")),
+                    "intake_call_completed": str(
+                        row.get("Intake Call Completed", "")
+                    ),
+                    "supplier_call_conducted": str(
+                        row.get("Supplier Call Conducted", "")
+                    ),
+                    "mnpi": str(row.get("MNPI", "")),
+                    "last_api_refresh": str(
+                        row.get("Last API Refresh", "")
+                    ),
                     "desc": desc,
                     "notes": notes,
                     "transcript": transcript,
+                    "internal_notes": internal_notes,
                 }
 
     if "fred_jd" not in st.session_state:
@@ -2351,6 +2557,9 @@ def freddie_mac_app():
 
     if "fred_trans" not in st.session_state:
         st.session_state.fred_trans = ""
+
+    if "fred_internal_notes" not in st.session_state:
+        st.session_state.fred_internal_notes = ""
 
     def update_fred_jd_text():
         selected = st.session_state.get(
@@ -2382,10 +2591,15 @@ def freddie_mac_app():
                 req.get("transcript", "").strip()
             )
 
+            st.session_state.fred_internal_notes = (
+                req.get("internal_notes", "").strip()
+            )
+
         else:
             st.session_state.fred_jd = ""
             st.session_state.fred_notes = ""
             st.session_state.fred_trans = ""
+            st.session_state.fred_internal_notes = ""
 
     selected_req = st.selectbox(
         "🔍 Select a Freddie Mac Requisition (Type to search):",
@@ -2393,6 +2607,89 @@ def freddie_mac_app():
         key="fred_req_selector",
         on_change=update_fred_jd_text,
     )
+
+    selected_vndly_context = (
+        req_mapping.get(selected_req, {})
+        if selected_req != "None"
+        else {}
+    )
+
+    # Operational VNDLY metadata is useful to the recruiter, but most of it
+    # should not become candidate claims. Keep it in a collapsed snapshot.
+    if selected_vndly_context:
+        with st.expander(
+            "📊 VNDLY Requisition Snapshot",
+            expanded=False,
+        ):
+            snapshot_lines = []
+
+            def add_snapshot(label, value):
+                value = str(value or "").strip()
+                if value:
+                    snapshot_lines.append(f"**{label}:** {value}")
+
+            add_snapshot("Job ID", selected_vndly_context.get("job_id"))
+            add_snapshot("Status", selected_vndly_context.get("status"))
+            add_snapshot("Job Title", selected_vndly_context.get("job_title"))
+            add_snapshot(
+                "Resource Manager",
+                selected_vndly_context.get("resource_manager"),
+            )
+            add_snapshot(
+                "Organization Unit",
+                selected_vndly_context.get("organization_unit"),
+            )
+            add_snapshot(
+                "Cost Center",
+                selected_vndly_context.get("cost_center"),
+            )
+            add_snapshot(
+                "Work Site",
+                selected_vndly_context.get("work_site_name"),
+            )
+            add_snapshot(
+                "Location",
+                ", ".join(
+                    [
+                        value
+                        for value in [
+                            str(selected_vndly_context.get("city", "")).strip(),
+                            str(selected_vndly_context.get("state", "")).strip(),
+                        ]
+                        if value
+                    ]
+                ),
+            )
+            add_snapshot(
+                "Positions",
+                (
+                    f"{selected_vndly_context.get('open_positions', '')} open / "
+                    f"{selected_vndly_context.get('total_positions', '')} total"
+                ).strip(),
+            )
+            add_snapshot(
+                "Max Submissions / Vendor",
+                selected_vndly_context.get("max_submissions_per_vendor"),
+            )
+            add_snapshot(
+                "Total Supplier Candidates",
+                selected_vndly_context.get("total_supplier_candidates"),
+            )
+            add_snapshot(
+                "Distributed to Convergenz",
+                selected_vndly_context.get("distributed_to_convergenz"),
+            )
+            add_snapshot(
+                "End Date",
+                selected_vndly_context.get("end_date"),
+            )
+            add_snapshot(
+                "Max Bill Rate",
+                selected_vndly_context.get("max_bill_rate"),
+            )
+
+            if snapshot_lines:
+                st.markdown("\n\n".join(snapshot_lines))
 
     Job_Description = st.text_area(
         "1. Official VNDLY Job Description:",
@@ -2402,16 +2699,29 @@ def freddie_mac_app():
 
     MSP_Notes = st.text_area(
         "2. VNDLY / MSP Notes (Optional):",
-        height=100,
+        height=120,
         key="fred_notes",
     )
 
     Call_Transcript = st.text_area(
         "3. Spotlight Call Transcript "
         "(Optional - Hiring Manager Priority):",
-        height=100,
+        height=120,
         key="fred_trans",
     )
+
+    # Internal Notes remain recruiter context. They are visible/editable so the
+    # recruiter knows exactly what context is being supplied to the analyzer.
+    Internal_Notes = st.text_area(
+        "4. Internal Notes (Optional - Recruiter Context):",
+        height=80,
+        key="fred_internal_notes",
+    )
+
+    # Use the currently displayed Internal Notes value in the analysis context,
+    # allowing a recruiter to add/adjust context without editing the source sheet.
+    selected_vndly_context = dict(selected_vndly_context)
+    selected_vndly_context["internal_notes"] = Internal_Notes
 
     # ================================================================
     # STRUCTURED REQUISITION ANALYSIS
@@ -2424,7 +2734,10 @@ def freddie_mac_app():
         "required_requirements": [],
         "preferred_requirements": [],
         "domain_requirements": [],
-        "manager_priorities": [],
+        "current_manager_priorities": [],
+        "selection_feedback": [],
+        "role_clarifications": [],
+        "role_evolution": [],
         "deemphasized_or_negated_requirements": [],
         "supplier_vetting_questions": [],
     }
@@ -2446,6 +2759,7 @@ def freddie_mac_app():
                     Job_Description,
                     MSP_Notes,
                     Call_Transcript,
+                    selected_vndly_context,
                 )
 
         except Exception as e:
@@ -2467,6 +2781,47 @@ def freddie_mac_app():
                 "explicit_must_have_requirements"
             ]:
                 st.markdown(f"- {requirement}")
+
+            current_priorities = req_analysis.get(
+                "current_manager_priorities",
+                [],
+            )
+            if current_priorities:
+                st.markdown("**Current Manager Priorities:**")
+                for item in current_priorities:
+                    st.markdown(f"- {item}")
+
+            clarifications = req_analysis.get(
+                "role_clarifications",
+                [],
+            )
+            if clarifications:
+                st.markdown("**Latest Role Clarifications:**")
+                for item in clarifications:
+                    st.markdown(f"- {item}")
+
+            selection_feedback = req_analysis.get(
+                "selection_feedback",
+                [],
+            )
+            if selection_feedback:
+                st.markdown("**Selection / Interview Feedback:**")
+                for item in selection_feedback:
+                    st.markdown(f"- {item}")
+
+            evolution = req_analysis.get(
+                "role_evolution",
+                [],
+            )
+            if evolution:
+                st.markdown("**Role Evolution:**")
+                for item in evolution:
+                    if isinstance(item, dict):
+                        date_label = str(item.get("date", "") or "").strip()
+                        change = str(item.get("change", "") or "").strip()
+                        if change:
+                            prefix = f"{date_label}: " if date_label else ""
+                            st.markdown(f"- {prefix}{change}")
 
             groups = req_analysis.get(
                 "must_have_competency_groups",
@@ -3072,19 +3427,32 @@ DUAL-AUDIENCE WRITING PRINCIPLE:
 HIERARCHY OF ROLE REQUIREMENTS
 ======================================================================
 
-Use this priority order:
+Use the ALREADY-ANALYZED structured requisition intelligence.
 
-1. Freddie's explicitly stated Must Have Qualifications
-2. Hiring-manager priorities / Spotlight Call clarification
-3. Detailed Required Qualifications and core recurring responsibilities
-4. Preferred / Nice-to-Have qualifications
+For EMPHASIS and PRESENT-DAY selection strategy, use this order:
 
-IMPORTANT:
-- A Spotlight Call can clarify emphasis or explicitly negate an outdated JD
-  item.
-- Never highlight a requirement the hiring manager explicitly said is not
-  needed.
-- Formal Must Haves should still receive strong coverage when truthful.
+1. Latest explicit hiring-manager correction / selection feedback that
+   substantively changes or clarifies what future candidates must demonstrate
+2. Current hiring-manager priorities / latest substantive Spotlight or MSP
+   clarification
+3. Freddie's formal Must Have Qualifications and populated structured VNDLY
+   Must Have Skills
+4. Detailed Required Qualifications and core recurring responsibilities
+5. Preferred / Nice-to-Have qualifications
+
+CRITICAL:
+- "Latest" matters only when the newer information is substantive role or
+  selection guidance. A newer scheduling/offer/OOO update does NOT override an
+  older substantive manager requirement.
+- Use selection_feedback and role_clarifications to understand why previous
+  candidates failed and what must be made obvious in a new submission.
+- Use role_evolution to understand how the target profile changed over time.
+- Never highlight a requirement the manager explicitly negated.
+- Formal Must Haves still require strong truthful coverage unless explicitly
+  negated or clarified by authoritative manager guidance.
+- Operational staffing noise must have ZERO influence on candidate claims.
+- Internal recruiter notes may guide emphasis but may not manufacture a
+  requirement or override explicit Freddie guidance.
 
 The requisition has ALREADY been analyzed into structured job intelligence.
 Do not independently reinvent its hierarchy.
