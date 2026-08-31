@@ -2469,6 +2469,12 @@ def freddie_mac_app():
             manager = str(row.get("Resource Manager", "")).strip()
             status = str(row.get("Status", "")).strip()
 
+            # MSP-only requisitions that were never distributed to Convergenz
+            # remain in the VNDLY tracker but must not appear in the
+            # Resume Formatter requisition dropdown.
+            if status.lower() in {"don't have", "dont have"}:
+                continue
+
             if not req_id:
                 continue
 
