@@ -5923,7 +5923,7 @@ FULL ORIGINAL RESUME
                         fred_calculate_skill_years_from_roles(
                             experience,
                             role_indexes,
-                            CURRENT_DATE,
+                            current_date_obj,
                         )
                     )
 
