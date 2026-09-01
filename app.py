@@ -1668,8 +1668,9 @@ def fred_skill_is_explicitly_named_in_job(skill_name, structured_req):
     Conservative check for whether a catalogue skill is explicitly named in
     current formal requisition intelligence.
     """
+    structured_req = fred_coerce_structured_req(structured_req)
     req_text = json.dumps(
-        structured_req or {},
+        structured_req,
         ensure_ascii=False,
     ).casefold()
 
@@ -1714,6 +1715,31 @@ def fred_skill_is_explicitly_named_in_job(skill_name, structured_req):
     return any(term and term in req_text for term in terms)
 
 
+def fred_coerce_structured_req(value):
+    """
+    Return Freddie structured requisition intelligence as a dict.
+
+    The tailoring prompt historically stores this object as a JSON string for
+    interpolation into Gemini prompts. VNDLY ranking helpers, however, need the
+    actual dict. Accept either form so a future refactor cannot recreate the
+    "'str' object has no attribute 'get'" package failure.
+    """
+    if isinstance(value, dict):
+        return value
+
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return {}
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    return {}
+
+
 def fred_skill_aliases_for_requirement(skill_name):
     """Aliases used to map catalogue skills back to Freddie's requirement text."""
     key = fred_normalize_skill_name(skill_name)
@@ -1749,12 +1775,18 @@ def fred_skill_matches_text(skill_name, text_value):
 
 def fred_skill_requirement_group(skill_name, structured_req):
     """Return the 0-based must-have competency group that names this skill."""
-    groups = (structured_req or {}).get("must_have_competency_groups", []) or []
+    structured_req = fred_coerce_structured_req(structured_req)
+    groups = structured_req.get("must_have_competency_groups", []) or []
     for group_index, group in enumerate(groups):
+        if not isinstance(group, dict):
+            continue
+        terms = group.get("terms", []) or []
+        if not isinstance(terms, list):
+            terms = []
         group_text = " ".join(
             [
                 str(group.get("name", "") or ""),
-                " ".join(str(x) for x in (group.get("terms", []) or [])),
+                " ".join(str(x) for x in terms),
                 str(group.get("reason", "") or ""),
             ]
         )
@@ -1765,9 +1797,14 @@ def fred_skill_requirement_group(skill_name, structured_req):
 
 def fred_skill_requirement_term_position(skill_name, structured_req):
     """Position of the skill inside its highest-priority must-have group."""
-    groups = (structured_req or {}).get("must_have_competency_groups", []) or []
+    structured_req = fred_coerce_structured_req(structured_req)
+    groups = structured_req.get("must_have_competency_groups", []) or []
     for group_index, group in enumerate(groups):
+        if not isinstance(group, dict):
+            continue
         terms = group.get("terms", []) or []
+        if not isinstance(terms, list):
+            terms = []
         for term_index, term in enumerate(terms):
             if fred_skill_matches_text(skill_name, str(term)):
                 return group_index, term_index
@@ -1781,9 +1818,14 @@ def fred_skill_clause_strength(skill_name, structured_req):
     Prefer skills named in focused/dedicated mandatory clauses over tools buried
     in a long multi-tool list. Higher is stronger.
     """
+    structured_req = fred_coerce_structured_req(structured_req)
     clauses = []
     for key in ["explicit_must_have_requirements", "required_requirements", "domain_requirements"]:
-        clauses.extend((structured_req or {}).get(key, []) or [])
+        value = structured_req.get(key, []) or []
+        if isinstance(value, list):
+            clauses.extend(value)
+        elif isinstance(value, str) and value.strip():
+            clauses.append(value)
 
     best = 0
     aliases = fred_skill_aliases_for_requirement(skill_name)
@@ -2225,6 +2267,8 @@ def fred_build_vndly_candidate_package(
     """
     Create the Freddie-only VNDLY submission summary and skill selections.
     """
+    structured_req = fred_coerce_structured_req(structured_req)
+
     catalog = fred_load_vndly_skill_catalog()
 
     if not catalog:
@@ -2338,7 +2382,7 @@ CRITICAL EXPERIENCE RULE:
   threshold.
 
 STRUCTURED REQUISITION INTELLIGENCE:
-{structured_req}
+{json.dumps(structured_req, indent=2, ensure_ascii=False)}
 
 IMPORTANT JOB-INTELLIGENCE RULE:
 - Formal requirements are NOT limited to structured VNDLY Must/Nice skill tags.
@@ -2577,6 +2621,11 @@ Return ONLY:
         package_prompt,
     )
 
+    if not isinstance(raw_package, dict):
+        raise RuntimeError(
+            "Gemini returned an invalid VNDLY package payload."
+        )
+
     vndly_summary = fred_clean_vndly_submission_summary(
         raw_package.get("VNDLY_SUMMARY", ""),
         candidate_name,
@@ -2634,11 +2683,14 @@ Return ONLY:
 
 
 def fred_skill_names(items):
-    return [
-        str(item.get("skill_name", "")).strip()
-        for item in (items or [])
-        if str(item.get("skill_name", "")).strip()
-    ]
+    names = []
+    for item in (items or []):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("skill_name", "") or "").strip()
+        if name:
+            names.append(name)
+    return names
 
 
 def fred_build_submission_email_body(
@@ -6632,7 +6684,7 @@ FULL ORIGINAL RESUME
                             API_KEY,
                             name,
                             raw_text,
-                            structured_req,
+                            req_analysis,
                             selected_vndly_context,
                             vetting_for_ai,
                             final_summary,
