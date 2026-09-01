@@ -95,6 +95,15 @@ def clean_school(name):
     return name.strip()
 
 def standardize_dates(date_str):
+    """
+    Normalize only date detail that is actually present in the source.
+
+    IMPORTANT:
+    - Never invent a month when the source provides only a year.
+    - "2018 - 2020" must remain year-only.
+    - "2018 - Present" must remain year-only on the start side.
+    - Month/year inputs may still be standardized normally.
+    """
     month_map = {
         "01": "Jan", "02": "Feb", "03": "Mar", "04": "Apr", "05": "May", "06": "Jun",
         "07": "Jul", "08": "Aug", "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dec",
@@ -112,7 +121,16 @@ def standardize_dates(date_str):
     return date_str
 
 def format_peraton_dates(date_str):
-    """Enforces MM/YYYY to MM/YYYY or Present for Peraton"""
+    """
+    Format Peraton dates without inventing missing month detail.
+
+    Examples:
+    - "10/2019 - 07/2024" -> "10/2019 to 07/2024"
+    - "2019 - 2024"       -> "2019 to 2024"
+    - "2019 - Present"    -> "2019 to Present"
+
+    If the original resume gives only a year, keep only the year.
+    """
     if not date_str:
         return ""
     # Swap common hyphens/dashes to the required " to "
@@ -779,6 +797,7 @@ def fannie_mae_app():
                     2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line. (e.g., If the resume says "DUPONT, DELAWARE TCS", you must output exactly "DUPONT").
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - For 'Dates', preserve the date precision from the original resume. If a role lists only years, return only those years (for example, "2018 - 2020"). NEVER invent January, "01", or any other month. If month + year are present, preserve them; mixed-precision ranges must stay mixed.
                         - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
@@ -1414,6 +1433,185 @@ def fred_filter_exact_req_recommendations(raw_items, allowed_items, catalog):
 FREDDIE_VNDLY_SKILL_CAP = 8
 
 
+def fred_extract_work_history_text(raw_resume_text):
+    """
+    Return the portion of the resume most likely to contain dated work history.
+    Used only as a conservative evidence-strength check for VNDLY skill ranking.
+    """
+    text = str(raw_resume_text or "")
+    upper = text.upper()
+
+    start_markers = [
+        "PROFESSIONAL EXPERIENCE",
+        "WORK EXPERIENCE",
+        "WORK HISTORY",
+        "EMPLOYMENT HISTORY",
+        "EXPERIENCE",
+    ]
+
+    start = None
+    for marker in start_markers:
+        idx = upper.find(marker)
+        if idx != -1 and (start is None or idx < start):
+            start = idx
+
+    if start is None:
+        return text
+
+    work = text[start:]
+
+    # Education/certification sections usually mark the end of work history.
+    upper_work = work.upper()
+    end_candidates = []
+    for marker in [
+        "\nEDUCATION",
+        "\nACADEMIC",
+        "\nCERTIFICATIONS",
+        "\nCERTIFICATION",
+    ]:
+        idx = upper_work.find(marker)
+        if idx > 0:
+            end_candidates.append(idx)
+
+    if end_candidates:
+        work = work[:min(end_candidates)]
+
+    return work
+
+
+def fred_skill_work_history_evidence(skill_name, raw_resume_text):
+    """
+    Conservative deterministic check for whether a VNDLY skill is evidenced in
+    the dated work-history portion of the resume rather than only in a summary
+    or top-level skills inventory.
+
+    Returns:
+      2 = clear dated work-history evidence
+      1 = only broader/semantic domain evidence
+      0 = no meaningful dated work-history evidence found
+    """
+    work = fred_extract_work_history_text(raw_resume_text)
+    work_fold = work.casefold()
+    skill = str(skill_name or "").strip()
+    key = fred_normalize_skill_name(skill)
+
+    if not skill:
+        return 0
+
+    alias_map = {
+        "java": ["java"],
+        "j2ee": ["j2ee", "java ee", "jee"],
+        "java database connectivity (jdbc)": ["jdbc", "java database connectivity"],
+        "java servlets": ["servlet", "servlets"],
+        "javaserver pages (jsp)": ["jsp", "jsps", "javaserver pages"],
+        "spring framework": ["spring framework", "spring "],
+        "spring boot": ["spring boot"],
+        "relational database": [
+            "relational database", "oracle", "db2", "sql server", "mysql",
+            "postgresql", "sybase", "jdbc", "sql queries", "sql statements"
+        ],
+        "relational databases": [
+            "relational database", "oracle", "db2", "sql server", "mysql",
+            "postgresql", "sybase", "jdbc", "sql queries", "sql statements"
+        ],
+        "junit testing": ["junit"],
+        "mockito": ["mockito"],
+        "git": ["git", "gitlab", "github"],
+        "jenkins (software)": ["jenkins"],
+        "docker (software)": ["docker"],
+        "maven": ["maven"],
+        "gradle": ["gradle"],
+        "eclipse ide": ["eclipse"],
+        "python": ["python"],
+        "financial services": [
+            "bank", "banking", "financial", "investment", "portfolio",
+            "securit", "trading", "trade ", "retirement", "securities",
+            "asset", "capital markets"
+        ],
+    }
+
+    aliases = alias_map.get(key)
+
+    if aliases:
+        if any(alias.casefold() in work_fold for alias in aliases):
+            return 2
+        return 0
+
+    # Generic fallback: strip catalogue parentheticals and test the meaningful
+    # core phrase in the dated work history.
+    core = re.sub(r"\([^)]*\)", "", skill).strip().casefold()
+
+    if core and len(core) >= 4 and core in work_fold:
+        return 2
+
+    # Domain-like catalogue values can be supported semantically even if the
+    # exact catalogue phrase is not present.
+    domain_terms = {
+        "mortgage": ["mortgage", "appraisal", "loan", "uad"],
+        "capital markets": ["capital markets", "securities", "trading", "trade "],
+        "banking": ["bank", "banking"],
+        "insurance": ["insurance"],
+    }
+
+    for domain_key, terms in domain_terms.items():
+        if domain_key in key and any(term in work_fold for term in terms):
+            return 1
+
+    return 0
+
+
+def fred_rerank_vndly_skills_by_evidence(
+    ranked_skills,
+    raw_resume_text,
+    cap=FREDDIE_VNDLY_SKILL_CAP,
+):
+    """
+    Re-rank the AI's candidate pool with a deterministic evidence-strength layer.
+
+    A required skill with clear dated work-history evidence must outrank a
+    same-priority skill supported only by the Professional Summary/skills list.
+    Exact structured tags remain highest priority because they are directly
+    attached to the requisition.
+    """
+    category_priority = {
+        "exact_structured_must": 0,
+        "required_job_intelligence": 1,
+        "exact_structured_nice": 2,
+        "preferred_job_intelligence": 3,
+        "additional_high_value": 4,
+    }
+
+    rescored = []
+
+    for original_index, item in enumerate(ranked_skills or []):
+        category = str(
+            item.get("source_category", "")
+        ).strip().lower()
+
+        evidence_strength = fred_skill_work_history_evidence(
+            item.get("skill_name", ""),
+            raw_resume_text,
+        )
+
+        copy_item = dict(item)
+        copy_item["work_history_evidence_strength"] = evidence_strength
+
+        rescored.append(
+            (
+                category_priority.get(category, 99),
+                -evidence_strength,
+                original_index,
+                copy_item,
+            )
+        )
+
+    rescored.sort(key=lambda row: (row[0], row[1], row[2]))
+
+    # Within formal required skills, summary-only technical mentions should not
+    # consume a scarce slot ahead of clearly evidenced required skills.
+    return [row[3] for row in rescored[:cap]]
+
+
 def fred_build_final_ranked_vndly_skills(
     raw_ranked_items,
     selected_must_items,
@@ -1460,8 +1658,8 @@ def fred_build_final_ranked_vndly_skills(
     seen = set()
 
     for raw_item in raw_ranked_items:
-        if len(output) >= cap:
-            break
+        # Validate the complete candidate pool here. The final hard cap is
+        # applied after deterministic work-history evidence reranking.
 
         if not isinstance(raw_item, dict):
             continue
@@ -1784,11 +1982,18 @@ Produce ONE ranked shortlist of the BEST VNDLY skills to select for this
 candidate submission.
 
 CRITICAL:
-- MAXIMUM 8 SKILLS TOTAL across ALL sources/categories combined.
-- This is a HIGH-SIGNAL shortlist, NOT a comprehensive inventory.
+- Build a ranked CANDIDATE POOL of up to 16 skills. Python will apply the final
+  hard cap of 8 after deterministic evidence-strength validation.
+- This is still a HIGH-SIGNAL candidate pool, NOT a comprehensive inventory.
 - It is completely acceptable to return fewer than 8 when fewer skills deserve
   a selection.
 - Rank every item from highest to lowest submission value.
+- IMPORTANT: A technical skill appearing only in the candidate's Professional
+  Summary or top-level skills inventory MUST NOT outrank a current Required skill
+  that is explicitly demonstrated inside dated work-history roles.
+- For example, if Docker appears only in a summary but J2EE/JDBC are explicitly
+  shown in dated roles and are current JD requirements, J2EE/JDBC must rank above
+  Docker.
 
 PRIORITY HIERARCHY:
 1. Exact structured VNDLY Must-Have skill attached to this requisition,
@@ -1846,9 +2051,11 @@ SOURCE CATEGORY must be exactly one of:
 - additional_high_value
 
 BEFORE RETURNING:
-Ask yourself: "If the recruiter could select only 8 VNDLY skills, are these the
-8 that best communicate why THIS candidate should advance for THIS req?"
-If not, remove lower-signal, redundant, generic, or merely adjacent skills.
+Ask yourself: "Which candidate-supported skills deserve to compete for the
+final 8 VNDLY selections?" Include enough high-quality Required alternatives for
+Python to make the final evidence-strength ranking. Do not omit a clearly
+work-history-evidenced Required skill merely to include a weaker summary-only
+Required skill.
 
 ======================================================================
 OUTPUT
@@ -1883,7 +2090,7 @@ Return ONLY:
             "Gemini returned no VNDLY submission summary."
         )
 
-    ranked_skills = fred_build_final_ranked_vndly_skills(
+    ranked_skill_pool = fred_build_final_ranked_vndly_skills(
         raw_package.get(
             "FINAL_RECOMMENDED_VNDLY_SKILLS",
             [],
@@ -1891,6 +2098,12 @@ Return ONLY:
         selected_must_items,
         selected_nice_items,
         catalog,
+        cap=16,
+    )
+
+    ranked_skills = fred_rerank_vndly_skills_by_evidence(
+        ranked_skill_pool,
+        raw_resume_text,
         cap=FREDDIE_VNDLY_SKILL_CAP,
     )
 
@@ -2785,10 +2998,13 @@ DATED SPOTLIGHT CALL TRANSCRIPT:
 
 def fred_standardize_dates(date_str):
     """
-    Standardize Freddie Mac work-history dates to:
+    Standardize Freddie Mac work-history dates while preserving source precision:
     MMM YYYY - MMM YYYY
-    or
     MMM YYYY - CURRENT
+    YYYY - YYYY
+    or YYYY - CURRENT when the source provides years only.
+
+    Never invent a month for a year-only source date.
 
     Examples:
     2026-02 - Current      -> FEB 2026 - CURRENT
@@ -3006,6 +3222,161 @@ def fred_calculate_total_experience(experience, current_date):
         return "<1 year"
 
     return f"{completed_years}+ years"
+
+
+def fred_role_date_interval(dates, current_date):
+    """
+    Parse a Freddie-standardized role date range into conservative month indexes.
+
+    Month/year dates use the stated month.
+    Year-only dates never invent January for display; for calculations they use
+    conservative bounds:
+      - start year only -> December of that year
+      - end year only   -> January of that year
+    This avoids overstating tenure when month precision is unknown.
+    """
+    if not dates:
+        return None
+
+    text = str(dates).strip().upper()
+    match = re.fullmatch(r"\s*(.+?)\s+-\s+(.+?)\s*", text)
+    if not match:
+        return None
+
+    month_lookup = {
+        "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+        "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
+    }
+
+    def parse_part(value, is_start):
+        value = value.strip().upper()
+
+        if value in {"CURRENT", "PRESENT"}:
+            return current_date.year, current_date.month, True
+
+        m = re.fullmatch(
+            r"(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+((?:19|20)\d{2})",
+            value,
+        )
+        if m:
+            return int(m.group(2)), month_lookup[m.group(1)], False
+
+        m = re.fullmatch(r"((?:19|20)\d{2})", value)
+        if m:
+            year = int(m.group(1))
+            # Conservative unknown-month assumptions for calculation only.
+            return year, (12 if is_start else 1), False
+
+        return None
+
+    start = parse_part(match.group(1), True)
+    end = parse_part(match.group(2), False)
+
+    if not start or not end:
+        return None
+
+    sy, sm, _ = start
+    ey, em, end_is_current = end
+
+    start_idx = sy * 12 + (sm - 1)
+    end_idx = ey * 12 + (em - 1)
+
+    if end_idx < start_idx:
+        return None
+
+    return start_idx, end_idx, end_is_current, ey
+
+
+def fred_calculate_skill_years_from_roles(
+    experience,
+    role_indexes,
+    current_date,
+):
+    """
+    Deterministically calculate one Freddie Skills-row YEARS value from only the
+    dated roles that Gemini identified as supporting the ENTIRE skill label.
+    Overlapping roles are merged so months are not double-counted.
+    """
+    if not isinstance(role_indexes, list):
+        return ""
+
+    clean_indexes = []
+    for value in role_indexes:
+        try:
+            idx = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= idx <= len(experience) and idx not in clean_indexes:
+            clean_indexes.append(idx)
+
+    if not clean_indexes:
+        return ""
+
+    intervals = []
+    latest_year = None
+    used_current = False
+
+    for idx in clean_indexes:
+        role = experience[idx - 1]
+        parsed = fred_role_date_interval(
+            role.get("Dates", ""),
+            current_date,
+        )
+        if not parsed:
+            continue
+
+        start_idx, end_idx, end_is_current, end_year = parsed
+        intervals.append((start_idx, end_idx))
+
+        if end_is_current:
+            used_current = True
+
+        if latest_year is None or end_year > latest_year:
+            latest_year = end_year
+
+    if not intervals:
+        return ""
+
+    intervals.sort()
+    merged = [list(intervals[0])]
+
+    for start_idx, end_idx in intervals[1:]:
+        last = merged[-1]
+        if start_idx <= last[1] + 1:
+            last[1] = max(last[1], end_idx)
+        else:
+            merged.append([start_idx, end_idx])
+
+    # Inclusive role months.
+    total_months = sum((end - start + 1) for start, end in merged)
+    completed_years = total_months // 12
+
+    last_used = "current" if used_current else str(latest_year or "").strip()
+
+    if completed_years < 1:
+        return f"<1 year, {last_used}" if last_used else "<1 year"
+
+    return (
+        f"{completed_years}+ years, {last_used}"
+        if last_used
+        else f"{completed_years}+ years"
+    )
+
+
+def fred_clean_skill_role_indexes(value, max_roles):
+    """Return unique valid 1-based role indexes from Gemini output."""
+    if not isinstance(value, list):
+        return []
+
+    result = []
+    for item in value:
+        try:
+            idx = int(item)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= idx <= max_roles and idx not in result:
+            result.append(idx)
+    return result
 
 
 def fred_clean_summary(summary, candidate_name):
@@ -4323,6 +4694,11 @@ ENVIRONMENT:
 
 DATES:
 - Preserve the source dates faithfully enough for later date calculations.
+- NEVER invent a month that the source resume does not provide.
+- If a role is shown only as years (for example "2018 - 2020"), return only
+  those years. Do NOT convert it to "January 2018 - January 2020", "01/2018",
+  or any other assumed month.
+- Mixed precision must also stay mixed (for example "2018 - March 2020").
 
 5. CERTIFICATIONS
 - Extract certifications into one comma-separated string.
@@ -5095,6 +5471,25 @@ CANDIDATE-EVIDENCE RULE:
 
 YEARS / LAST USED — STRICT EVIDENCE-BASED CALCULATION:
 
+For every Skills-table row, you must ALSO return SKILL#_ROLE_INDEXES containing
+the 1-based indexes from STRUCTURED ORIGINAL EXPERIENCE that support the ENTIRE
+competency label as written.
+
+ROLE-INDEX RULES:
+- Include a role index ONLY when that dated role supports every material
+  component represented by the skill label.
+- A Professional Summary or top-level skills inventory is NOT sufficient for a
+  role index.
+- Do not include a role merely because it is generally related.
+- If "Core Java & Spring Development (J2EE, Spring Boot)" is the row, each
+  supporting role index must substantively support that combined scope.
+- If Java is much older than Spring/Spring Boot, either narrow/split the row or
+  include only roles that support the full combined label.
+- Python will calculate the final YEARS value from these role indexes, merge
+  overlaps, and round down. Therefore the role indexes must be conservative and
+  evidence-based.
+- If no dated role supports the entire proposed row, do not use that row.
+
 For every Skills-table row, calculate the displayed experience conservatively
 from the dated work history.
 
@@ -5411,12 +5806,16 @@ Return ONLY:
   "SUMMARY": "",
   "SKILL1": "",
   "YEARS1": "",
+  "SKILL1_ROLE_INDEXES": [],
   "SKILL2": "",
   "YEARS2": "",
+  "SKILL2_ROLE_INDEXES": [],
   "SKILL3": "",
   "YEARS3": "",
+  "SKILL3_ROLE_INDEXES": [],
   "SKILL4": "",
   "YEARS4": "",
+  "SKILL4_ROLE_INDEXES": [],
   "BULLET_ORDER": {{
     "1": [],
     "2": [],
@@ -5506,15 +5905,38 @@ FULL ORIGINAL RESUME
                     )
 
                 # ====================================================
-                # FREDDIE-ONLY SKILL YEARS HARD CEILING
+                # FREDDIE-ONLY DETERMINISTIC SKILL YEARS
                 # ====================================================
-                # A competency/domain cannot have more years than the
-                # deterministic total professional experience.
-                for years_key in ["YEARS1", "YEARS2", "YEARS3", "YEARS4"]:
-                    summary_data[years_key] = fred_cap_skill_years(
-                        summary_data.get(years_key, ""),
-                        calculated_total_experience,
+                # Gemini identifies only the dated roles that support the ENTIRE
+                # competency label. Python performs the actual month math,
+                # merges overlaps, rounds down, and determines year last used.
+                for skill_num in range(1, 5):
+                    years_key = f"YEARS{skill_num}"
+                    role_key = f"SKILL{skill_num}_ROLE_INDEXES"
+
+                    role_indexes = fred_clean_skill_role_indexes(
+                        summary_data.get(role_key, []),
+                        len(experience),
                     )
+
+                    deterministic_skill_years = (
+                        fred_calculate_skill_years_from_roles(
+                            experience,
+                            role_indexes,
+                            CURRENT_DATE,
+                        )
+                    )
+
+                    if deterministic_skill_years:
+                        summary_data[years_key] = deterministic_skill_years
+                    else:
+                        # Conservative backward-compatible fallback if the model
+                        # fails to return usable role indexes. Still enforce the
+                        # total-career ceiling.
+                        summary_data[years_key] = fred_cap_skill_years(
+                            summary_data.get(years_key, ""),
+                            calculated_total_experience,
+                        )
 
                 # ====================================================
                 # BUILD VNDLY SUBMISSION SUMMARY + RECOMMENDED SKILLS
@@ -5947,7 +6369,7 @@ def peraton_app():
                         - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
                         - For 'Responsible', write exactly 1 sentence summarizing what the candidate was responsible for at this specific job, based on their bullets. Do NOT use the candidate's name or pronouns (he/she). Start the sentence with the exact words "Responsible for ".
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role.
-                        - For 'Dates', you MUST format the dates strictly as "MM/YYYY to MM/YYYY" (e.g., "10/2019 to 07/2024") or "MM/YYYY to Present" if it is their current position. Convert all months to their 2-digit number.
+                        - For 'Dates', preserve the date precision actually shown on the original resume. If month + year are shown, format as "MM/YYYY to MM/YYYY" (or "MM/YYYY to Present"). If ONLY years are shown, preserve them as "YYYY to YYYY" (or "YYYY to Present"). NEVER invent January, "01", or any other month when the source provides only a year. Mixed-precision dates must remain mixed rather than filling in a missing month.
                     5. Certifications: Extract active certifications into an ARRAY of strings. Do not include classes or courses taken. Keep it strictly to the certification name.
 
                     JSON Structure:
@@ -6311,6 +6733,7 @@ def capital_one_app():
                     2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - For 'Dates', preserve the date precision from the original resume. If a role lists only years, return only those years (for example, "2018 - 2020"). NEVER invent January, "01", or any other month. If month + year are present, preserve them; mixed-precision ranges must stay mixed.
                         - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
@@ -6687,6 +7110,7 @@ def adusa_app():
                     2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - For 'Dates', preserve the date precision from the original resume. If a role lists only years, return only those years (for example, "2018 - 2020"). NEVER invent January, "01", or any other month. If month + year are present, preserve them; mixed-precision ranges must stay mixed.
                         - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
@@ -7038,6 +7462,7 @@ def cbre_app():
                     2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - For 'Dates', preserve the date precision from the original resume. If a role lists only years, return only those years (for example, "2018 - 2020"). NEVER invent January, "01", or any other month. If month + year are present, preserve them; mixed-precision ranges must stay mixed.
                         - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
@@ -7393,6 +7818,7 @@ def bnsf_app():
                     2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - For 'Dates', preserve the date precision from the original resume. If a role lists only years, return only those years (for example, "2018 - 2020"). NEVER invent January, "01", or any other month. If month + year are present, preserve them; mixed-precision ranges must stay mixed.
                         - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
@@ -7736,6 +8162,7 @@ def dallas_generic_app():
                         - Return "Yes" if the resume indicates the degree is finished.
                         - Return "Pursuing" if the resume indicates ongoing study, contains the word "Pursuing", "In-progress", or lists a graduation date in the future (relative to July 2026).
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - For 'Dates', preserve the date precision from the original resume. If a role lists only years, return only those years (for example, "2018 - 2020"). NEVER invent January, "01", or any other month. If month + year are present, preserve them; mixed-precision ranges must stay mixed.
                         - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
@@ -8336,6 +8763,7 @@ def deloitte_app():
                     2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - For 'Dates', preserve the date precision from the original resume. If a role lists only years, return only those years (for example, "2018 - 2020"). NEVER invent January, "01", or any other month. If month + year are present, preserve them; mixed-precision ranges must stay mixed.
                         - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
