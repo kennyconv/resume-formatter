@@ -1625,6 +1625,8 @@ def fred_vndly_skill_family(skill_name):
 
     families = {
         "spring": {
+            "spring",
+            "java spring",
             "spring framework",
             "spring boot",
             "spring mvc",
@@ -1636,6 +1638,7 @@ def fred_vndly_skill_family(skill_name):
             "relational databases",
             "oracle",
             "db2",
+            "ibm db2",
             "microsoft sql server",
             "mysql",
             "postgresql",
@@ -1684,6 +1687,16 @@ def fred_skill_is_explicitly_named_in_job(skill_name, structured_req):
         ],
         "java servlets": ["servlet", "servlets"],
         "junit testing": ["junit"],
+        "mockito": ["mockito"],
+        "j2ee": ["j2ee", "j2ee technologies", "java ee"],
+        "java": ["java"],
+        "git": ["git"],
+        "eclipse ide": ["eclipse"],
+        "jenkins (software)": ["jenkins"],
+        "docker (software)": ["docker"],
+        "gradle": ["gradle"],
+        "db2": ["db2"],
+        "ibm db2": ["ibm db2", "db2"],
         "microsoft sql server": ["sql server"],
         "spring framework": ["spring framework"],
         "relational database": [
@@ -1701,67 +1714,151 @@ def fred_skill_is_explicitly_named_in_job(skill_name, structured_req):
     return any(term and term in req_text for term in terms)
 
 
-def fred_apply_vndly_redundancy_control(
+def fred_skill_aliases_for_requirement(skill_name):
+    """Aliases used to map catalogue skills back to Freddie's requirement text."""
+    key = fred_normalize_skill_name(skill_name)
+    aliases = {
+        "j2ee": ["j2ee", "j2ee technologies", "java ee"],
+        "java database connectivity (jdbc)": ["jdbc", "java database connectivity"],
+        "javaserver pages (jsp)": ["jsp", "javaserver pages", "java server pages"],
+        "java servlets": ["servlet", "servlets"],
+        "junit testing": ["junit"],
+        "mockito": ["mockito"],
+        "spring framework": ["spring framework"],
+        "spring boot": ["spring boot"],
+        "relational database": ["relational database", "relational databases"],
+        "financial services": ["finance background", "financial services", "financial domain"],
+        "eclipse ide": ["eclipse"],
+        "jenkins (software)": ["jenkins"],
+        "docker (software)": ["docker"],
+        "microsoft sql server": ["sql server"],
+        "ibm db2": ["ibm db2", "db2"],
+        "db2": ["db2"],
+        "git": ["git"],
+        "gradle": ["gradle"],
+        "maven": ["maven"],
+        "java": ["java"],
+    }
+    return aliases.get(key, [key])
+
+
+def fred_skill_matches_text(skill_name, text_value):
+    text_fold = str(text_value or "").casefold()
+    return any(alias and alias in text_fold for alias in fred_skill_aliases_for_requirement(skill_name))
+
+
+def fred_skill_requirement_group(skill_name, structured_req):
+    """Return the 0-based must-have competency group that names this skill."""
+    groups = (structured_req or {}).get("must_have_competency_groups", []) or []
+    for group_index, group in enumerate(groups):
+        group_text = " ".join(
+            [
+                str(group.get("name", "") or ""),
+                " ".join(str(x) for x in (group.get("terms", []) or [])),
+                str(group.get("reason", "") or ""),
+            ]
+        )
+        if fred_skill_matches_text(skill_name, group_text):
+            return group_index
+    return 99
+
+
+def fred_skill_requirement_term_position(skill_name, structured_req):
+    """Position of the skill inside its highest-priority must-have group."""
+    groups = (structured_req or {}).get("must_have_competency_groups", []) or []
+    for group_index, group in enumerate(groups):
+        terms = group.get("terms", []) or []
+        for term_index, term in enumerate(terms):
+            if fred_skill_matches_text(skill_name, str(term)):
+                return group_index, term_index
+        if fred_skill_matches_text(skill_name, str(group.get("name", "") or "")):
+            return group_index, 99
+    return 99, 99
+
+
+def fred_skill_clause_strength(skill_name, structured_req):
+    """
+    Prefer skills named in focused/dedicated mandatory clauses over tools buried
+    in a long multi-tool list. Higher is stronger.
+    """
+    clauses = []
+    for key in ["explicit_must_have_requirements", "required_requirements", "domain_requirements"]:
+        clauses.extend((structured_req or {}).get(key, []) or [])
+
+    best = 0
+    aliases = fred_skill_aliases_for_requirement(skill_name)
+
+    for clause in clauses:
+        clause_text = str(clause or "")
+        fold = clause_text.casefold()
+        if not any(alias and alias in fold for alias in aliases):
+            continue
+
+        # Dedicated requirements score higher than long tool bundles.
+        separators = clause_text.count(",") + len(re.findall(r"\band\b", fold)) + clause_text.count(";")
+        strength = max(1, 12 - separators)
+
+        # Repeated mention across formal clauses is additional signal.
+        occurrences = sum(fold.count(alias) for alias in aliases if alias)
+        strength += min(3, occurrences)
+        best = max(best, strength)
+
+    return best
+
+
+def fred_supplement_explicit_required_skills(
     ranked_skills,
     structured_req,
-    cap=FREDDIE_VNDLY_SKILL_CAP,
+    catalog,
+    raw_resume_text,
 ):
     """
-    Final Top-8 selection with a strong coverage-over-redundancy bias.
-
-    Once a skill family is represented, a second same-family skill is skipped
-    unless it is itself explicitly required. This prevents Spring Boot from
-    consuming a scarce slot after Spring Framework when an uncovered explicit
-    requirement such as JDBC/J2EE is available.
+    Deterministically add candidate-supported catalogue skills that are explicitly
+    required by the current requisition, even when Gemini omitted them from its
+    candidate pool. This protects high-signal requirements such as J2EE/JDBC.
     """
-    output = []
-    family_counts = {}
+    output = [dict(item) for item in (ranked_skills or [])]
+    seen = {
+        fred_normalize_skill_name(item.get("skill_name", ""))
+        for item in output
+    }
 
-    for item in ranked_skills or []:
-        if len(output) >= cap:
-            break
-
-        name = str(item.get("skill_name", "") or "").strip()
+    for cat_item in catalog or []:
+        name = str(cat_item.get("skill_name", "") or "").strip()
         if not name:
             continue
 
-        family = fred_vndly_skill_family(name)
-        explicit = fred_skill_is_explicitly_named_in_job(
-            name,
-            structured_req,
+        key = fred_normalize_skill_name(name)
+        if key in seen:
+            continue
+
+        if cat_item.get("catalog_tier") not in {"canonical_preferred", "compound_review"}:
+            continue
+
+        if not fred_skill_is_explicitly_named_in_job(name, structured_req):
+            continue
+
+        evidence_strength = fred_skill_work_history_evidence(name, raw_resume_text)
+        if evidence_strength <= 0:
+            continue
+
+        output.append(
+            {
+                "id": cat_item.get("id"),
+                "skill_name": name,
+                "catalog_tier": cat_item.get("catalog_tier", "canonical_preferred"),
+                "source_category": "required_job_intelligence",
+                "evidence": "Dated work-history evidence",
+                "reason": "Explicit current Freddie requirement",
+                "work_history_evidence_strength": evidence_strength,
+            }
         )
-
-        if family:
-            used = family_counts.get(family, 0)
-
-            if used >= 1 and not explicit:
-                continue
-
-            # Never let one family dominate a short eight-skill list.
-            if used >= 2:
-                continue
-
-        output.append(item)
-
-        if family:
-            family_counts[family] = family_counts.get(family, 0) + 1
+        seen.add(key)
 
     return output
 
 
-def fred_rerank_vndly_skills_by_evidence(
-    ranked_skills,
-    raw_resume_text,
-    cap=FREDDIE_VNDLY_SKILL_CAP,
-):
-    """
-    Re-rank the AI's candidate pool with a deterministic evidence-strength layer.
-
-    A required skill with clear dated work-history evidence must outrank a
-    same-priority skill supported only by the Professional Summary/skills list.
-    Exact structured tags remain highest priority because they are directly
-    attached to the requisition.
-    """
+def fred_required_skill_sort_key(item, structured_req, original_index=0):
     category_priority = {
         "exact_structured_must": 0,
         "required_job_intelligence": 1,
@@ -1769,36 +1866,166 @@ def fred_rerank_vndly_skills_by_evidence(
         "preferred_job_intelligence": 3,
         "additional_high_value": 4,
     }
+    category = str(item.get("source_category", "") or "").strip().lower()
+    group_index = fred_skill_requirement_group(item.get("skill_name", ""), structured_req)
+    clause_strength = fred_skill_clause_strength(item.get("skill_name", ""), structured_req)
+    evidence = int(item.get("work_history_evidence_strength", 0) or 0)
+    return (
+        category_priority.get(category, 99),
+        -clause_strength,
+        group_index,
+        -evidence,
+        original_index,
+    )
 
+
+def fred_apply_vndly_redundancy_control(
+    ranked_skills,
+    structured_req,
+    cap=FREDDIE_VNDLY_SKILL_CAP,
+):
+    """
+    Final Top-8 selection that balances requirement priority, distinct coverage,
+    dated evidence, and redundancy control.
+    """
+    candidates = []
+    seen = set()
+
+    for idx, item in enumerate(ranked_skills or []):
+        name = str(item.get("skill_name", "") or "").strip()
+        key = fred_normalize_skill_name(name)
+        if not name or key in seen:
+            continue
+        copy_item = dict(item)
+        copy_item["_sort_key"] = fred_required_skill_sort_key(copy_item, structured_req, idx)
+        candidates.append(copy_item)
+        seen.add(key)
+
+    if not candidates:
+        return []
+
+    # First reserve one strong candidate-supported skill for each must-have
+    # competency group so later generic tools cannot crowd out a whole requirement area.
+    selected = []
+    selected_keys = set()
+    family_counts = {}
+    groups = (structured_req or {}).get("must_have_competency_groups", []) or []
+
+    def can_add(item):
+        name = str(item.get("skill_name", "") or "").strip()
+        key = fred_normalize_skill_name(name)
+        if not name or key in selected_keys:
+            return False
+
+        family = fred_vndly_skill_family(name)
+
+        selected_names = {
+            fred_normalize_skill_name(existing.get("skill_name", ""))
+            for existing in selected
+        }
+
+        # J2EE already communicates the enterprise-Java umbrella. With only
+        # eight slots, Servlets/JSP are normally redundant once J2EE is selected;
+        # JDBC remains eligible because it adds a distinct database-connectivity
+        # screening signal.
+        if "j2ee" in selected_names and key in {
+            "java servlets",
+            "javaserver pages (jsp)",
+        }:
+            return False
+
+        if key == "j2ee" and (
+            "java servlets" in selected_names
+            or "javaserver pages (jsp)" in selected_names
+        ):
+            # Prefer the umbrella J2EE requirement over its narrower UI/server
+            # components when both are candidate-supported.
+            pass
+
+        family_caps = {
+            "spring": 1,
+            "relational_database": 1,
+            "source_control": 1,
+            "testing": 2,
+        }
+
+        if family:
+            cap_for_family = family_caps.get(family, 1)
+            if family_counts.get(family, 0) >= cap_for_family:
+                return False
+
+        return True
+
+    def add_item(item):
+        name = str(item.get("skill_name", "") or "").strip()
+        key = fred_normalize_skill_name(name)
+        selected.append(item)
+        selected_keys.add(key)
+        family = fred_vndly_skill_family(name)
+        if family:
+            family_counts[family] = family_counts.get(family, 0) + 1
+
+    for group_index in range(min(len(groups), cap)):
+        group_candidates = [
+            item for item in candidates
+            if fred_skill_requirement_group(item.get("skill_name", ""), structured_req) == group_index
+            and can_add(item)
+        ]
+        if group_candidates:
+            group_candidates.sort(key=lambda item: item["_sort_key"])
+            add_item(group_candidates[0])
+
+    # Fill the remaining slots with the strongest uncovered formal requirements.
+    for item in sorted(candidates, key=lambda x: x["_sort_key"]):
+        if len(selected) >= cap:
+            break
+        if can_add(item):
+            add_item(item)
+
+    # Reorder the chosen set by requirement priority for a clean recruiter-facing list.
+    selected.sort(
+        key=lambda item: (
+            fred_skill_requirement_term_position(
+                item.get("skill_name", ""),
+                structured_req,
+            )[0],
+            fred_skill_requirement_term_position(
+                item.get("skill_name", ""),
+                structured_req,
+            )[1],
+            item["_sort_key"],
+        )
+    )
+    for item in selected:
+        item.pop("_sort_key", None)
+    return selected[:cap]
+
+
+def fred_rerank_vndly_skills_by_evidence(
+    ranked_skills,
+    raw_resume_text,
+    structured_req=None,
+    cap=FREDDIE_VNDLY_SKILL_CAP,
+):
+    """Requirement-aware evidence reranking for the VNDLY candidate pool."""
     rescored = []
 
     for original_index, item in enumerate(ranked_skills or []):
-        category = str(
-            item.get("source_category", "")
-        ).strip().lower()
-
         evidence_strength = fred_skill_work_history_evidence(
             item.get("skill_name", ""),
             raw_resume_text,
         )
-
         copy_item = dict(item)
         copy_item["work_history_evidence_strength"] = evidence_strength
-
         rescored.append(
             (
-                category_priority.get(category, 99),
-                -evidence_strength,
-                original_index,
+                fred_required_skill_sort_key(copy_item, structured_req or {}, original_index),
                 copy_item,
             )
         )
 
-    rescored.sort(key=lambda row: (row[0], row[1], row[2]))
-
-    # Within formal required skills, summary-only technical mentions should not
-    # consume a scarce slot ahead of clearly evidenced required skills.
-    return [row[3] for row in rescored[:cap]]
+    rescored.sort(key=lambda row: row[0])
+    return [row[1] for row in rescored[:cap]]
 
 
 def fred_build_final_ranked_vndly_skills(
@@ -1945,6 +2172,43 @@ def fred_split_ranked_vndly_skills(ranked_skills):
             groups[key].append(item)
 
     return groups
+
+
+def fred_clean_vndly_submission_summary(summary, candidate_name):
+    """Deterministic cleanup for the recruiter-facing VNDLY comments summary."""
+    if not summary:
+        return ""
+
+    cleaned = re.sub(r"\s+", " ", str(summary)).strip()
+    first_name = str(candidate_name or "").strip().split()[0] if candidate_name else ""
+    last_name = str(candidate_name or "").strip().split()[-1] if candidate_name else ""
+
+    # Remove honorific constructions the model should never use in this field.
+    if last_name and first_name:
+        cleaned = re.sub(
+            rf"\b(?:Mr|Ms|Mrs|Dr)\.?\s+{re.escape(last_name)}\b",
+            first_name,
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            rf"\b(?:Mr|Ms|Mrs|Dr)\.?\s+{re.escape(candidate_name)}\b",
+            first_name,
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+
+    cleaned = re.sub(r"\b(?:Mr|Ms|Mrs|Dr)\.\s+", "", cleaned, flags=re.IGNORECASE)
+
+    # Strip a few recurring editorial tails without rewriting factual content.
+    cleaned = re.sub(
+        r",?\s+(?:which is|making (?:him|her|them))\s+(?:crucial|critical|ideal)\s+for\s+(?:this|the)\s+[^.]+\.",
+        ".",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    return cleaned.strip()
 
 
 def fred_build_vndly_candidate_package(
@@ -2108,66 +2372,101 @@ EXACT VNDLY SKILL CATALOGUE:
 {catalog_json}
 
 ======================================================================
-TASK 1 — VNDLY SUBMISSION SUMMARY
+TASK 1 — VNDLY SUBMISSION SUMMARY / COMMENTS BOX
 ======================================================================
 
-Write a concise ready-to-paste candidate submission summary for VNDLY.
+Write the short candidate snapshot that a recruiter will paste into the VNDLY
+submission Comments field. This is SEPARATE from the longer resume Summary.
 
-PURPOSE:
-This should read like a recruiter giving an MSP reviewer a quick factual reason
-to advance the candidate — not like marketing copy and not like a resume summary.
+PRIMARY GOALS — IN THIS ORDER:
+1. Help the MSP reviewer quickly recognize that the candidate satisfies the
+   highest-signal current requirements and deserves to be shortlisted.
+2. Give the hiring manager a concise, evidence-based reason to interview the
+   candidate if the submission reaches them.
 
-STRUCTURE:
-- Use 2-3 compact sentences as ONE paragraph.
-- Sentence 1: use the natural RECOMMENDED CANDIDATE POSITIONING TITLE above
-  (when populated) + deterministic total experience + most important
-  domain/technical anchor.
-- Never use an awkward VMS/rate-card title merely to mirror the requisition.
-- Sentence 2: strongest concrete evidence covering the most important current
-  requirements, preferably from recent/recurring work.
-- Optional Sentence 3: one additional differentiator only when it materially
-  strengthens the submission (for example a critical domain, required testing/
-  deployment capability, or directly relevant business context).
+MENTAL MODEL:
+The MSP may be scanning many submissions quickly. Write a compact "why this
+candidate" snapshot, NOT another executive resume summary and NOT marketing copy.
+The best version should feel like a strong recruiter condensed the most useful
+parts of the resume into the VNDLY comments box.
 
-STYLE:
-- Factual, recruiter-written, concise, and confident.
-- Preserve employer names exactly as they appear in the candidate resume. Do not
-  silently "correct", rebrand, or normalize company names from outside knowledge.
-- Prefer evidence over judgments about "fit."
-- Use exact Freddie/JD terminology when genuinely supported.
-- Make the highest-priority current requirements easy to verify quickly.
-- Mention business/domain background when it materially matters.
-- Do NOT simply repeat the formatted resume Summary.
+LENGTH / STRUCTURE:
+- 3-4 compact sentences as ONE paragraph.
+- Target roughly 80-115 words. Do not exceed 130 words.
+- Sentence 1: natural candidate positioning title + deterministic total career
+  experience + the 1-2 most important role-specific anchors.
+- Sentence 2: strongest concrete recent/repeated evidence for the manager/MSP's
+  highest-priority requirement(s). Name an employer only when it strengthens
+  credibility or gives useful scale/context.
+- Sentence 3: cover the next most important requirement cluster with concrete
+  evidence (domain, platform, content execution, testing, operations, etc.).
+- Optional Sentence 4: one final high-value differentiator only if it adds new
+  signal. Do not write a generic sales closer.
 
-BANNED SALES / FIT LANGUAGE:
-Do not use phrases such as:
-- "strongly matching"
-- "aligning perfectly"
-- "perfectly aligns"
-- "ideal fit"
-- "great fit"
-- "strong fit"
-- "well suited"
-- "well-suited"
-- "positions him/her/them"
-- "meets all requirements"
-- "directly matches Freddie Mac's requirements"
+REQUIREMENT PRIORITY:
+- Start from the CURRENT substantive requirement hierarchy in STRUCTURED
+  REQUISITION INTELLIGENCE, not from whichever technologies are most prominent
+  on the candidate's resume.
+- Highest priority: current manager/MSP/Spotlight selection guidance and why
+  prior candidates failed, when available.
+- Then formal Must Haves / required competencies / domain requirements.
+- Then explicit preferred skills only when they materially strengthen this
+  particular candidate.
+- Do not spend scarce summary space on adjacent candidate strengths that are not
+  important to the current requisition.
+- Prefer recurring responsibilities and direct hands-on execution over oversight,
+  strategy, or one-time projects unless the role specifically asks for those.
 
-Instead, state the evidence itself.
+STYLE — VERY IMPORTANT:
+- Write like an experienced recruiter sending a concise internal candidate note.
+- Use the candidate's FIRST NAME naturally after the first sentence.
+- NEVER use honorifics or formal references such as "Mr.", "Ms.", "Mrs.",
+  "Dr.", "Mr. Zaman", "Ms. Fisher", "the candidate", etc.
+- Preserve employer names exactly as they appear in the resume. Do not silently
+  correct/rebrand company names from outside knowledge.
+- Use clear business English, not consultant language or inflated adjectives.
+- Prefer factual evidence over claims about fit.
+- Keep the paragraph skimmable; avoid long comma-heavy inventory sentences.
+- Do not simply paraphrase or duplicate the formatted resume Summary.
+
+GOOD MODEL — communications example:
+"Kristin is a senior communications specialist with 18+ years of experience
+ developing business communications, change communications, and audience-focused
+ content across technology and government environments. At CGI, she managed
+ enterprise communication channels and repositories including SharePoint for a
+ 7,000+ employee technology organization and supported high-volume communications
+ workstreams. She has independently created newsletters, presentations, web and
+ digital content, implementation communications, and executive materials while
+ translating complex business and technical information into clear,
+ audience-specific messaging. Her hands-on content production, SharePoint
+ experience, operational coordination, and technology-change communications
+ support the need for a seasoned individual contributor who can independently
+ execute communications deliverables."
+
+The example demonstrates the desired DENSITY and recruiter tone. Do not copy its
+wording or force its structure onto technical roles.
+
+BANNED / AVOID:
+- "strongly matching", "aligning perfectly", "perfectly aligns", "ideal fit",
+  "great fit", "strong fit", "well suited", "well-suited"
+- "positions him/her/them", "meets all requirements", "directly matches"
+- "possesses extensive", "possesses solid expertise", "brings a wealth of"
+- "crucial for this role", "critical for this role", "data-intensive role"
+- "immediate asset", "Day 1", "hit the ground running"
+- Honorifics: "Mr.", "Ms.", "Mrs.", "Dr."
+- Generic closing judgments when the evidence itself is stronger
 
 OTHER RULES:
-- Never invent or infer experience the resume/vetting responses do not show.
-- Avoid generic claims such as "possesses solid expertise" when a more concrete
-  statement of what the candidate actually did is available.
-- Avoid editorial closers such as "crucial for this role", "ideal for this role",
-  or "important for this data-intensive role." End on candidate evidence rather
-  than a judgment about fit.
-- Do not discuss weaknesses, missing skills, compensation, availability,
-  sponsorship, citizenship, work authorization, onsite status, interview
-  availability, or recruiter process in this summary. Those are captured
-  elsewhere in the VNDLY submission/template.
-- Do not mention "VNDLY", "MSP", "shortlist", or matching strategy in the summary.
+- Never invent or infer candidate experience.
+- Do not merge evidence from separate employers into one sentence in a way that
+  falsely implies all tools/responsibilities occurred together.
+- Do not discuss weaknesses, missing skills, compensation, work authorization,
+  citizenship, sponsorship, onsite status, interview availability, submission
+  process, VNDLY, MSP, shortlisting strategy, or AI matching strategy.
+- AI/GenAI may be mentioned only when it is genuinely a job technology and the
+  candidate has supported experience.
 
+======================================================================
 ======================================================================
 TASK 2 — FINAL VNDLY SKILL SHORTLIST (GLOBAL HARD CAP = 8)
 ======================================================================
@@ -2278,9 +2577,10 @@ Return ONLY:
         package_prompt,
     )
 
-    vndly_summary = str(
-        raw_package.get("VNDLY_SUMMARY", "")
-    ).strip()
+    vndly_summary = fred_clean_vndly_submission_summary(
+        raw_package.get("VNDLY_SUMMARY", ""),
+        candidate_name,
+    )
 
     if not vndly_summary:
         raise RuntimeError(
@@ -2298,10 +2598,18 @@ Return ONLY:
         cap=16,
     )
 
+    ranked_skill_pool = fred_supplement_explicit_required_skills(
+        ranked_skill_pool,
+        structured_req,
+        catalog,
+        raw_resume_text,
+    )
+
     evidence_ranked_skills = fred_rerank_vndly_skills_by_evidence(
         ranked_skill_pool,
         raw_resume_text,
-        cap=16,
+        structured_req=structured_req,
+        cap=32,
     )
 
     ranked_skills = fred_apply_vndly_redundancy_control(
@@ -3491,36 +3799,29 @@ def fred_role_date_interval(dates, current_date):
 
 
 def fred_skill_label_components(skill_label):
-    """
-    Extract the named technologies/components from a Freddie Skills-table row.
-    Parenthetical items are treated as explicit material components.
-    """
+    """Return named supporting technologies from parentheses, if present."""
     label = str(skill_label or "").strip()
-
     if not label:
         return []
 
     components = []
-
     for part in re.findall(r"\(([^)]*)\)", label):
         for token in re.split(r"[,/&;+]", part):
             token = token.strip()
             if token:
                 components.append(token)
-
     return components
 
 
-def fred_role_supports_skill_component(role, component):
-    """Conservative alias check against one dated structured role."""
+def fred_role_text(role):
+    """Flatten one structured role into searchable evidence text."""
     bullets = role.get("Bullets", []) or []
-
     if isinstance(bullets, str):
         bullets_text = bullets
     else:
         bullets_text = " ".join(str(x) for x in bullets)
 
-    role_text = " ".join(
+    return " ".join(
         [
             str(role.get("Company", "") or ""),
             str(role.get("Title", "") or ""),
@@ -3529,6 +3830,10 @@ def fred_role_supports_skill_component(role, component):
         ]
     ).casefold()
 
+
+def fred_role_supports_skill_component(role, component):
+    """Conservative alias check against one dated structured role."""
+    role_text = fred_role_text(role)
     key = fred_normalize_skill_name(component)
 
     aliases = {
@@ -3552,20 +3857,64 @@ def fred_role_supports_skill_component(role, component):
         "jdbc": ["jdbc", "java database connectivity"],
         "jsp": ["jsp", "jsps", "javaserver pages", "java server pages"],
         "servlets": ["servlet"],
+        "banking": ["bank", "banking"],
+        "investment": ["investment", "portfolio", "asset", "securit", "trade ", "trading"],
+        "securities": ["securit", "trade ", "trading", "investment"],
     }
 
     terms = aliases.get(key)
-
     if terms:
         return any(term in role_text for term in terms)
 
-    core = re.sub(
-        r"[^a-z0-9+#./ -]",
-        "",
-        key,
-    ).strip()
-
+    core = re.sub(r"[^a-z0-9+#./ -]", "", key).strip()
     return bool(core and len(core) >= 4 and core in role_text)
+
+
+def fred_role_supports_skill_core(role, skill_label):
+    """
+    Determine whether a role supports the CORE competency represented by a
+    Freddie Skills-table row. Parenthetical tools are examples/evidence, not an
+    AND checklist that must all coexist in the same job.
+    """
+    label = re.sub(r"\([^)]*\)", "", str(skill_label or "")).strip().casefold()
+    role_text = fred_role_text(role)
+
+    # High-confidence competency families used by the Freddie skills table.
+    family_aliases = [
+        (["financial", "banking", "investment", "securities"],
+         ["bank", "banking", "financial", "investment", "portfolio", "asset", "securit", "trade ", "trading", "retirement"]),
+        (["relational database", "database", "sql"],
+         ["sql", "pl/sql", "oracle", "db2", "sql server", "mysql", "postgresql", "sybase", "jdbc", "database"]),
+        (["java", "j2ee", "spring"],
+         ["java", "j2ee", "spring", "servlet", "jsp", "jdbc", "microservice"]),
+        (["testing", "test", "quality"],
+         ["junit", "mockito", "unit test", "testing", "test case"]),
+        (["devops", "build", "deployment", "version control", "ci/cd"],
+         ["git", "gitlab", "github", "maven", "gradle", "jenkins", "docker", "ci/cd", "build", "deploy"]),
+        (["sharepoint"], ["sharepoint"]),
+        (["communications", "content"], ["communication", "content", "newsletter", "publication", "writing", "editing"]),
+        (["change management", "change communications", "adoption"], ["change", "adoption", "readiness", "implementation communication"]),
+    ]
+
+    for label_terms, evidence_terms in family_aliases:
+        if any(term in label for term in label_terms):
+            return any(term in role_text for term in evidence_terms)
+
+    # Generic fallback: any explicitly named parenthetical component supports
+    # the row as an AREA competency; we do not require every component at once.
+    components = fred_skill_label_components(skill_label)
+    if components and any(
+        fred_role_supports_skill_component(role, component)
+        for component in components
+    ):
+        return True
+
+    # Last-resort lexical support for a concise core label.
+    core_words = [
+        w for w in re.findall(r"[a-z0-9+#.]+", label)
+        if len(w) >= 4 and w not in {"development", "experience", "background", "expertise"}
+    ]
+    return bool(core_words and any(word in role_text for word in core_words))
 
 
 def fred_filter_skill_role_indexes_by_label(
@@ -3574,42 +3923,27 @@ def fred_filter_skill_role_indexes_by_label(
     role_indexes,
 ):
     """
-    Validate Gemini's role indexes against the explicit components written into
-    the final skill label.
+    Build the dated role set for a Freddie Skills-table row based on the CORE
+    competency, not an artificial requirement that every parenthetical tool
+    appear in the same job.
 
-    If a row says "(JUnit, Mockito, Git, Maven, Jenkins)", a dated role must
-    actually contain all five to count toward the displayed years. This prevents
-    a broad compound row from inheriting years from only partially related roles.
+    Gemini's proposed role indexes remain useful for domain/context judgments,
+    but Python also adds any dated role that clearly supports the core area.
     """
-    clean_indexes = fred_clean_skill_role_indexes(
-        role_indexes,
-        len(experience),
-    )
+    proposed = fred_clean_skill_role_indexes(role_indexes, len(experience))
+    inferred = []
 
-    if not clean_indexes:
-        return []
+    for idx, role in enumerate(experience, start=1):
+        if fred_role_supports_skill_core(role, skill_label):
+            inferred.append(idx)
 
-    components = fred_skill_label_components(skill_label)
+    # Preserve Gemini's domain-aware choices and add deterministic evidence.
+    combined = []
+    for idx in proposed + inferred:
+        if idx not in combined:
+            combined.append(idx)
 
-    # No explicit parenthetical components: retain Gemini's dated-role evidence.
-    if not components:
-        return clean_indexes
-
-    validated = []
-
-    for idx in clean_indexes:
-        role = experience[idx - 1]
-
-        if all(
-            fred_role_supports_skill_component(
-                role,
-                component,
-            )
-            for component in components
-        ):
-            validated.append(idx)
-
-    return validated
+    return combined
 
 
 def fred_calculate_skill_years_from_roles(
@@ -5802,25 +6136,22 @@ the 1-based indexes from STRUCTURED ORIGINAL EXPERIENCE that support the ENTIRE
 competency label as written.
 
 ROLE-INDEX RULES:
-- Include a role index ONLY when that dated role supports every material
-  component represented by the skill label.
+- Return the dated roles that substantively support the CORE competency area.
+- Parenthetical technologies are representative examples/evidence; they are NOT
+  an AND checklist that must all appear in the same individual job.
 - A Professional Summary or top-level skills inventory is NOT sufficient for a
   role index.
-- Do not include a role merely because it is generally related.
-- If "Core Java & Spring Development (J2EE, Spring Boot)" is the row, each
-  supporting role index must substantively support that combined scope.
-- If Java is much older than Spring/Spring Boot, either narrow/split the row or
-  include only roles that support the full combined label.
-- Python will calculate the final YEARS value from these role indexes, merge
-  overlaps, and round down. Therefore the role indexes must be conservative and
-  evidence-based.
-- If no dated role supports the entire proposed row, do not use that row.
-- Avoid overstuffed compound rows that combine technologies with materially
-  different tenure. Prefer a narrower, defensible competency label whose years
-  can be supported by the same dated roles.
-- Example: do not write "DevOps & Testing (JUnit, Mockito, Git, Maven, Jenkins)"
-  if the recent roles support JUnit/Mockito/Git/Maven but Jenkins only appears in
-  older roles. Narrow the row rather than overstating the combined tenure.
+- Do not include a role merely because it is vaguely related.
+- Example: for "Relational Databases & SQL (Oracle, DB2, SQL Server)", count
+  dated roles doing meaningful relational-database/SQL work even if one role used
+  Oracle and another used DB2. Do NOT require Oracle + DB2 + SQL Server in every
+  single role.
+- Example: for "Financial Services Background (Banking, Investment, Securities)",
+  include dated financial-services roles across those subdomains; do not require
+  all three words in every role.
+- Python will merge overlapping role periods and round down.
+- Avoid overstuffed rows that combine unrelated competency families. Keep each
+  row coherent enough that one aggregate years figure is meaningful.
 
 For every Skills-table row, calculate the displayed experience conservatively
 from the dated work history.
@@ -6268,17 +6599,14 @@ FULL ORIGINAL RESUME
                     if deterministic_skill_years:
                         summary_data[years_key] = deterministic_skill_years
                     else:
-                        # If Gemini proposed role evidence but none survives the
-                        # complete-label audit, do not recycle its inflated years.
-                        # Leave the value blank rather than asserting unsupported
-                        # tenure for a compound skill row.
-                        if proposed_role_indexes:
-                            summary_data[years_key] = ""
-                        else:
-                            summary_data[years_key] = fred_cap_skill_years(
-                                summary_data.get(years_key, ""),
-                                calculated_total_experience,
-                            )
+                        # Conservative fallback: never leave a populated skill row
+                        # with a blank years cell. If no role dates can be parsed,
+                        # retain Gemini's estimate only after enforcing the total
+                        # career ceiling.
+                        summary_data[years_key] = fred_cap_skill_years(
+                            summary_data.get(years_key, ""),
+                            calculated_total_experience,
+                        )
 
                 # ====================================================
                 # BUILD VNDLY SUBMISSION SUMMARY + RECOMMENDED SKILLS
