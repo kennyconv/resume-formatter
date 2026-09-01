@@ -310,8 +310,138 @@ def collapse_extra_blank_paragraphs(doc):
         else:
             previous_was_blank = False
 
+def expand_experience_placeholders(doc, mapping):
+    """
+    Dynamically extend a template's work-history placeholder block when the
+    candidate has more roles than the template was originally built to hold.
+
+    Existing templates can stay exactly as they are (for example, through
+    {{Company7}} / {{Dates7}} / {{Title7}} / {{Bullets7}}). If mapping contains
+    Company8, Company9, etc., this function clones the final existing experience
+    block and renumbers the placeholders before the normal replacement logic runs.
+
+    This is deliberately template-driven rather than capped at an arbitrary
+    number such as 20.
+    """
+
+    # Determine how many experience entries the mapping actually contains.
+    mapped_indices = []
+    for key in mapping.keys():
+        match = re.fullmatch(
+            r"(?i)(?:company|dates|title|bullets|environment|responsible)(\d+)",
+            str(key),
+        )
+        if match:
+            mapped_indices.append(int(match.group(1)))
+
+    if not mapped_indices:
+        return
+
+    required_max = max(mapped_indices)
+
+    # Locate the highest-numbered complete experience block already present
+    # in the template body. Current client templates use paragraph-based
+    # Company/Dates -> Title -> Bullets blocks.
+    paragraphs = list(doc.paragraphs)
+    placeholder_pattern = re.compile(
+        r"\{\{(company|dates|title|bullets|environment|responsible)(\d+)\}\}",
+        flags=re.IGNORECASE,
+    )
+
+    locations = {}
+    for idx, paragraph in enumerate(paragraphs):
+        for kind, number in placeholder_pattern.findall(paragraph.text or ""):
+            number = int(number)
+            locations.setdefault(number, {}).setdefault(kind.lower(), []).append(idx)
+
+    complete_indices = [
+        number
+        for number, parts in locations.items()
+        if "company" in parts and "title" in parts and "bullets" in parts
+    ]
+
+    if not complete_indices:
+        return
+
+    template_max = max(complete_indices)
+
+    if required_max <= template_max:
+        return
+
+    parts = locations[template_max]
+    block_start = min(
+        parts["company"] + parts.get("dates", []) + parts["title"] + parts["bullets"]
+    )
+    block_end = max(
+        parts["company"] + parts.get("dates", []) + parts["title"] + parts["bullets"]
+    )
+
+    # Include any Environment placeholder that belongs inside the same final block.
+    if parts.get("environment"):
+        block_end = max(block_end, max(parts["environment"]))
+
+    # Preserve the template's inter-role spacing. Peraton, for example,
+    # uses one blank Normal paragraph between experience blocks, while
+    # the Fannie-style templates do not.
+    if (
+        block_start > 0
+        and not paragraphs[block_start - 1].text.strip()
+    ):
+        block_start -= 1
+
+    source_block = paragraphs[block_start:block_end + 1]
+    if not source_block:
+        return
+
+    insert_after = source_block[-1]._p
+
+    # Clone the final template block once for each additional candidate role.
+    for new_index in range(template_max + 1, required_max + 1):
+        cloned_elements = []
+
+        for source_paragraph in source_block:
+            new_p = copy.deepcopy(source_paragraph._p)
+
+            # Renumber every placeholder in the cloned block that belongs to
+            # the original final template index.
+            text_nodes = new_p.xpath(".//w:t")
+            combined_text = "".join(
+                node.text or ""
+                for node in text_nodes
+            )
+
+            # Word frequently splits one placeholder across multiple runs
+            # (for example "{{" + "company" + "7" + "}}").  Once we confirm
+            # this cloned paragraph belongs to the final template role, safely
+            # renumber the placeholder fragments across those runs.
+            if re.search(
+                rf"(?i)\{{\{{(?:company|dates|title|bullets|environment|responsible){template_max}\}}\}}",
+                combined_text,
+            ):
+                for text_node in text_nodes:
+                    if not text_node.text:
+                        continue
+
+                    text_node.text = re.sub(
+                        rf"(?i)(company|dates|title|bullets|environment|responsible){template_max}",
+                        lambda m: f"{m.group(1)}{new_index}",
+                        text_node.text,
+                    )
+
+                    if text_node.text.strip() == str(template_max):
+                        text_node.text = text_node.text.replace(
+                            str(template_max),
+                            str(new_index),
+                        )
+
+            insert_after.addnext(new_p)
+            insert_after = new_p
+            cloned_elements.append(new_p)
+
+
 def process_word_doc(temp_path, mapping, out_path):
     doc = docx.Document(temp_path)
+    expand_experience_placeholders(doc, mapping)
     
     # Check if this is the Peraton tool
     is_peraton = "CERTIFICATION1" in mapping
@@ -716,7 +846,7 @@ def fannie_mae_app():
                         mapping[f"Degree{i}"] = edu[i-1].get('Degree', '') if i <= len(edu) else ""
 
                     exp = data.get('Experience', [])
-                    for i in range(1, 8):
+                    for i in range(1, max(7, len(exp)) + 1):
                         if i <= len(exp):
                             mapping[f"Company{i}"] = exp[i-1].get('Company', '')
                             raw_title = exp[i-1].get('Title', '')
@@ -1281,6 +1411,155 @@ def fred_filter_exact_req_recommendations(raw_items, allowed_items, catalog):
     ]
 
 
+FREDDIE_VNDLY_SKILL_CAP = 8
+
+
+def fred_build_final_ranked_vndly_skills(
+    raw_ranked_items,
+    selected_must_items,
+    selected_nice_items,
+    catalog,
+    cap=FREDDIE_VNDLY_SKILL_CAP,
+):
+    """
+    Validate Gemini's single ranked recommendation list and enforce a hard
+    GLOBAL cap across every VNDLY skill source.
+
+    Priority is decided in the AI ranking prompt, then this function enforces:
+    - exact catalogue values only;
+    - structured Must/Nice claims must truly be attached to this requisition;
+    - legacy/free-text values are allowed only for exact structured req skills;
+    - no duplicates;
+    - maximum `cap` skills total.
+    """
+    if not isinstance(raw_ranked_items, list):
+        return []
+
+    catalog_lookup = fred_catalog_lookup(catalog)
+
+    allowed_must = {
+        fred_normalize_skill_name(item.get("skill_name", ""))
+        for item in (selected_must_items or [])
+        if str(item.get("skill_name", "") or "").strip()
+    }
+    allowed_nice = {
+        fred_normalize_skill_name(item.get("skill_name", ""))
+        for item in (selected_nice_items or [])
+        if str(item.get("skill_name", "") or "").strip()
+    }
+
+    valid_categories = {
+        "exact_structured_must",
+        "exact_structured_nice",
+        "required_job_intelligence",
+        "preferred_job_intelligence",
+        "additional_high_value",
+    }
+
+    output = []
+    seen = set()
+
+    for raw_item in raw_ranked_items:
+        if len(output) >= cap:
+            break
+
+        if not isinstance(raw_item, dict):
+            continue
+
+        proposed = (
+            raw_item.get("skill_name")
+            or raw_item.get("value")
+            or raw_item.get("label")
+            or ""
+        )
+        category = str(
+            raw_item.get("source_category", "")
+        ).strip().lower()
+
+        if category not in valid_categories:
+            continue
+
+        exact = catalog_lookup.get(
+            fred_normalize_skill_name(proposed)
+        )
+
+        if not exact:
+            continue
+
+        name = str(exact.get("skill_name", "") or "").strip()
+        key = fred_normalize_skill_name(name)
+
+        if not name or key in seen:
+            continue
+
+        tier = exact.get(
+            "catalog_tier",
+            "canonical_preferred",
+        )
+
+        # Exact structured categories must actually come from the exact req field.
+        if category == "exact_structured_must":
+            if key not in allowed_must:
+                continue
+        elif category == "exact_structured_nice":
+            if key not in allowed_nice:
+                continue
+        else:
+            # Legacy/free-text is never used for inferred JD/manager/additional
+            # recommendations. It is reserved for exact req-attached tags.
+            if tier not in {
+                "canonical_preferred",
+                "compound_review",
+            }:
+                continue
+
+        output.append(
+            {
+                "id": exact.get("id"),
+                "skill_name": name,
+                "catalog_tier": tier,
+                "source_category": category,
+                "evidence": str(
+                    raw_item.get("evidence", "") or ""
+                ).strip(),
+                "reason": str(
+                    raw_item.get("reason", "") or ""
+                ).strip(),
+            }
+        )
+        seen.add(key)
+
+    return output
+
+
+def fred_split_ranked_vndly_skills(ranked_skills):
+    """Split the globally-ranked list into UI/email groups without changing rank."""
+    groups = {
+        "exact_must_have_skills": [],
+        "exact_nice_to_have_skills": [],
+        "required_vndly_skills_from_job_intelligence": [],
+        "preferred_vndly_skills_from_job_intelligence": [],
+        "additional_vndly_skills": [],
+    }
+
+    category_to_key = {
+        "exact_structured_must": "exact_must_have_skills",
+        "exact_structured_nice": "exact_nice_to_have_skills",
+        "required_job_intelligence": "required_vndly_skills_from_job_intelligence",
+        "preferred_job_intelligence": "preferred_vndly_skills_from_job_intelligence",
+        "additional_high_value": "additional_vndly_skills",
+    }
+
+    for item in ranked_skills or []:
+        key = category_to_key.get(
+            str(item.get("source_category", "")).strip().lower()
+        )
+        if key:
+            groups[key].append(item)
+
+    return groups
+
+
 def fred_build_vndly_candidate_package(
     api_key,
     candidate_name,
@@ -1290,6 +1569,7 @@ def fred_build_vndly_candidate_package(
     vetting_for_ai,
     resume_summary,
     calculated_total_experience,
+    candidate_positioning_title,
 ):
     """
     Create the Freddie-only VNDLY submission summary and skill selections.
@@ -1377,6 +1657,20 @@ CANDIDATE:
 ALREADY-APPROVED RESUME SUMMARY:
 {resume_summary}
 
+RECOMMENDED CANDIDATE POSITIONING TITLE:
+{candidate_positioning_title or "BLANK"}
+
+CANDIDATE TITLE RULE:
+- The title above was selected from the candidate's evidence + actual role
+  function using a natural external-market title.
+- If it is populated and you identify the candidate by title in the VNDLY
+  Submission Summary, use that title.
+- Do NOT substitute the structured VNDLY Job Title or rate-card title.
+- The VNDLY Job Title may still describe the requisition in job metadata, but it
+  is not automatically the candidate's professional identity.
+- If the positioning title is blank, use a concise functional identity supported
+  by the resume; do not default to an awkward VMS/rate-card title.
+
 PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE:
 {calculated_total_experience}
 
@@ -1432,105 +1726,129 @@ TASK 1 — VNDLY SUBMISSION SUMMARY
 
 Write a concise ready-to-paste candidate submission summary for VNDLY.
 
-Rules:
-- This is NOT the resume Summary and should not simply repeat it.
-- Use 3-4 compact sentences as ONE paragraph.
-- Lead with the candidate's strongest genuine match to the CURRENT role.
-- Make the structured Must Haves and current manager-selection priorities easy
-  for an MSP reviewer to verify quickly.
-- Use exact Freddie/VNDLY terminology when the candidate genuinely supports it.
+PURPOSE:
+This should read like a recruiter giving an MSP reviewer a quick factual reason
+to advance the candidate — not like marketing copy and not like a resume summary.
+
+STRUCTURE:
+- Use 2-3 compact sentences as ONE paragraph.
+- Sentence 1: use the natural RECOMMENDED CANDIDATE POSITIONING TITLE above
+  (when populated) + deterministic total experience + most important
+  domain/technical anchor.
+- Never use an awkward VMS/rate-card title merely to mirror the requisition.
+- Sentence 2: strongest concrete evidence covering the most important current
+  requirements, preferably from recent/recurring work.
+- Optional Sentence 3: one additional differentiator only when it materially
+  strengthens the submission (for example a critical domain, required testing/
+  deployment capability, or directly relevant business context).
+
+STYLE:
+- Factual, recruiter-written, concise, and confident.
+- Prefer evidence over judgments about "fit."
+- Use exact Freddie/JD terminology when genuinely supported.
+- Make the highest-priority current requirements easy to verify quickly.
 - Mention business/domain background when it materially matters.
-- Include concrete evidence, not keyword stuffing.
-- Never invent or infer experience that the resume/vetting responses do not show.
+- Do NOT simply repeat the formatted resume Summary.
+
+BANNED SALES / FIT LANGUAGE:
+Do not use phrases such as:
+- "strongly matching"
+- "aligning perfectly"
+- "perfectly aligns"
+- "ideal fit"
+- "great fit"
+- "strong fit"
+- "well suited"
+- "well-suited"
+- "positions him/her/them"
+- "meets all requirements"
+- "directly matches Freddie Mac's requirements"
+
+Instead, state the evidence itself.
+
+OTHER RULES:
+- Never invent or infer experience the resume/vetting responses do not show.
+- Avoid generic claims such as "possesses solid expertise" when a more concrete
+  statement of what the candidate actually did is available.
 - Do not discuss weaknesses, missing skills, compensation, availability,
-  sponsorship, or recruiter process.
-- Do not mention "VNDLY", "MSP", "shortlist", "AI", or matching strategy in the
-  summary itself unless AI/GenAI is genuinely a role technology.
+  sponsorship, citizenship, work authorization, onsite status, interview
+  availability, or recruiter process in this summary. Those are captured
+  elsewhere in the VNDLY submission/template.
+- Do not mention "VNDLY", "MSP", "shortlist", or matching strategy in the summary.
 
 ======================================================================
-TASK 2 — EXACT REQUISITION SKILLS
+TASK 2 — FINAL VNDLY SKILL SHORTLIST (GLOBAL HARD CAP = 8)
 ======================================================================
 
-The raw structured Must Have / Nice To Have fields came directly from Freddie's
-VNDLY job page.
+Produce ONE ranked shortlist of the BEST VNDLY skills to select for this
+candidate submission.
 
 CRITICAL:
-- The deterministic exact Must/Nice lists above are authoritative.
-- You may recommend an EXACT_MUST_HAVE_SKILL only from the deterministic
-  Must-Have list above.
-- You may recommend an EXACT_NICE_TO_HAVE_SKILL only from the deterministic
-  Nice-To-Have list above.
-- If the deterministic list for a category is EMPTY, return an empty array for
-  that category. NEVER substitute JD requirements or general catalogue skills.
-- Use the EXACT `skill_name` supplied. Never rewrite it.
-- A long or ugly legacy/free-text value is VALID here when it is actually one
-  of the skills selected on THIS requisition.
-- Recommend an exact requisition skill ONLY when the candidate genuinely
-  satisfies the substance of that complete selected value.
-- Do not approve a combined requirement because one keyword happens to appear.
-- Respect AND / OR / AND-OR wording, years requirements, technologies, domain
-  requirements, and certifications contained in the complete value.
-- If the candidate does not clearly demonstrate it, omit it.
-- Must Have and Nice To Have remain separate.
+- MAXIMUM 8 SKILLS TOTAL across ALL sources/categories combined.
+- This is a HIGH-SIGNAL shortlist, NOT a comprehensive inventory.
+- It is completely acceptable to return fewer than 8 when fewer skills deserve
+  a selection.
+- Rank every item from highest to lowest submission value.
 
-======================================================================
-TASK 3 — REQUIRED VNDLY SKILLS FROM JOB INTELLIGENCE
-======================================================================
+PRIORITY HIERARCHY:
+1. Exact structured VNDLY Must-Have skill attached to this requisition,
+   when the candidate genuinely satisfies the COMPLETE requirement.
+2. Explicit current MUST-HAVE / REQUIRED skill from the JD or authoritative
+   manager/MSP/Spotlight guidance.
+3. Exact structured VNDLY Nice-To-Have skill attached to this requisition,
+   when genuinely satisfied.
+4. Explicit current PREFERRED / NICE-TO-HAVE skill from the JD or authoritative
+   manager/MSP/Spotlight guidance.
+5. Additional candidate-supported skill only when it adds unusually useful
+   signal for THIS requisition.
 
-Recommend exact catalogue skills that correspond to FORMAL REQUIRED criteria
-from the broader requisition intelligence, even when no structured Must-Have
-skill tag exists.
+SELECTION PRINCIPLES:
+- Optimize for SIGNAL, not coverage.
+- A skill that directly represents the core requirement is more valuable than
+  several narrower synonyms/components of the same concept.
+- Prefer the exact terminology Freddie is screening for.
+- Prefer skills supported by dated, substantive work history.
+- Prefer recent and recurring evidence over a skills-list mention.
+- Prefer a broad exact requirement such as "Relational Database" over selecting
+  Oracle + DB2 + SQL Server + MySQL individually, unless a specific database is
+  itself a critical screening requirement.
+- Prefer "Spring Framework" over also consuming another slot with "Spring Boot"
+  when the formal requirement is Spring Framework, unless Spring Boot itself is
+  separately important to the role.
+- Do not spend scarce slots on generic soft skills (Problem Solving, Analytical
+  Thinking, Critical Thinking, Writing, Communication, etc.) unless the role or
+  manager makes that specific competency unusually central AND it is more
+  valuable than a technical/domain requirement.
+- Do not spend scarce slots on adjacent candidate strengths that are not central
+  to the requisition.
+- Do not use one skill as a substitute for a different required skill
+  (for example Maven is not proof of Gradle).
+- Avoid redundant parent/child/synonym selections unless both are independently
+  high-value screening signals.
+- Candidate evidence must genuinely support every selection.
 
-This includes:
-- Explicit JD "Must Have Qualifications", "Must Have", "Required", minimum-years,
-  and equivalent mandatory language.
-- Current authoritative manager/MSP/Spotlight clarification that establishes or
-  changes what future candidates must demonstrate.
-- Other mandatory requirements already classified in STRUCTURED REQUISITION
-  INTELLIGENCE as explicit_must_have_requirements / required_requirements /
-  domain_requirements when genuinely mandatory.
+STRUCTURED-SKILL RULE:
+- If source_category is `exact_structured_must`, skill_name MUST come from:
+  {selected_must_json}
+- If source_category is `exact_structured_nice`, skill_name MUST come from:
+  {selected_nice_json}
+- Long/legacy/free-text catalogue values are allowed ONLY in those two exact
+  structured categories.
+- For all other categories, use clean `canonical_preferred` values first and
+  `compound_review` only when materially more precise. Never use
+  `legacy_free_text`.
 
-Rules:
-- Candidate evidence must genuinely support the skill.
-- Use only exact VNDLY catalogue values.
-- Prefer `canonical_preferred`; use `compound_review` only when more precise.
-- Do NOT use `legacy_free_text` here merely because it resembles JD wording.
-- Do not duplicate skills already recommended as exact structured Must/Nice tags.
-- Do not convert an explicitly preferred item into Required.
+SOURCE CATEGORY must be exactly one of:
+- exact_structured_must
+- exact_structured_nice
+- required_job_intelligence
+- preferred_job_intelligence
+- additional_high_value
 
-======================================================================
-TASK 4 — PREFERRED VNDLY SKILLS FROM JOB INTELLIGENCE
-======================================================================
-
-Recommend exact catalogue skills that correspond to explicit preferred /
-nice-to-have criteria from the JD or authoritative manager/MSP/Spotlight
-guidance.
-
-Rules:
-- Candidate evidence must genuinely support the skill.
-- Use only exact VNDLY catalogue values.
-- Prefer `canonical_preferred`; use `compound_review` only when more precise.
-- NEVER use `legacy_free_text` here.
-- Keep Preferred separate from Required.
-- Do not duplicate skills already recommended in higher-priority groups.
-
-======================================================================
-TASK 5 — ADDITIONAL HIGH-VALUE VNDLY SKILLS
-======================================================================
-
-Recommend up to 8 additional exact catalogue skills that:
-- are materially relevant to this requisition;
-- are genuinely demonstrated by the candidate;
-- add useful matching signal beyond the exact structured + required + preferred
-  groups above.
-
-For ADDITIONAL skills only:
-1. Prefer `canonical_preferred`.
-2. Use `compound_review` only when materially more precise.
-3. NEVER use `legacy_free_text`.
-4. Do not duplicate any higher-priority recommendation.
-5. Do not select broad/adjacent skills merely because the catalogue returned
-   them for a fuzzy search.
+BEFORE RETURNING:
+Ask yourself: "If the recruiter could select only 8 VNDLY skills, are these the
+8 that best communicate why THIS candidate should advance for THIS req?"
+If not, remove lower-signal, redundant, generic, or merely adjacent skills.
 
 ======================================================================
 OUTPUT
@@ -1540,35 +1858,10 @@ Return ONLY:
 
 {{
   "VNDLY_SUMMARY": "",
-  "EXACT_MUST_HAVE_SKILLS": [
+  "FINAL_RECOMMENDED_VNDLY_SKILLS": [
     {{
       "skill_name": "",
-      "evidence": ""
-    }}
-  ],
-  "EXACT_NICE_TO_HAVE_SKILLS": [
-    {{
-      "skill_name": "",
-      "evidence": ""
-    }}
-  ],
-  "REQUIRED_VNDLY_SKILLS_FROM_JOB_INTELLIGENCE": [
-    {{
-      "skill_name": "",
-      "evidence": "",
-      "reason": ""
-    }}
-  ],
-  "PREFERRED_VNDLY_SKILLS_FROM_JOB_INTELLIGENCE": [
-    {{
-      "skill_name": "",
-      "evidence": "",
-      "reason": ""
-    }}
-  ],
-  "ADDITIONAL_VNDLY_SKILLS": [
-    {{
-      "skill_name": "",
+      "source_category": "",
       "evidence": "",
       "reason": ""
     }}
@@ -1590,79 +1883,30 @@ Return ONLY:
             "Gemini returned no VNDLY submission summary."
         )
 
-    exact_must = fred_filter_exact_req_recommendations(
-        raw_package.get("EXACT_MUST_HAVE_SKILLS", []),
+    ranked_skills = fred_build_final_ranked_vndly_skills(
+        raw_package.get(
+            "FINAL_RECOMMENDED_VNDLY_SKILLS",
+            [],
+        ),
         selected_must_items,
-        catalog,
-    )
-    exact_nice = fred_filter_exact_req_recommendations(
-        raw_package.get("EXACT_NICE_TO_HAVE_SKILLS", []),
         selected_nice_items,
         catalog,
+        cap=FREDDIE_VNDLY_SKILL_CAP,
     )
 
-    required_job_intelligence = fred_sanitize_recommended_skills(
-        raw_package.get(
-            "REQUIRED_VNDLY_SKILLS_FROM_JOB_INTELLIGENCE",
-            [],
-        ),
-        catalog,
-    )
-    preferred_job_intelligence = fred_sanitize_recommended_skills(
-        raw_package.get(
-            "PREFERRED_VNDLY_SKILLS_FROM_JOB_INTELLIGENCE",
-            [],
-        ),
-        catalog,
-    )
-    additional = fred_sanitize_recommended_skills(
-        raw_package.get("ADDITIONAL_VNDLY_SKILLS", []),
-        catalog,
-    )
-
-    allowed_clean_tiers = {
-        "canonical_preferred",
-        "compound_review",
-    }
-
-    required_job_intelligence = [
-        item
-        for item in required_job_intelligence
-        if item.get("catalog_tier") in allowed_clean_tiers
-    ]
-    preferred_job_intelligence = [
-        item
-        for item in preferred_job_intelligence
-        if item.get("catalog_tier") in allowed_clean_tiers
-    ]
-    additional = [
-        item
-        for item in additional
-        if item.get("catalog_tier") in allowed_clean_tiers
-    ][:8]
-
-    (
-        exact_must,
-        exact_nice,
-        required_job_intelligence,
-        preferred_job_intelligence,
-        additional,
-    ) = fred_dedupe_skill_groups(
-        exact_must,
-        exact_nice,
-        required_job_intelligence,
-        preferred_job_intelligence,
-        additional,
+    grouped_skills = fred_split_ranked_vndly_skills(
+        ranked_skills
     )
 
     return {
+        "candidate_positioning_title": str(
+            candidate_positioning_title or ""
+        ).strip(),
         "vndly_summary": vndly_summary,
-        "exact_must_have_skills": exact_must,
-        "exact_nice_to_have_skills": exact_nice,
-        "required_vndly_skills_from_job_intelligence": required_job_intelligence,
-        "preferred_vndly_skills_from_job_intelligence": preferred_job_intelligence,
-        "additional_vndly_skills": additional,
+        "final_recommended_vndly_skills": ranked_skills,
+        **grouped_skills,
     }
+
 
 
 def fred_skill_names(items):
@@ -1686,32 +1930,34 @@ def fred_build_submission_email_body(
     job_title = str(vndly_context.get("job_title", "") or "").strip()
     manager = str(vndly_context.get("resource_manager", "") or "").strip()
 
-    exact_must = fred_skill_names(
-        package.get("exact_must_have_skills", [])
-    )
-    exact_nice = fred_skill_names(
-        package.get("exact_nice_to_have_skills", [])
-    )
-    required_job_intelligence = fred_skill_names(
-        package.get(
-            "required_vndly_skills_from_job_intelligence",
-            [],
-        )
-    )
-    preferred_job_intelligence = fred_skill_names(
-        package.get(
-            "preferred_vndly_skills_from_job_intelligence",
-            [],
-        )
-    )
-    additional = fred_skill_names(
-        package.get("additional_vndly_skills", [])
-    )
+    ranked_skills = package.get(
+        "final_recommended_vndly_skills",
+        [],
+    ) or []
 
-    def render_section(title, values):
-        if not values:
-            return f"{title}\nNone recommended"
-        return title + "\n" + "\n".join(f"- {value}" for value in values)
+    source_labels = {
+        "exact_structured_must": "Exact Structured Must",
+        "exact_structured_nice": "Exact Structured Nice",
+        "required_job_intelligence": "Required",
+        "preferred_job_intelligence": "Preferred",
+        "additional_high_value": "Additional",
+    }
+
+    if ranked_skills:
+        skill_lines = []
+        for index, item in enumerate(ranked_skills, start=1):
+            name = str(item.get("skill_name", "") or "").strip()
+            category = str(
+                item.get("source_category", "") or ""
+            ).strip().lower()
+            label = source_labels.get(category, "Recommended")
+            if name:
+                skill_lines.append(
+                    f"{index}. {name} [{label}]"
+                )
+        skills_text = "\n".join(skill_lines)
+    else:
+        skills_text = "None recommended"
 
     lines = [
         f"Candidate: {candidate_name}",
@@ -1721,30 +1967,8 @@ def fred_build_submission_email_body(
         "VNDLY SUBMISSION SUMMARY",
         str(package.get("vndly_summary", "") or "").strip(),
         "",
-        render_section(
-            "RECOMMENDED VNDLY SKILLS - EXACT MUST HAVE MATCHES",
-            exact_must,
-        ),
-        "",
-        render_section(
-            "RECOMMENDED VNDLY SKILLS - EXACT NICE TO HAVE MATCHES",
-            exact_nice,
-        ),
-        "",
-        render_section(
-            "REQUIRED VNDLY SKILLS FROM JOB INTELLIGENCE",
-            required_job_intelligence,
-        ),
-        "",
-        render_section(
-            "PREFERRED VNDLY SKILLS FROM JOB INTELLIGENCE",
-            preferred_job_intelligence,
-        ),
-        "",
-        render_section(
-            "ADDITIONAL HIGH-VALUE VNDLY SKILLS",
-            additional,
-        ),
+        f"RECOMMENDED VNDLY SKILLS - TOP {FREDDIE_VNDLY_SKILL_CAP} MAX",
+        skills_text,
     ]
 
     return "\n".join(lines).strip()
@@ -2995,6 +3219,7 @@ def process_freddie_word_doc(
     successful Fannie/other-client Q1-A1 behavior remains untouched.
     """
     doc = docx.Document(temp_path)
+    expand_experience_placeholders(doc, mapping)
 
     # ================================================================
     # 1. SUPPLIER VETTING QUESTIONS
@@ -4196,8 +4421,8 @@ ORIGINAL RESUME:
 
                 # Normalize ALL extracted dated roles first. Older abbreviated
                 # "Earlier Experience" entries are retained here for accurate
-                # total-career experience math, even though the Freddie template
-                # still displays only the seven most recent roles.
+                # Preserve every dated role for both total-career experience math
+                # and the generated Freddie work-history section.
                 normalized_experience = []
 
                 for role in experience:
@@ -4275,7 +4500,7 @@ ORIGINAL RESUME:
                     )
 
                 all_experience_for_years = normalized_experience
-                experience = normalized_experience[:7]
+                experience = normalized_experience
 
                 # ====================================================
                 # OFFICIAL VETTING Q&A STRUCTURE
@@ -4452,6 +4677,73 @@ When the candidate genuinely possesses a Freddie Must Have:
 Do not engage in keyword stuffing.
 
 ======================================================================
+CANDIDATE POSITIONING TITLE — NATURAL MARKET TITLE
+======================================================================
+
+Before writing the Summary, choose ONE concise professional title for the
+candidate and return it as CANDIDATE_TITLE.
+
+PURPOSE:
+This is the natural functional title used to describe the candidate in the
+submission narrative. It is NOT automatically Freddie's VNDLY Job Title.
+
+CRITICAL DISTINCTION:
+- Freddie's VNDLY Job Title may be a VMS/rate-card/taxonomy label selected for
+  budgeting, job-family, or system purposes.
+- Treat the VNDLY Job Title and STRUCTURED REQUISITION target_title as CLUES
+  about the role, not as wording that must be copied into the candidate summary.
+- Do NOT default to awkward system labels such as:
+  "Developer-Java/J2EE Specialist",
+  "Developer-Python Specialist",
+  "Project Manager-Senior",
+  or similar VMS/rate-card constructions.
+- Preserve an official VNDLY title only when it is already a normal, natural
+  market-facing professional title AND accurately describes the candidate.
+
+HOW TO CHOOSE CANDIDATE_TITLE:
+Use ALL relevant evidence together:
+1. What function the current role actually needs, based on the JD plus current
+   manager/MSP/Spotlight guidance.
+2. What the candidate has actually done in dated work history.
+3. The candidate's recent/repeated professional titles and responsibilities.
+4. A more natural role title stated inside the body of the JD, when present.
+5. The VNDLY Job Title only as supporting context, never as the default wording.
+
+TITLE QUALITY RULES:
+- Prefer a conventional external-market title a recruiter or hiring manager
+  would naturally say aloud.
+- Usually 2-5 words.
+- Keep it functional and specific enough to communicate the candidate's lane.
+- Use seniority only when BOTH the candidate's demonstrated career level and
+  the target role support it.
+- Do not inflate to Lead, Principal, Architect, Manager, etc. merely because the
+  candidate once held that title.
+- Do not downgrade an established senior candidate merely because the VNDLY
+  rate-card title omits seniority.
+- Avoid awkward VMS punctuation/order such as "Developer-Java/J2EE Specialist."
+- Do not force the target role's function onto a candidate whose actual work
+  materially differs from it.
+- When the JD itself contains a natural role heading that is more descriptive
+  than the VNDLY system title, strongly prefer that heading when the candidate
+  genuinely supports it.
+
+EXAMPLE:
+VNDLY Job Title: "Developer-Java/J2EE Specialist"
+JD body role heading: "Senior Java Developer"
+Candidate: 18+ years of Java/Spring/J2EE development
+
+Preferred CANDIDATE_TITLE:
+"Senior Java Developer"
+
+Not:
+"Developer-Java/J2EE Specialist"
+
+SUMMARY CONSISTENCY RULE:
+- If Sentence 1 identifies the candidate by a professional title, use the exact
+  CANDIDATE_TITLE you selected.
+- Do not introduce a competing title elsewhere in the Summary.
+
+======================================================================
 SUMMARY — EXACTLY 4 SENTENCES
 ======================================================================
 
@@ -4472,10 +4764,13 @@ Sentence 1 — MSP MATCH ANCHOR
 ----------------------------------------------------------------------
 
 - Use the candidate's FIRST NAME.
-- Use the candidate's actual functional professional identity when possible.
-  Do not relabel a Data Engineer as a Data Scientist solely because that is
-  Freddie's requisition title. Target-role terminology may be used when the
-  candidate's actual work clearly supports that functional identity.
+- Use the exact CANDIDATE_TITLE selected under the Natural Market Title rules
+  above when identifying the candidate by title.
+- Do NOT copy the VNDLY Job Title merely because it is present in the structured
+  requisition.
+- Do not relabel a Data Engineer as a Data Scientist solely because Freddie's
+  requisition uses that title. Target-role terminology may be used only when
+  the candidate's actual work clearly supports that functional identity.
 - If PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE above is populated, use
   that EXACT value for TOTAL CAREER EXPERIENCE only.
 - Never independently calculate or alter the total-years figure.
@@ -5112,6 +5407,7 @@ OUTPUT FORMAT
 Return ONLY:
 
 {{
+  "CANDIDATE_TITLE": "",
   "SUMMARY": "",
   "SKILL1": "",
   "YEARS1": "",
@@ -5145,8 +5441,15 @@ FULL ORIGINAL RESUME
                 )
 
                 # ====================================================
-                # VALIDATE SUMMARY / SKILLS
+                # VALIDATE CANDIDATE POSITIONING TITLE / SUMMARY / SKILLS
                 # ====================================================
+
+                candidate_positioning_title = str(
+                    summary_data.get(
+                        "CANDIDATE_TITLE",
+                        "",
+                    )
+                ).strip()
 
                 final_summary = str(
                     summary_data.get(
@@ -5218,7 +5521,9 @@ FULL ORIGINAL RESUME
                 # ====================================================
 
                 vndly_package = {
+                    "candidate_positioning_title": candidate_positioning_title,
                     "vndly_summary": "",
+                    "final_recommended_vndly_skills": [],
                     "exact_must_have_skills": [],
                     "exact_nice_to_have_skills": [],
                     "required_vndly_skills_from_job_intelligence": [],
@@ -5240,6 +5545,7 @@ FULL ORIGINAL RESUME
                             vetting_for_ai,
                             final_summary,
                             calculated_total_experience,
+                            candidate_positioning_title,
                         )
                 except Exception as package_error:
                     vndly_package_error = str(package_error)
@@ -5343,7 +5649,7 @@ FULL ORIGINAL RESUME
                         mapping[f"Degree{i}"] = ""
 
                 # Work History
-                for i in range(1, 8):
+                for i in range(1, max(7, len(experience)) + 1):
                     if i <= len(experience):
                         role = experience[i - 1]
 
@@ -5435,83 +5741,50 @@ FULL ORIGINAL RESUME
                 else:
                     st.caption("No VNDLY submission summary was generated.")
 
-                exact_must_names = fred_skill_names(
-                    vndly_package.get(
-                        "exact_must_have_skills",
-                        [],
-                    )
+                ranked_vndly_skills = vndly_package.get(
+                    "final_recommended_vndly_skills",
+                    [],
+                ) or []
+
+                st.markdown(
+                    f"**Recommended VNDLY Skills — Top {FREDDIE_VNDLY_SKILL_CAP} Maximum**"
                 )
-                exact_nice_names = fred_skill_names(
-                    vndly_package.get(
-                        "exact_nice_to_have_skills",
-                        [],
-                    )
-                )
-                required_job_intelligence_names = fred_skill_names(
-                    vndly_package.get(
-                        "required_vndly_skills_from_job_intelligence",
-                        [],
-                    )
-                )
-                preferred_job_intelligence_names = fred_skill_names(
-                    vndly_package.get(
-                        "preferred_vndly_skills_from_job_intelligence",
-                        [],
-                    )
-                )
-                additional_names = fred_skill_names(
-                    vndly_package.get(
-                        "additional_vndly_skills",
-                        [],
-                    )
+                st.caption(
+                    "Ranked from highest to lowest submission value. "
+                    "Select these exact values in VNDLY."
                 )
 
-                st.markdown("**Recommended VNDLY Skills — Exact Structured Must Have Matches**")
-                if not str(selected_vndly_context.get("must_have_skills", "") or "").strip():
-                    st.caption(
-                        "This requisition has no structured VNDLY Must Have skill tags. Formal JD/manager requirements are handled below under Job Intelligence."
-                    )
-                elif exact_must_names:
-                    for skill_name in exact_must_names:
-                        st.markdown(f"- `{skill_name}`")
-                else:
-                    st.caption("None supported strongly enough to recommend.")
+                source_labels = {
+                    "exact_structured_must": "Exact Structured Must",
+                    "exact_structured_nice": "Exact Structured Nice",
+                    "required_job_intelligence": "Required",
+                    "preferred_job_intelligence": "Preferred",
+                    "additional_high_value": "Additional",
+                }
 
-                st.markdown("**Recommended VNDLY Skills — Exact Structured Nice To Have Matches**")
-                if not str(selected_vndly_context.get("nice_to_have_skills", "") or "").strip():
-                    st.caption(
-                        "This requisition has no structured VNDLY Nice To Have skill tags. Formal JD/manager preferences are handled below under Job Intelligence."
-                    )
-                elif exact_nice_names:
-                    for skill_name in exact_nice_names:
-                        st.markdown(f"- `{skill_name}`")
-                else:
-                    st.caption("None supported strongly enough to recommend.")
-
-                st.markdown("**Required VNDLY Skills from Job Intelligence**")
-                if required_job_intelligence_names:
-                    for skill_name in required_job_intelligence_names:
-                        st.markdown(f"- `{skill_name}`")
+                if ranked_vndly_skills:
+                    for index, item in enumerate(
+                        ranked_vndly_skills,
+                        start=1,
+                    ):
+                        skill_name = str(
+                            item.get("skill_name", "") or ""
+                        ).strip()
+                        category = str(
+                            item.get("source_category", "") or ""
+                        ).strip().lower()
+                        label = source_labels.get(
+                            category,
+                            "Recommended",
+                        )
+                        st.markdown(
+                            f"{index}. `{skill_name}` — {label}"
+                        )
                 else:
                     st.caption(
-                        "No additional candidate-supported required catalogue skills were identified."
+                        "No VNDLY catalogue skills were supported strongly enough "
+                        "to recommend."
                     )
-
-                st.markdown("**Preferred VNDLY Skills from Job Intelligence**")
-                if preferred_job_intelligence_names:
-                    for skill_name in preferred_job_intelligence_names:
-                        st.markdown(f"- `{skill_name}`")
-                else:
-                    st.caption(
-                        "No candidate-supported preferred catalogue skills were identified."
-                    )
-
-                st.markdown("**Additional High-Value VNDLY Skills**")
-                if additional_names:
-                    for skill_name in additional_names:
-                        st.markdown(f"- `{skill_name}`")
-                else:
-                    st.caption("No additional catalogue skills recommended.")
 
                 # ====================================================
                 # AUTOMATIC FREDDIE SUBMISSION EMAIL
@@ -5751,7 +6024,7 @@ def peraton_app():
                         mapping[f"Degree{i}"] = edu[i-1].get('Degree', '') if i <= len(edu) else ""
 
                     exp = data.get('Experience', [])
-                    for i in range(1, 8):
+                    for i in range(1, max(7, len(exp)) + 1):
                         if i <= len(exp):
                             mapping[f"Company{i}"] = exp[i-1].get('Company', '')
                             raw_title = exp[i-1].get('Title', '')
@@ -6108,7 +6381,7 @@ def capital_one_app():
                         mapping[f"Degree{i}"] = edu[i-1].get('Degree', '') if i <= len(edu) else ""
 
                     exp = data.get('Experience', [])
-                    for i in range(1, 8):
+                    for i in range(1, max(7, len(exp)) + 1):
                         if i <= len(exp):
                             mapping[f"Company{i}"] = exp[i-1].get('Company', '')
                             raw_title = exp[i-1].get('Title', '')
@@ -6484,7 +6757,7 @@ def adusa_app():
                         mapping[f"Degree{i}"] = edu[i-1].get('Degree', '') if i <= len(edu) else ""
 
                     exp = data.get('Experience', [])
-                    for i in range(1, 8):
+                    for i in range(1, max(7, len(exp)) + 1):
                         if i <= len(exp):
                             mapping[f"Company{i}"] = exp[i-1].get('Company', '')
                             raw_title = exp[i-1].get('Title', '')
@@ -6835,7 +7108,7 @@ def cbre_app():
                         mapping[f"Degree{i}"] = edu[i-1].get('Degree', '') if i <= len(edu) else ""
 
                     exp = data.get('Experience', [])
-                    for i in range(1, 8):
+                    for i in range(1, max(7, len(exp)) + 1):
                         if i <= len(exp):
                             mapping[f"Company{i}"] = exp[i-1].get('Company', '')
                             raw_title = exp[i-1].get('Title', '')
@@ -7191,7 +7464,7 @@ def bnsf_app():
                         mapping[f"Degree{i}"] = edu[i-1].get('Degree', '') if i <= len(edu) else ""
 
                     exp = data.get('Experience', [])
-                    for i in range(1, 8):
+                    for i in range(1, max(7, len(exp)) + 1):
                         if i <= len(exp):
                             mapping[f"Company{i}"] = exp[i-1].get('Company', '')
                             raw_title = exp[i-1].get('Title', '')
@@ -7534,7 +7807,7 @@ def dallas_generic_app():
                         mapping[f"DegreeStatus{i}"] = edu[i-1].get('DegreeStatus', 'Yes') if i <= len(edu) else ""
 
                     exp = data.get('Experience', [])
-                    for i in range(1, 8):
+                    for i in range(1, max(7, len(exp)) + 1):
                         if i <= len(exp):
                             mapping[f"Company{i}"] = exp[i-1].get('Company', '')
                             raw_title = exp[i-1].get('Title', '')
@@ -8122,7 +8395,7 @@ def deloitte_app():
                         mapping[f"Degree{i}"] = edu[i-1].get('Degree', '') if i <= len(edu) else ""
 
                     exp = data.get('Experience', [])
-                    for i in range(1, 8):
+                    for i in range(1, max(7, len(exp)) + 1):
                         if i <= len(exp):
                             mapping[f"Company{i}"] = exp[i-1].get('Company', '')
                             raw_title = exp[i-1].get('Title', '')
