@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+from streamlit_gsheets import GSheetsConnection
 from google import genai
 from google.genai import types
 import docx
@@ -1296,6 +1297,14 @@ FORMAL REQUIREMENTS:
   "preferred but not required" belongs under preferred_requirements even if
   physically located inside a Must Have paragraph.
 - Only clearly mandatory items may appear in explicit_must_have_requirements.
+- Scan the ENTIRE Official VNDLY Job Description for explicit mandatory language,
+  not only the formally labeled Must Have section. Any statement anywhere in the
+  JD using language such as "must have", "required", "minimum", "requires",
+  "need(s)", or an explicit minimum-years requirement must be retained as a
+  formal requirement when it clearly applies to the candidate profile.
+- Example: if Responsibilities says "Must have 8+ years of experience", include
+  that exact requirement in explicit_must_have_requirements even if it appears
+  outside the labeled Must Have Qualifications section.
 - If there is no explicit Must Have section, derive core required competencies
   from Required Qualifications and central recurring responsibilities.
 
@@ -1331,7 +1340,18 @@ entries over the lifecycle of one requisition.
 - When a newer update merely reports scheduling or staffing activity and does
   NOT change the candidate profile, it must NOT override older substantive role
   guidance.
-- Capture material changes over time in role_evolution.
+- Capture only SUBSTANTIVE candidate-profile changes over time in role_evolution.
+- Do NOT create a role_evolution item merely because a note says the job was
+  updated, refreshed, reposted, re-released, backfilled, replaced, or that a
+  prior offer was rejected. Those are operational/history facts unless the
+  source actually states WHAT changed in the desired candidate profile.
+- A role_evolution item is appropriate only when the source identifies a
+  meaningful change in required skills, weighting, scope, domain background,
+  seniority/experience, responsibilities, or manager expectations.
+- Example of VALID evolution: "Manager clarified the role is 40% UI / 60%
+  backend and now requires stronger Angular."
+- Example of INVALID evolution: "Backfill release; JD has been updated" when no
+  substantive change is described.
 - current_manager_priorities must represent what appears to matter NOW after
   considering chronology.
 - role_clarifications should capture concise current clarifications such as
@@ -2425,22 +2445,34 @@ def freddie_mac_app():
 
     st.header("📝 Freddie Mac Requisition")
 
-    # Freddie ONLY: VNDLY/API operational tracker.
-    # Fannie/Deloitte/other client sheet logic remains untouched.
+    # Freddie ONLY: private authenticated connection to the VNDLY/API
+    # Google Sheet. Fannie/Deloitte/other client sheet logic remains untouched.
     SHEET_URL = (
         "https://docs.google.com/spreadsheets/d/"
         "1yMQmqYRl_wa6ynXZrORCMOFwHRPwC2GVFKCTGzMfAe4/"
         "edit?gid=0"
     )
 
-    @st.cache_data(ttl=600)
     def load_freddie_reqs(url):
         try:
-            base_url = url.split("/edit")[0]
-            csv_url = base_url + "/export?format=csv&gid=0"
-            df = pd.read_csv(csv_url)
+            conn = st.connection(
+                "gsheets",
+                type=GSheetsConnection,
+            )
+
+            df = conn.read(
+                spreadsheet=url,
+                worksheet="VNDLY Jobs",
+                ttl=600,
+            )
+
             return df.fillna("")
-        except Exception:
+
+        except Exception as e:
+            st.error(
+                "❌ Unable to load the private Freddie Mac VNDLY sheet. "
+                f"{str(e)}"
+            )
             return pd.DataFrame()
 
     df_reqs = load_freddie_reqs(SHEET_URL)
@@ -2454,6 +2486,12 @@ def freddie_mac_app():
             title = str(row.get("Job Title", "")).strip()
             manager = str(row.get("Resource Manager", "")).strip()
             status = str(row.get("Status", "")).strip()
+
+            # MSP-only requisitions that were never distributed to Convergenz
+            # remain in the VNDLY tracker but must not appear in the
+            # Resume Formatter requisition dropdown.
+            if status.lower() in {"don't have", "dont have"}:
+                continue
 
             if not req_id:
                 continue
@@ -3105,7 +3143,14 @@ RULES:
 - Extract school and degree exactly enough to preserve meaning.
 
 4. EXPERIENCE
-Return:
+Return EVERY dated professional role shown anywhere in the resume, including
+condensed or abbreviated entries under headings such as "Earlier Experience",
+"Additional Experience", or similar sections. Do not stop after the first seven
+roles. Older abbreviated roles may have an empty Bullets array and blank
+Environment; they must still be returned when Company/Title/Dates are present so
+total career experience can be calculated correctly.
+
+For each role return:
 - Company
 - Title
 - Bullets as an ARRAY
@@ -3226,10 +3271,13 @@ ORIGINAL RESUME:
                 ):
                     experience = []
 
-                # Normalize extraction data before tailoring.
+                # Normalize ALL extracted dated roles first. Older abbreviated
+                # "Earlier Experience" entries are retained here for accurate
+                # total-career experience math, even though the Freddie template
+                # still displays only the seven most recent roles.
                 normalized_experience = []
 
-                for role in experience[:7]:
+                for role in experience:
                     if not isinstance(
                         role,
                         dict,
@@ -3303,7 +3351,8 @@ ORIGINAL RESUME:
                         }
                     )
 
-                experience = normalized_experience
+                all_experience_for_years = normalized_experience
+                experience = normalized_experience[:7]
 
                 # ====================================================
                 # OFFICIAL VETTING Q&A STRUCTURE
@@ -3359,7 +3408,7 @@ ORIGINAL RESUME:
                 current_date = current_date_obj.isoformat()
 
                 calculated_total_experience = fred_calculate_total_experience(
-                    experience,
+                    all_experience_for_years,
                     current_date_obj,
                 )
 
