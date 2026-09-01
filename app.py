@@ -328,6 +328,64 @@ def collapse_extra_blank_paragraphs(doc):
         else:
             previous_was_blank = False
 
+def ensure_experience_spacing(doc, mapping):
+    """
+    Ensure one visible blank paragraph between consecutive work-history entries.
+
+    This specifically protects dynamically generated jobs beyond the original
+    seven template slots, including abbreviated older roles that have
+    Company/Title/Dates but no bullets. Existing spacing is preserved; a new
+    blank paragraph is added only when one is missing.
+    """
+    paragraphs = list(doc.paragraphs)
+    company_pattern = re.compile(
+        r"\{\{company(\d+)\}\}",
+        flags=re.IGNORECASE,
+    )
+
+    role_locations = []
+
+    for idx, paragraph in enumerate(paragraphs):
+        match = company_pattern.search(paragraph.text or "")
+        if not match:
+            continue
+
+        role_num = int(match.group(1))
+        company_value = str(
+            mapping.get(f"Company{role_num}", "") or ""
+        ).strip()
+
+        if company_value:
+            role_locations.append((role_num, idx))
+
+    if len(role_locations) < 2:
+        return
+
+    # Bottom-up so inserting a paragraph does not invalidate earlier indexes.
+    for _, idx in reversed(role_locations[1:]):
+        paragraphs = list(doc.paragraphs)
+
+        if idx <= 0 or idx >= len(paragraphs):
+            continue
+
+        current_p = paragraphs[idx]
+        previous_p = paragraphs[idx - 1]
+
+        # Do nothing when the template/output already has a separator.
+        if not previous_p.text.strip():
+            continue
+
+        blank = current_p.insert_paragraph_before("")
+
+        try:
+            blank.style = doc.styles["Normal"]
+        except Exception:
+            pass
+
+        blank.paragraph_format.space_before = Pt(0)
+        blank.paragraph_format.space_after = Pt(0)
+
+
 def expand_experience_placeholders(doc, mapping):
     """
     Dynamically extend a template's work-history placeholder block when the
@@ -460,6 +518,7 @@ def expand_experience_placeholders(doc, mapping):
 def process_word_doc(temp_path, mapping, out_path):
     doc = docx.Document(temp_path)
     expand_experience_placeholders(doc, mapping)
+    ensure_experience_spacing(doc, mapping)
     
     # Check if this is the Peraton tool
     is_peraton = "CERTIFICATION1" in mapping
@@ -1560,6 +1619,136 @@ def fred_skill_work_history_evidence(skill_name, raw_resume_text):
     return 0
 
 
+def fred_vndly_skill_family(skill_name):
+    """High-confidence skill families used only for Top-8 redundancy control."""
+    key = fred_normalize_skill_name(skill_name)
+
+    families = {
+        "spring": {
+            "spring framework",
+            "spring boot",
+            "spring mvc",
+            "spring web",
+            "spring cloud",
+        },
+        "relational_database": {
+            "relational database",
+            "relational databases",
+            "oracle",
+            "db2",
+            "microsoft sql server",
+            "mysql",
+            "postgresql",
+            "sybase",
+        },
+        "testing": {
+            "junit testing",
+            "mockito",
+            "unit testing",
+        },
+        "source_control": {
+            "git",
+            "github",
+            "gitlab",
+        },
+    }
+
+    for family_name, members in families.items():
+        if key in members:
+            return family_name
+
+    return ""
+
+
+def fred_skill_is_explicitly_named_in_job(skill_name, structured_req):
+    """
+    Conservative check for whether a catalogue skill is explicitly named in
+    current formal requisition intelligence.
+    """
+    req_text = json.dumps(
+        structured_req or {},
+        ensure_ascii=False,
+    ).casefold()
+
+    key = fred_normalize_skill_name(skill_name)
+
+    aliases = {
+        "java database connectivity (jdbc)": [
+            "jdbc",
+            "java database connectivity",
+        ],
+        "javaserver pages (jsp)": [
+            "jsp",
+            "javaserver pages",
+            "java server pages",
+        ],
+        "java servlets": ["servlet", "servlets"],
+        "junit testing": ["junit"],
+        "microsoft sql server": ["sql server"],
+        "spring framework": ["spring framework"],
+        "relational database": [
+            "relational database",
+            "relational databases",
+        ],
+        "financial services": [
+            "finance background",
+            "financial services",
+            "financial domain",
+        ],
+    }
+
+    terms = aliases.get(key, [key])
+    return any(term and term in req_text for term in terms)
+
+
+def fred_apply_vndly_redundancy_control(
+    ranked_skills,
+    structured_req,
+    cap=FREDDIE_VNDLY_SKILL_CAP,
+):
+    """
+    Final Top-8 selection with a strong coverage-over-redundancy bias.
+
+    Once a skill family is represented, a second same-family skill is skipped
+    unless it is itself explicitly required. This prevents Spring Boot from
+    consuming a scarce slot after Spring Framework when an uncovered explicit
+    requirement such as JDBC/J2EE is available.
+    """
+    output = []
+    family_counts = {}
+
+    for item in ranked_skills or []:
+        if len(output) >= cap:
+            break
+
+        name = str(item.get("skill_name", "") or "").strip()
+        if not name:
+            continue
+
+        family = fred_vndly_skill_family(name)
+        explicit = fred_skill_is_explicitly_named_in_job(
+            name,
+            structured_req,
+        )
+
+        if family:
+            used = family_counts.get(family, 0)
+
+            if used >= 1 and not explicit:
+                continue
+
+            # Never let one family dominate a short eight-skill list.
+            if used >= 2:
+                continue
+
+        output.append(item)
+
+        if family:
+            family_counts[family] = family_counts.get(family, 0) + 1
+
+    return output
+
+
 def fred_rerank_vndly_skills_by_evidence(
     ranked_skills,
     raw_resume_text,
@@ -1942,6 +2131,8 @@ STRUCTURE:
 
 STYLE:
 - Factual, recruiter-written, concise, and confident.
+- Preserve employer names exactly as they appear in the candidate resume. Do not
+  silently "correct", rebrand, or normalize company names from outside knowledge.
 - Prefer evidence over judgments about "fit."
 - Use exact Freddie/JD terminology when genuinely supported.
 - Make the highest-priority current requirements easy to verify quickly.
@@ -1968,6 +2159,9 @@ OTHER RULES:
 - Never invent or infer experience the resume/vetting responses do not show.
 - Avoid generic claims such as "possesses solid expertise" when a more concrete
   statement of what the candidate actually did is available.
+- Avoid editorial closers such as "crucial for this role", "ideal for this role",
+  or "important for this data-intensive role." End on candidate evidence rather
+  than a judgment about fit.
 - Do not discuss weaknesses, missing skills, compensation, availability,
   sponsorship, citizenship, work authorization, onsite status, interview
   availability, or recruiter process in this summary. Those are captured
@@ -2028,8 +2222,11 @@ SELECTION PRINCIPLES:
   to the requisition.
 - Do not use one skill as a substitute for a different required skill
   (for example Maven is not proof of Gradle).
-- Avoid redundant parent/child/synonym selections unless both are independently
-  high-value screening signals.
+- Avoid redundant parent/child/synonym selections. With only 8 final slots,
+  coverage of distinct explicit requirements is usually more valuable than a
+  second closely related variant. For example, when Spring Framework is already
+  selected and JDBC/J2EE are explicit candidate-proven requirements, do not spend
+  another slot on Spring Boot merely because it is a candidate strength.
 - Candidate evidence must genuinely support every selection.
 
 STRUCTURED-SKILL RULE:
@@ -2101,9 +2298,15 @@ Return ONLY:
         cap=16,
     )
 
-    ranked_skills = fred_rerank_vndly_skills_by_evidence(
+    evidence_ranked_skills = fred_rerank_vndly_skills_by_evidence(
         ranked_skill_pool,
         raw_resume_text,
+        cap=16,
+    )
+
+    ranked_skills = fred_apply_vndly_redundancy_control(
+        evidence_ranked_skills,
+        structured_req,
         cap=FREDDIE_VNDLY_SKILL_CAP,
     )
 
@@ -3287,6 +3490,128 @@ def fred_role_date_interval(dates, current_date):
     return start_idx, end_idx, end_is_current, ey
 
 
+def fred_skill_label_components(skill_label):
+    """
+    Extract the named technologies/components from a Freddie Skills-table row.
+    Parenthetical items are treated as explicit material components.
+    """
+    label = str(skill_label or "").strip()
+
+    if not label:
+        return []
+
+    components = []
+
+    for part in re.findall(r"\(([^)]*)\)", label):
+        for token in re.split(r"[,/&;+]", part):
+            token = token.strip()
+            if token:
+                components.append(token)
+
+    return components
+
+
+def fred_role_supports_skill_component(role, component):
+    """Conservative alias check against one dated structured role."""
+    bullets = role.get("Bullets", []) or []
+
+    if isinstance(bullets, str):
+        bullets_text = bullets
+    else:
+        bullets_text = " ".join(str(x) for x in bullets)
+
+    role_text = " ".join(
+        [
+            str(role.get("Company", "") or ""),
+            str(role.get("Title", "") or ""),
+            bullets_text,
+            str(role.get("Environment", "") or ""),
+        ]
+    ).casefold()
+
+    key = fred_normalize_skill_name(component)
+
+    aliases = {
+        "j2ee": ["j2ee", "java ee", "jee"],
+        "microservices": ["microservice"],
+        "spring boot": ["spring boot"],
+        "spring framework": ["spring framework", "spring "],
+        "java": ["java"],
+        "oracle": ["oracle"],
+        "db2": ["db2"],
+        "sql server": ["sql server"],
+        "microsoft sql server": ["sql server"],
+        "sql": ["sql", "pl/sql"],
+        "junit": ["junit"],
+        "junit testing": ["junit"],
+        "mockito": ["mockito"],
+        "git": ["git", "gitlab", "github"],
+        "maven": ["maven"],
+        "jenkins": ["jenkins"],
+        "gradle": ["gradle"],
+        "jdbc": ["jdbc", "java database connectivity"],
+        "jsp": ["jsp", "jsps", "javaserver pages", "java server pages"],
+        "servlets": ["servlet"],
+    }
+
+    terms = aliases.get(key)
+
+    if terms:
+        return any(term in role_text for term in terms)
+
+    core = re.sub(
+        r"[^a-z0-9+#./ -]",
+        "",
+        key,
+    ).strip()
+
+    return bool(core and len(core) >= 4 and core in role_text)
+
+
+def fred_filter_skill_role_indexes_by_label(
+    skill_label,
+    experience,
+    role_indexes,
+):
+    """
+    Validate Gemini's role indexes against the explicit components written into
+    the final skill label.
+
+    If a row says "(JUnit, Mockito, Git, Maven, Jenkins)", a dated role must
+    actually contain all five to count toward the displayed years. This prevents
+    a broad compound row from inheriting years from only partially related roles.
+    """
+    clean_indexes = fred_clean_skill_role_indexes(
+        role_indexes,
+        len(experience),
+    )
+
+    if not clean_indexes:
+        return []
+
+    components = fred_skill_label_components(skill_label)
+
+    # No explicit parenthetical components: retain Gemini's dated-role evidence.
+    if not components:
+        return clean_indexes
+
+    validated = []
+
+    for idx in clean_indexes:
+        role = experience[idx - 1]
+
+        if all(
+            fred_role_supports_skill_component(
+                role,
+                component,
+            )
+            for component in components
+        ):
+            validated.append(idx)
+
+    return validated
+
+
 def fred_calculate_skill_years_from_roles(
     experience,
     role_indexes,
@@ -3591,6 +3916,7 @@ def process_freddie_word_doc(
     """
     doc = docx.Document(temp_path)
     expand_experience_placeholders(doc, mapping)
+    ensure_experience_spacing(doc, mapping)
 
     # ================================================================
     # 1. SUPPLIER VETTING QUESTIONS
@@ -5489,6 +5815,12 @@ ROLE-INDEX RULES:
   overlaps, and round down. Therefore the role indexes must be conservative and
   evidence-based.
 - If no dated role supports the entire proposed row, do not use that row.
+- Avoid overstuffed compound rows that combine technologies with materially
+  different tenure. Prefer a narrower, defensible competency label whose years
+  can be supported by the same dated roles.
+- Example: do not write "DevOps & Testing (JUnit, Mockito, Git, Maven, Jenkins)"
+  if the recent roles support JUnit/Mockito/Git/Maven but Jenkins only appears in
+  older roles. Narrow the row rather than overstating the combined tenure.
 
 For every Skills-table row, calculate the displayed experience conservatively
 from the dated work history.
@@ -5914,9 +6246,15 @@ FULL ORIGINAL RESUME
                     years_key = f"YEARS{skill_num}"
                     role_key = f"SKILL{skill_num}_ROLE_INDEXES"
 
-                    role_indexes = fred_clean_skill_role_indexes(
+                    proposed_role_indexes = fred_clean_skill_role_indexes(
                         summary_data.get(role_key, []),
                         len(experience),
+                    )
+
+                    role_indexes = fred_filter_skill_role_indexes_by_label(
+                        summary_data.get(f"SKILL{skill_num}", ""),
+                        experience,
+                        proposed_role_indexes,
                     )
 
                     deterministic_skill_years = (
@@ -5930,13 +6268,17 @@ FULL ORIGINAL RESUME
                     if deterministic_skill_years:
                         summary_data[years_key] = deterministic_skill_years
                     else:
-                        # Conservative backward-compatible fallback if the model
-                        # fails to return usable role indexes. Still enforce the
-                        # total-career ceiling.
-                        summary_data[years_key] = fred_cap_skill_years(
-                            summary_data.get(years_key, ""),
-                            calculated_total_experience,
-                        )
+                        # If Gemini proposed role evidence but none survives the
+                        # complete-label audit, do not recycle its inflated years.
+                        # Leave the value blank rather than asserting unsupported
+                        # tenure for a compound skill row.
+                        if proposed_role_indexes:
+                            summary_data[years_key] = ""
+                        else:
+                            summary_data[years_key] = fred_cap_skill_years(
+                                summary_data.get(years_key, ""),
+                                calculated_total_experience,
+                            )
 
                 # ====================================================
                 # BUILD VNDLY SUBMISSION SUMMARY + RECOMMENDED SKILLS
