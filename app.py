@@ -13,6 +13,9 @@ import os
 import copy
 import time
 import subprocess
+import smtplib
+import hashlib
+from email.message import EmailMessage
 from pdf2docx import Converter
 from copy import deepcopy
 from datetime import date
@@ -1003,6 +1006,526 @@ def fannie_mae_app():
 # --- 🟣 FREDDIE MAC HELPER FUNCTIONS 🟣 ---
 # ====================================================================
 
+FREDDIE_VNDLY_SKILLS_FILENAME = "freddie_vndly_skills_curated.json"
+
+
+@st.cache_data(show_spinner=False)
+def fred_load_vndly_skill_catalog(path=FREDDIE_VNDLY_SKILLS_FILENAME):
+    """
+    Load the curated VNDLY skill catalogue bundled with the Streamlit app.
+    """
+    if not os.path.exists(path):
+        return []
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+
+        raw_skills = payload.get("skills", payload)
+
+        if not isinstance(raw_skills, list):
+            return []
+
+        cleaned = []
+
+        for item in raw_skills:
+            if not isinstance(item, dict):
+                continue
+
+            skill_name = str(
+                item.get("skill_name")
+                or item.get("value")
+                or item.get("label")
+                or ""
+            ).strip()
+
+            if not skill_name:
+                continue
+
+            cleaned.append(
+                {
+                    "id": item.get("id"),
+                    "skill_name": skill_name,
+                    "catalog_tier": str(
+                        item.get("catalog_tier", "canonical_preferred")
+                    ).strip() or "canonical_preferred",
+                }
+            )
+
+        return cleaned
+
+    except Exception:
+        return []
+
+
+def fred_normalize_skill_name(value):
+    """Conservative normalization used only for exact catalogue lookups."""
+    return re.sub(
+        r"\s+",
+        " ",
+        str(value or "").replace("\u00a0", " "),
+    ).strip().casefold()
+
+
+def fred_catalog_lookup(catalog):
+    """Build a normalized-name -> exact VNDLY record lookup."""
+    lookup = {}
+
+    for item in catalog or []:
+        if not isinstance(item, dict):
+            continue
+
+        name = str(item.get("skill_name", "")).strip()
+        if not name:
+            continue
+
+        lookup[fred_normalize_skill_name(name)] = item
+
+    return lookup
+
+
+def fred_sanitize_recommended_skills(raw_items, catalog):
+    """
+    Force Gemini recommendations back onto exact catalogue values.
+    """
+    if not isinstance(raw_items, list):
+        return []
+
+    lookup = fred_catalog_lookup(catalog)
+    cleaned = []
+    seen = set()
+
+    for item in raw_items:
+        if isinstance(item, dict):
+            proposed = (
+                item.get("skill_name")
+                or item.get("value")
+                or item.get("label")
+                or ""
+            )
+            evidence = str(item.get("evidence", "") or "").strip()
+            reason = str(item.get("reason", "") or "").strip()
+        else:
+            proposed = str(item)
+            evidence = ""
+            reason = ""
+
+        exact = lookup.get(fred_normalize_skill_name(proposed))
+
+        if not exact:
+            continue
+
+        key = fred_normalize_skill_name(exact["skill_name"])
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        cleaned.append(
+            {
+                "id": exact.get("id"),
+                "skill_name": exact["skill_name"],
+                "catalog_tier": exact.get(
+                    "catalog_tier",
+                    "canonical_preferred",
+                ),
+                "evidence": evidence,
+                "reason": reason,
+            }
+        )
+
+    return cleaned
+
+
+def fred_dedupe_skill_groups(*groups):
+    """Remove duplicates while preserving priority order."""
+    seen = set()
+    output = []
+
+    for group in groups:
+        clean_group = []
+
+        for item in group or []:
+            name = str(item.get("skill_name", "")).strip()
+            key = fred_normalize_skill_name(name)
+
+            if not name or key in seen:
+                continue
+
+            seen.add(key)
+            clean_group.append(item)
+
+        output.append(clean_group)
+
+    return output
+
+
+def fred_build_vndly_candidate_package(
+    api_key,
+    candidate_name,
+    raw_resume_text,
+    structured_req,
+    vndly_context,
+    vetting_for_ai,
+    resume_summary,
+):
+    """
+    Create the Freddie-only VNDLY submission summary and skill selections.
+    """
+    catalog = fred_load_vndly_skill_catalog()
+
+    if not catalog:
+        raise RuntimeError(
+            f"VNDLY skill catalogue '{FREDDIE_VNDLY_SKILLS_FILENAME}' "
+            "was not found or could not be read."
+        )
+
+    catalog_for_ai = [
+        {
+            "id": item.get("id"),
+            "skill_name": item.get("skill_name", ""),
+            "catalog_tier": item.get(
+                "catalog_tier",
+                "canonical_preferred",
+            ),
+        }
+        for item in catalog
+    ]
+
+    catalog_json = json.dumps(
+        catalog_for_ai,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    vndly_context = vndly_context or {}
+    raw_must = str(vndly_context.get("must_have_skills", "") or "").strip()
+    raw_nice = str(vndly_context.get("nice_to_have_skills", "") or "").strip()
+
+    package_prompt = f"""
+Return a valid JSON object ONLY.
+
+You are preparing the VNDLY submission metadata for a Freddie Mac contingent
+worker candidate. This is SEPARATE from the resume Summary.
+
+CANDIDATE:
+{candidate_name}
+
+ALREADY-APPROVED RESUME SUMMARY:
+{resume_summary}
+
+STRUCTURED REQUISITION INTELLIGENCE:
+{structured_req}
+
+STRUCTURED VNDLY MUST HAVE SKILLS FIELD — RAW EXACT TEXT:
+{raw_must or "BLANK"}
+
+STRUCTURED VNDLY NICE TO HAVE SKILLS FIELD — RAW EXACT TEXT:
+{raw_nice or "BLANK"}
+
+SUPPLIER VETTING RESPONSES:
+{vetting_for_ai}
+
+FULL ORIGINAL CANDIDATE RESUME:
+{raw_resume_text}
+
+EXACT VNDLY SKILL CATALOGUE:
+{catalog_json}
+
+======================================================================
+TASK 1 — VNDLY SUBMISSION SUMMARY
+======================================================================
+
+Write a concise ready-to-paste candidate submission summary for VNDLY.
+
+Rules:
+- This is NOT the resume Summary and should not simply repeat it.
+- Use 3-4 compact sentences as ONE paragraph.
+- Lead with the candidate's strongest genuine match to the CURRENT role.
+- Make the structured Must Haves and current manager-selection priorities easy
+  for an MSP reviewer to verify quickly.
+- Use exact Freddie/VNDLY terminology when the candidate genuinely supports it.
+- Mention business/domain background when it materially matters.
+- Include concrete evidence, not keyword stuffing.
+- Never invent or infer experience that the resume/vetting responses do not show.
+- Do not discuss weaknesses, missing skills, compensation, availability,
+  sponsorship, or recruiter process.
+- Do not mention "VNDLY", "MSP", "shortlist", "AI", or matching strategy in the
+  summary itself unless AI/GenAI is genuinely a role technology.
+
+======================================================================
+TASK 2 — EXACT REQUISITION SKILLS
+======================================================================
+
+The raw structured Must Have / Nice To Have fields came directly from Freddie's
+VNDLY job page.
+
+CRITICAL:
+- Identify the EXACT VNDLY catalogue values represented in each populated raw
+  field. Those raw fields may contain multiple selected values joined together,
+  and some selected values themselves contain commas or full sentences.
+- Use the EXACT `skill_name` from the supplied catalogue. Never rewrite it.
+- A long or ugly legacy/free-text value is VALID here when it is actually one
+  of the skills selected on THIS requisition.
+- Recommend an exact requisition skill ONLY when the candidate genuinely
+  satisfies the substance of that complete selected value.
+- Do not approve a combined requirement because one keyword happens to appear.
+- Respect AND / OR / AND-OR wording, years requirements, technologies, domain
+  requirements, and certifications contained in the complete value.
+- If the candidate does not clearly demonstrate it, omit it.
+- Must Have and Nice To Have remain separate.
+
+======================================================================
+TASK 3 — ADDITIONAL VNDLY SKILLS
+======================================================================
+
+Recommend up to 8 additional exact catalogue skills that:
+- are materially relevant to this requisition;
+- are genuinely demonstrated by the candidate;
+- add useful matching signal beyond the exact req skills above.
+
+For ADDITIONAL skills only:
+1. Prefer `canonical_preferred`.
+2. Use `compound_review` only when it is materially more precise.
+3. NEVER use `legacy_free_text`.
+4. Do not duplicate an exact Must Have or Nice To Have recommendation.
+5. Do not select broad/adjacent skills merely because the catalogue returned
+   them for a fuzzy search.
+
+======================================================================
+OUTPUT
+======================================================================
+
+Return ONLY:
+
+{{
+  "VNDLY_SUMMARY": "",
+  "EXACT_MUST_HAVE_SKILLS": [
+    {{
+      "skill_name": "",
+      "evidence": ""
+    }}
+  ],
+  "EXACT_NICE_TO_HAVE_SKILLS": [
+    {{
+      "skill_name": "",
+      "evidence": ""
+    }}
+  ],
+  "ADDITIONAL_VNDLY_SKILLS": [
+    {{
+      "skill_name": "",
+      "evidence": "",
+      "reason": ""
+    }}
+  ]
+}}
+"""
+
+    raw_package = fred_generate_json(
+        api_key,
+        package_prompt,
+    )
+
+    vndly_summary = str(
+        raw_package.get("VNDLY_SUMMARY", "")
+    ).strip()
+
+    if not vndly_summary:
+        raise RuntimeError(
+            "Gemini returned no VNDLY submission summary."
+        )
+
+    exact_must = fred_sanitize_recommended_skills(
+        raw_package.get("EXACT_MUST_HAVE_SKILLS", []),
+        catalog,
+    )
+    exact_nice = fred_sanitize_recommended_skills(
+        raw_package.get("EXACT_NICE_TO_HAVE_SKILLS", []),
+        catalog,
+    )
+    additional = fred_sanitize_recommended_skills(
+        raw_package.get("ADDITIONAL_VNDLY_SKILLS", []),
+        catalog,
+    )
+
+    additional = [
+        item
+        for item in additional
+        if item.get("catalog_tier") in {
+            "canonical_preferred",
+            "compound_review",
+        }
+    ][:8]
+
+    exact_must, exact_nice, additional = fred_dedupe_skill_groups(
+        exact_must,
+        exact_nice,
+        additional,
+    )
+
+    return {
+        "vndly_summary": vndly_summary,
+        "exact_must_have_skills": exact_must,
+        "exact_nice_to_have_skills": exact_nice,
+        "additional_vndly_skills": additional,
+    }
+
+
+def fred_skill_names(items):
+    return [
+        str(item.get("skill_name", "")).strip()
+        for item in (items or [])
+        if str(item.get("skill_name", "")).strip()
+    ]
+
+
+def fred_build_submission_email_body(
+    candidate_name,
+    vndly_context,
+    package,
+):
+    """Plain-text ready-to-use Freddie submission email."""
+    vndly_context = vndly_context or {}
+    package = package or {}
+
+    job_id = str(vndly_context.get("job_id", "") or "").strip()
+    job_title = str(vndly_context.get("job_title", "") or "").strip()
+    manager = str(vndly_context.get("resource_manager", "") or "").strip()
+
+    exact_must = fred_skill_names(
+        package.get("exact_must_have_skills", [])
+    )
+    exact_nice = fred_skill_names(
+        package.get("exact_nice_to_have_skills", [])
+    )
+    additional = fred_skill_names(
+        package.get("additional_vndly_skills", [])
+    )
+
+    def render_section(title, values):
+        if not values:
+            return f"{title}\nNone recommended"
+        return title + "\n" + "\n".join(f"- {value}" for value in values)
+
+    lines = [
+        f"Candidate: {candidate_name}",
+        f"Freddie Job: {job_id}" + (f" - {job_title}" if job_title else ""),
+        f"Resource Manager: {manager or 'N/A'}",
+        "",
+        "VNDLY SUBMISSION SUMMARY",
+        str(package.get("vndly_summary", "") or "").strip(),
+        "",
+        render_section(
+            "RECOMMENDED VNDLY SKILLS - EXACT MUST HAVE MATCHES",
+            exact_must,
+        ),
+        "",
+        render_section(
+            "RECOMMENDED VNDLY SKILLS - EXACT NICE TO HAVE MATCHES",
+            exact_nice,
+        ),
+        "",
+        render_section(
+            "ADDITIONAL HIGH-VALUE VNDLY SKILLS",
+            additional,
+        ),
+    ]
+
+    return "\n".join(lines).strip()
+
+
+def fred_send_submission_email(
+    candidate_name,
+    vndly_context,
+    package,
+):
+    """
+    Send the Freddie submission metadata through Gmail SMTP.
+    Credentials live only in Streamlit Secrets.
+    """
+    sender = str(
+        st.secrets.get(
+            "FREDDIE_EMAIL_SENDER",
+            "kennyconv@gmail.com",
+        )
+    ).strip()
+    recipient = str(
+        st.secrets.get(
+            "FREDDIE_EMAIL_RECIPIENT",
+            "kkerrigan@conv.com",
+        )
+    ).strip()
+    app_password = str(
+        st.secrets.get(
+            "FREDDIE_EMAIL_APP_PASSWORD",
+            "",
+        )
+    ).replace(" ", "").strip()
+
+    if not sender or not recipient or not app_password:
+        raise RuntimeError(
+            "Freddie email Secrets are incomplete. Expected "
+            "FREDDIE_EMAIL_SENDER, FREDDIE_EMAIL_RECIPIENT, and "
+            "FREDDIE_EMAIL_APP_PASSWORD."
+        )
+
+    job_id = str((vndly_context or {}).get("job_id", "") or "").strip()
+    job_title = str((vndly_context or {}).get("job_title", "") or "").strip()
+
+    subject_parts = [
+        "Freddie VNDLY Submission",
+        job_id,
+        candidate_name,
+    ]
+    subject = " - ".join(
+        part for part in subject_parts if str(part).strip()
+    )
+
+    if job_title:
+        subject += f" ({job_title})"
+
+    msg = EmailMessage()
+    msg["From"] = sender
+    msg["To"] = recipient
+    msg["Subject"] = subject
+    msg.set_content(
+        fred_build_submission_email_body(
+            candidate_name,
+            vndly_context,
+            package,
+        )
+    )
+
+    with smtplib.SMTP_SSL(
+        "smtp.gmail.com",
+        465,
+        timeout=30,
+    ) as smtp:
+        smtp.login(sender, app_password)
+        smtp.send_message(msg)
+
+
+def fred_generation_email_key(
+    candidate_name,
+    job_id,
+    raw_resume_text,
+    vndly_summary,
+):
+    """
+    Stable session key preventing duplicate sends for the same generated package.
+    """
+    payload = "||".join(
+        [
+            str(candidate_name or ""),
+            str(job_id or ""),
+            str(raw_resume_text or ""),
+            str(vndly_summary or ""),
+        ]
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def fred_generate_json(api_key, prompt, max_attempts=6):
     """
     Freddie-specific Gemini JSON helper with the same retry philosophy
@@ -1189,6 +1712,60 @@ def fred_vetting_response_required(question):
     return True
 
 
+def fred_source_has_substantive_selection_intelligence(source_text):
+    """
+    Freddie-only deterministic safeguard.
+
+    Returns True only when MSP/VNDLY notes or Spotlight transcript appear to
+    contain substantive candidate-profile / selection guidance rather than
+    routine staffing operations such as scheduling, offers, OOO status,
+    backfills, reposting, or "JD updated" notices.
+    """
+    text = str(source_text or "").strip().lower()
+
+    if not text:
+        return False
+
+    substantive_patterns = [
+        r"\bmanager\b.{0,120}\b(?:need|needs|require|requires|required|want|wants|looking|focus|priority|critical|emphas)",
+        r"\b(?:must|need|needs|required|requires|requirement|critical|priority)\b.{0,120}\b(?:candidate|experience|background|skill|technical|functional|business|domain|java|python|angular|sql|mortgage|finance|operations|frontend|backend|full[- ]?stack)",
+        r"\b(?:candidate|candidates)\b.{0,120}\b(?:lacked|lack|missing|too|weak|stronger|depth|explain|demonstrate|show|not vetted|move forward|advance)",
+        r"\b(?:interview|selection|shortlist)\b.{0,120}\b(?:feedback|lacked|missing|need|needs|require|stronger|depth|explain|demonstrate)",
+        r"\b(?:not the focus|no longer required|not required|deemphasized|de-emphasized|instead of|rather than)\b",
+        r"\b\d{1,3}\s*%\b.{0,80}\b(?:ui|frontend|front-end|backend|back-end|technical|functional|business)",
+    ]
+
+    return any(re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+               for pattern in substantive_patterns)
+
+
+def fred_cap_skill_years(value, total_experience):
+    """
+    Freddie-only hard ceiling: no skill/domain tenure may exceed the
+    deterministic total professional experience.
+    """
+    value_text = str(value or "").strip()
+    total_text = str(total_experience or "").strip()
+
+    if not value_text or not total_text:
+        return value_text
+
+    value_match = re.search(r"(\d+)\s*\+\s*years", value_text, flags=re.IGNORECASE)
+    total_match = re.search(r"(\d+)\s*\+\s*years", total_text, flags=re.IGNORECASE)
+
+    if not value_match or not total_match:
+        return value_text
+
+    skill_years = int(value_match.group(1))
+    total_years = int(total_match.group(1))
+
+    if skill_years <= total_years:
+        return value_text
+
+    start, end = value_match.span(1)
+    return value_text[:start] + str(total_years) + value_text[end:]
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fred_analyze_requisition(
     _api_key,
@@ -1311,6 +1888,13 @@ FORMAL REQUIREMENTS:
 ACTUAL HIRING-MANAGER / SELECTION EMPHASIS:
 - Spotlight calls and role-relevant MSP/VNDLY clarifications can reveal which
   formal requirements matter most in practice.
+- PROVENANCE GATE: current_manager_priorities, selection_feedback, and
+  role_clarifications may ONLY contain information explicitly supported by the
+  DATED MSP / VNDLY NOTES or DATED SPOTLIGHT CALL TRANSCRIPT.
+- NEVER populate those three fields by copying, paraphrasing, or inferring from
+  the Official VNDLY Job Description or structured VNDLY fields alone.
+- If the notes/transcript contain only operational updates and no substantive
+  manager/selection guidance, return [] for all three fields.
 - Give especially high weight to explicit feedback explaining WHY prior
   candidates were not shortlisted, did not advance, or failed interviews, and
   what future submissions must demonstrate.
@@ -1341,10 +1925,16 @@ entries over the lifecycle of one requisition.
   NOT change the candidate profile, it must NOT override older substantive role
   guidance.
 - Capture only SUBSTANTIVE candidate-profile changes over time in role_evolution.
+- HARD PROVENANCE GATE: role_evolution may ONLY be populated when the DATED
+  MSP / VNDLY NOTES or DATED SPOTLIGHT CALL TRANSCRIPT explicitly states WHAT
+  changed in the desired candidate profile.
 - Do NOT create a role_evolution item merely because a note says the job was
   updated, refreshed, reposted, re-released, backfilled, replaced, or that a
   prior offer was rejected. Those are operational/history facts unless the
-  source actually states WHAT changed in the desired candidate profile.
+  source itself states the substantive change.
+- NEVER infer that an updated/reposted/backfill JD "reflects the latest candidate
+  profile" or similar. If the source does not name the changed skill, weighting,
+  scope, domain, seniority, responsibility, or manager expectation, return [].
 - A role_evolution item is appropriate only when the source identifies a
   meaningful change in required skills, weighting, scope, domain background,
   seniority/experience, responsibilities, or manager expectations.
@@ -1603,6 +2193,24 @@ DATED SPOTLIGHT CALL TRANSCRIPT:
             )
 
     data["role_evolution"] = normalized_evolution
+
+    # ================================================================
+    # FREDDIE-ONLY PROVENANCE SAFEGUARD
+    # ================================================================
+    # Manager-priority / selection / clarification / evolution fields are
+    # allowed only when MSP notes or the Spotlight transcript actually contain
+    # substantive candidate-profile guidance. Formal JD requirements remain in
+    # their own formal-requirement buckets.
+    substantive_manager_source = (
+        fred_source_has_substantive_selection_intelligence(msp_notes)
+        or fred_source_has_substantive_selection_intelligence(spotlight_transcript)
+    )
+
+    if not substantive_manager_source:
+        data["current_manager_priorities"] = []
+        data["selection_feedback"] = []
+        data["role_clarifications"] = []
+        data["role_evolution"] = []
 
     groups = data.get("must_have_competency_groups", [])
     if not isinstance(groups, list):
@@ -4280,6 +4888,45 @@ FULL ORIGINAL RESUME
                     )
 
                 # ====================================================
+                # FREDDIE-ONLY SKILL YEARS HARD CEILING
+                # ====================================================
+                # A competency/domain cannot have more years than the
+                # deterministic total professional experience.
+                for years_key in ["YEARS1", "YEARS2", "YEARS3", "YEARS4"]:
+                    summary_data[years_key] = fred_cap_skill_years(
+                        summary_data.get(years_key, ""),
+                        calculated_total_experience,
+                    )
+
+                # ====================================================
+                # BUILD VNDLY SUBMISSION SUMMARY + RECOMMENDED SKILLS
+                # ====================================================
+
+                vndly_package = {
+                    "vndly_summary": "",
+                    "exact_must_have_skills": [],
+                    "exact_nice_to_have_skills": [],
+                    "additional_vndly_skills": [],
+                }
+                vndly_package_error = None
+
+                try:
+                    with st.spinner(
+                        "Building VNDLY submission summary and exact skill recommendations..."
+                    ):
+                        vndly_package = fred_build_vndly_candidate_package(
+                            API_KEY,
+                            name,
+                            raw_text,
+                            structured_req,
+                            selected_vndly_context,
+                            vetting_for_ai,
+                            final_summary,
+                        )
+                except Exception as package_error:
+                    vndly_package_error = str(package_error)
+
+                # ====================================================
                 # BUILD WORD MAPPING
                 # ====================================================
 
@@ -4447,6 +5094,117 @@ FULL ORIGINAL RESUME
                     vetting_pairs,
                     out_file,
                 )
+
+                # ====================================================
+                # VNDLY SUBMISSION PACKAGE — READY TO COPY
+                # ====================================================
+
+                st.subheader("📨 VNDLY Submission Details")
+
+                if vndly_package_error:
+                    st.warning(
+                        "⚠️ The resume was generated successfully, but the "
+                        "VNDLY summary/skill package could not be created. "
+                        f"Package error: {vndly_package_error}"
+                    )
+
+                st.markdown("**VNDLY Submission Summary**")
+                if vndly_package.get("vndly_summary", ""):
+                    st.code(
+                        vndly_package.get("vndly_summary", ""),
+                        language=None,
+                    )
+                else:
+                    st.caption("No VNDLY submission summary was generated.")
+
+                exact_must_names = fred_skill_names(
+                    vndly_package.get(
+                        "exact_must_have_skills",
+                        [],
+                    )
+                )
+                exact_nice_names = fred_skill_names(
+                    vndly_package.get(
+                        "exact_nice_to_have_skills",
+                        [],
+                    )
+                )
+                additional_names = fred_skill_names(
+                    vndly_package.get(
+                        "additional_vndly_skills",
+                        [],
+                    )
+                )
+
+                st.markdown("**Recommended VNDLY Skills — Exact Must Have Matches**")
+                if exact_must_names:
+                    for skill_name in exact_must_names:
+                        st.markdown(f"- `{skill_name}`")
+                else:
+                    st.caption("None supported strongly enough to recommend.")
+
+                st.markdown("**Recommended VNDLY Skills — Exact Nice To Have Matches**")
+                if exact_nice_names:
+                    for skill_name in exact_nice_names:
+                        st.markdown(f"- `{skill_name}`")
+                else:
+                    st.caption("None supported strongly enough to recommend.")
+
+                st.markdown("**Additional High-Value VNDLY Skills**")
+                if additional_names:
+                    for skill_name in additional_names:
+                        st.markdown(f"- `{skill_name}`")
+                else:
+                    st.caption("No additional catalogue skills recommended.")
+
+                # ====================================================
+                # AUTOMATIC FREDDIE SUBMISSION EMAIL
+                # ====================================================
+
+                if not vndly_package_error and vndly_package.get(
+                    "vndly_summary",
+                    "",
+                ):
+                    email_key = fred_generation_email_key(
+                        name,
+                        selected_vndly_context.get("job_id", ""),
+                        raw_text,
+                        vndly_package.get("vndly_summary", ""),
+                    )
+
+                    sent_keys = st.session_state.setdefault(
+                        "fred_sent_email_keys",
+                        set(),
+                    )
+
+                    if email_key not in sent_keys:
+                        try:
+                            fred_send_submission_email(
+                                name,
+                                selected_vndly_context,
+                                vndly_package,
+                            )
+                            sent_keys.add(email_key)
+                            st.success(
+                                "📧 VNDLY submission details were emailed automatically."
+                            )
+                        except Exception as email_error:
+                            st.warning(
+                                "⚠️ The resume was generated successfully, but the "
+                                "automatic Freddie submission email could not be sent. "
+                                f"Email error: {email_error}"
+                            )
+                    else:
+                        st.info(
+                            "📧 This exact Freddie candidate/job submission was already "
+                            "emailed during the current app session, so a duplicate "
+                            "email was not sent."
+                        )
+                else:
+                    st.warning(
+                        "⚠️ Automatic email was skipped because the VNDLY "
+                        "submission package was not available."
+                    )
 
                 with open(
                     out_file,
