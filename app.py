@@ -1160,6 +1160,127 @@ def fred_dedupe_skill_groups(*groups):
     return output
 
 
+def fred_resolve_structured_vndly_skills(raw_field, catalog):
+    """
+    Resolve a raw Google-Sheet Must/Nice field back to the exact VNDLY skill
+    values that produced it.
+
+    The sheet stores multiple selected skills as one comma-separated string, but
+    some individual VNDLY skills also contain commas.  This uses the known exact
+    catalogue and a longest-match dynamic-programming pass so we do not mistake
+    a JD keyword such as "Java" for an exact requisition-selected skill.
+    """
+    raw = re.sub(r"\s+", " ", str(raw_field or "").replace("\u00a0", " ")).strip()
+
+    if not raw:
+        return []
+
+    candidates = []
+
+    for item in catalog or []:
+        if not isinstance(item, dict):
+            continue
+
+        name = re.sub(
+            r"\s+",
+            " ",
+            str(item.get("skill_name", "") or "").replace("\u00a0", " "),
+        ).strip()
+
+        if name:
+            candidates.append((name, item))
+
+    # Prefer the longest exact catalogue value at any ambiguous position.
+    candidates.sort(key=lambda pair: len(pair[0]), reverse=True)
+
+    raw_fold = raw.casefold()
+    memo = {}
+
+    def skip_separator(pos):
+        while pos < len(raw) and raw[pos].isspace():
+            pos += 1
+
+        if pos < len(raw) and raw[pos] in {",", ";", "|"}:
+            pos += 1
+            while pos < len(raw) and raw[pos].isspace():
+                pos += 1
+
+        return pos
+
+    def solve(pos):
+        while pos < len(raw) and raw[pos].isspace():
+            pos += 1
+
+        if pos >= len(raw):
+            return []
+
+        if pos in memo:
+            return memo[pos]
+
+        for name, item in candidates:
+            name_fold = name.casefold()
+
+            if not raw_fold.startswith(name_fold, pos):
+                continue
+
+            end = pos + len(name)
+
+            # Exact skill must end at the raw-field end or at a separator.
+            check = end
+            while check < len(raw) and raw[check].isspace():
+                check += 1
+
+            if check < len(raw) and raw[check] not in {",", ";", "|"}:
+                continue
+
+            next_pos = skip_separator(check)
+
+            remainder = solve(next_pos)
+
+            if remainder is not None:
+                result = [item] + remainder
+                memo[pos] = result
+                return result
+
+        memo[pos] = None
+        return None
+
+    resolved = solve(0)
+
+    if resolved is not None:
+        return resolved
+
+    # Conservative fallback: only accept a whole-field exact catalogue match.
+    whole = fred_catalog_lookup(catalog).get(
+        fred_normalize_skill_name(raw)
+    )
+
+    return [whole] if whole else []
+
+
+def fred_filter_exact_req_recommendations(raw_items, allowed_items, catalog):
+    """
+    Validate Gemini output against the deterministic set of skills actually
+    selected on this requisition's structured Must/Nice field.
+    """
+    sanitized = fred_sanitize_recommended_skills(raw_items, catalog)
+
+    allowed = {
+        fred_normalize_skill_name(item.get("skill_name", ""))
+        for item in (allowed_items or [])
+        if str(item.get("skill_name", "")).strip()
+    }
+
+    if not allowed:
+        return []
+
+    return [
+        item
+        for item in sanitized
+        if fred_normalize_skill_name(item.get("skill_name", "")) in allowed
+    ]
+
+
 def fred_build_vndly_candidate_package(
     api_key,
     candidate_name,
@@ -1168,6 +1289,7 @@ def fred_build_vndly_candidate_package(
     vndly_context,
     vetting_for_ai,
     resume_summary,
+    calculated_total_experience,
 ):
     """
     Create the Freddie-only VNDLY submission summary and skill selections.
@@ -1202,6 +1324,47 @@ def fred_build_vndly_candidate_package(
     raw_must = str(vndly_context.get("must_have_skills", "") or "").strip()
     raw_nice = str(vndly_context.get("nice_to_have_skills", "") or "").strip()
 
+    selected_must_items = fred_resolve_structured_vndly_skills(
+        raw_must,
+        catalog,
+    )
+    selected_nice_items = fred_resolve_structured_vndly_skills(
+        raw_nice,
+        catalog,
+    )
+
+    selected_must_json = json.dumps(
+        [
+            {
+                "id": item.get("id"),
+                "skill_name": item.get("skill_name", ""),
+                "catalog_tier": item.get(
+                    "catalog_tier",
+                    "canonical_preferred",
+                ),
+            }
+            for item in selected_must_items
+        ],
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    selected_nice_json = json.dumps(
+        [
+            {
+                "id": item.get("id"),
+                "skill_name": item.get("skill_name", ""),
+                "catalog_tier": item.get(
+                    "catalog_tier",
+                    "canonical_preferred",
+                ),
+            }
+            for item in selected_nice_items
+        ],
+        ensure_ascii=False,
+        indent=2,
+    )
+
     package_prompt = f"""
 Return a valid JSON object ONLY.
 
@@ -1214,14 +1377,45 @@ CANDIDATE:
 ALREADY-APPROVED RESUME SUMMARY:
 {resume_summary}
 
+PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE:
+{calculated_total_experience}
+
+CRITICAL EXPERIENCE RULE:
+- If the Python-calculated total above is populated, that is the ONLY total
+  career-experience figure you may use.
+- Never use, repeat, paraphrase, or round a candidate-written estimate such as
+  "close to 20 years" or "nearly 20 years" when it differs from the calculated
+  value.
+- Do not claim a requirement-specific minimum number of years unless the dated
+  work history itself supports that minimum for the relevant technology/domain.
+- A technology named only in the candidate's Professional Summary or skills
+  inventory can establish familiarity, but by itself cannot prove a multi-year
+  threshold.
+
 STRUCTURED REQUISITION INTELLIGENCE:
 {structured_req}
 
-STRUCTURED VNDLY MUST HAVE SKILLS FIELD — RAW EXACT TEXT:
+IMPORTANT JOB-INTELLIGENCE RULE:
+- Formal requirements are NOT limited to structured VNDLY Must/Nice skill tags.
+- The Official JD and authoritative manager/MSP/Spotlight guidance can establish
+  Required or Preferred requirements even when the structured skill fields are blank.
+- Use the existing structured requisition intelligence hierarchy exactly as supplied.
+- A requirement that is formally mandatory in the JD or authoritative manager guidance
+  belongs under REQUIRED_VNDLY_SKILLS_FROM_JOB_INTELLIGENCE when candidate evidence supports it.
+- A requirement that is explicitly preferred/nice-to-have in the JD or authoritative
+  manager guidance belongs under PREFERRED_VNDLY_SKILLS_FROM_JOB_INTELLIGENCE when supported.
+
+STRUCTURED VNDLY MUST HAVE SKILLS FIELD — RAW TEXT:
 {raw_must or "BLANK"}
 
-STRUCTURED VNDLY NICE TO HAVE SKILLS FIELD — RAW EXACT TEXT:
+DETERMINISTIC EXACT MUST-HAVE SKILLS SELECTED ON THIS REQUISITION:
+{selected_must_json}
+
+STRUCTURED VNDLY NICE TO HAVE SKILLS FIELD — RAW TEXT:
 {raw_nice or "BLANK"}
+
+DETERMINISTIC EXACT NICE-TO-HAVE SKILLS SELECTED ON THIS REQUISITION:
+{selected_nice_json}
 
 SUPPLIER VETTING RESPONSES:
 {vetting_for_ai}
@@ -1261,10 +1455,14 @@ The raw structured Must Have / Nice To Have fields came directly from Freddie's
 VNDLY job page.
 
 CRITICAL:
-- Identify the EXACT VNDLY catalogue values represented in each populated raw
-  field. Those raw fields may contain multiple selected values joined together,
-  and some selected values themselves contain commas or full sentences.
-- Use the EXACT `skill_name` from the supplied catalogue. Never rewrite it.
+- The deterministic exact Must/Nice lists above are authoritative.
+- You may recommend an EXACT_MUST_HAVE_SKILL only from the deterministic
+  Must-Have list above.
+- You may recommend an EXACT_NICE_TO_HAVE_SKILL only from the deterministic
+  Nice-To-Have list above.
+- If the deterministic list for a category is EMPTY, return an empty array for
+  that category. NEVER substitute JD requirements or general catalogue skills.
+- Use the EXACT `skill_name` supplied. Never rewrite it.
 - A long or ugly legacy/free-text value is VALID here when it is actually one
   of the skills selected on THIS requisition.
 - Recommend an exact requisition skill ONLY when the candidate genuinely
@@ -1276,19 +1474,61 @@ CRITICAL:
 - Must Have and Nice To Have remain separate.
 
 ======================================================================
-TASK 3 — ADDITIONAL VNDLY SKILLS
+TASK 3 — REQUIRED VNDLY SKILLS FROM JOB INTELLIGENCE
+======================================================================
+
+Recommend exact catalogue skills that correspond to FORMAL REQUIRED criteria
+from the broader requisition intelligence, even when no structured Must-Have
+skill tag exists.
+
+This includes:
+- Explicit JD "Must Have Qualifications", "Must Have", "Required", minimum-years,
+  and equivalent mandatory language.
+- Current authoritative manager/MSP/Spotlight clarification that establishes or
+  changes what future candidates must demonstrate.
+- Other mandatory requirements already classified in STRUCTURED REQUISITION
+  INTELLIGENCE as explicit_must_have_requirements / required_requirements /
+  domain_requirements when genuinely mandatory.
+
+Rules:
+- Candidate evidence must genuinely support the skill.
+- Use only exact VNDLY catalogue values.
+- Prefer `canonical_preferred`; use `compound_review` only when more precise.
+- Do NOT use `legacy_free_text` here merely because it resembles JD wording.
+- Do not duplicate skills already recommended as exact structured Must/Nice tags.
+- Do not convert an explicitly preferred item into Required.
+
+======================================================================
+TASK 4 — PREFERRED VNDLY SKILLS FROM JOB INTELLIGENCE
+======================================================================
+
+Recommend exact catalogue skills that correspond to explicit preferred /
+nice-to-have criteria from the JD or authoritative manager/MSP/Spotlight
+guidance.
+
+Rules:
+- Candidate evidence must genuinely support the skill.
+- Use only exact VNDLY catalogue values.
+- Prefer `canonical_preferred`; use `compound_review` only when more precise.
+- NEVER use `legacy_free_text` here.
+- Keep Preferred separate from Required.
+- Do not duplicate skills already recommended in higher-priority groups.
+
+======================================================================
+TASK 5 — ADDITIONAL HIGH-VALUE VNDLY SKILLS
 ======================================================================
 
 Recommend up to 8 additional exact catalogue skills that:
 - are materially relevant to this requisition;
 - are genuinely demonstrated by the candidate;
-- add useful matching signal beyond the exact req skills above.
+- add useful matching signal beyond the exact structured + required + preferred
+  groups above.
 
 For ADDITIONAL skills only:
 1. Prefer `canonical_preferred`.
-2. Use `compound_review` only when it is materially more precise.
+2. Use `compound_review` only when materially more precise.
 3. NEVER use `legacy_free_text`.
-4. Do not duplicate an exact Must Have or Nice To Have recommendation.
+4. Do not duplicate any higher-priority recommendation.
 5. Do not select broad/adjacent skills merely because the catalogue returned
    them for a fuzzy search.
 
@@ -1310,6 +1550,20 @@ Return ONLY:
     {{
       "skill_name": "",
       "evidence": ""
+    }}
+  ],
+  "REQUIRED_VNDLY_SKILLS_FROM_JOB_INTELLIGENCE": [
+    {{
+      "skill_name": "",
+      "evidence": "",
+      "reason": ""
+    }}
+  ],
+  "PREFERRED_VNDLY_SKILLS_FROM_JOB_INTELLIGENCE": [
+    {{
+      "skill_name": "",
+      "evidence": "",
+      "reason": ""
     }}
   ],
   "ADDITIONAL_VNDLY_SKILLS": [
@@ -1336,12 +1590,29 @@ Return ONLY:
             "Gemini returned no VNDLY submission summary."
         )
 
-    exact_must = fred_sanitize_recommended_skills(
+    exact_must = fred_filter_exact_req_recommendations(
         raw_package.get("EXACT_MUST_HAVE_SKILLS", []),
+        selected_must_items,
         catalog,
     )
-    exact_nice = fred_sanitize_recommended_skills(
+    exact_nice = fred_filter_exact_req_recommendations(
         raw_package.get("EXACT_NICE_TO_HAVE_SKILLS", []),
+        selected_nice_items,
+        catalog,
+    )
+
+    required_job_intelligence = fred_sanitize_recommended_skills(
+        raw_package.get(
+            "REQUIRED_VNDLY_SKILLS_FROM_JOB_INTELLIGENCE",
+            [],
+        ),
+        catalog,
+    )
+    preferred_job_intelligence = fred_sanitize_recommended_skills(
+        raw_package.get(
+            "PREFERRED_VNDLY_SKILLS_FROM_JOB_INTELLIGENCE",
+            [],
+        ),
         catalog,
     )
     additional = fred_sanitize_recommended_skills(
@@ -1349,18 +1620,38 @@ Return ONLY:
         catalog,
     )
 
+    allowed_clean_tiers = {
+        "canonical_preferred",
+        "compound_review",
+    }
+
+    required_job_intelligence = [
+        item
+        for item in required_job_intelligence
+        if item.get("catalog_tier") in allowed_clean_tiers
+    ]
+    preferred_job_intelligence = [
+        item
+        for item in preferred_job_intelligence
+        if item.get("catalog_tier") in allowed_clean_tiers
+    ]
     additional = [
         item
         for item in additional
-        if item.get("catalog_tier") in {
-            "canonical_preferred",
-            "compound_review",
-        }
+        if item.get("catalog_tier") in allowed_clean_tiers
     ][:8]
 
-    exact_must, exact_nice, additional = fred_dedupe_skill_groups(
+    (
         exact_must,
         exact_nice,
+        required_job_intelligence,
+        preferred_job_intelligence,
+        additional,
+    ) = fred_dedupe_skill_groups(
+        exact_must,
+        exact_nice,
+        required_job_intelligence,
+        preferred_job_intelligence,
         additional,
     )
 
@@ -1368,6 +1659,8 @@ Return ONLY:
         "vndly_summary": vndly_summary,
         "exact_must_have_skills": exact_must,
         "exact_nice_to_have_skills": exact_nice,
+        "required_vndly_skills_from_job_intelligence": required_job_intelligence,
+        "preferred_vndly_skills_from_job_intelligence": preferred_job_intelligence,
         "additional_vndly_skills": additional,
     }
 
@@ -1399,6 +1692,18 @@ def fred_build_submission_email_body(
     exact_nice = fred_skill_names(
         package.get("exact_nice_to_have_skills", [])
     )
+    required_job_intelligence = fred_skill_names(
+        package.get(
+            "required_vndly_skills_from_job_intelligence",
+            [],
+        )
+    )
+    preferred_job_intelligence = fred_skill_names(
+        package.get(
+            "preferred_vndly_skills_from_job_intelligence",
+            [],
+        )
+    )
     additional = fred_skill_names(
         package.get("additional_vndly_skills", [])
     )
@@ -1424,6 +1729,16 @@ def fred_build_submission_email_body(
         render_section(
             "RECOMMENDED VNDLY SKILLS - EXACT NICE TO HAVE MATCHES",
             exact_nice,
+        ),
+        "",
+        render_section(
+            "REQUIRED VNDLY SKILLS FROM JOB INTELLIGENCE",
+            required_job_intelligence,
+        ),
+        "",
+        render_section(
+            "PREFERRED VNDLY SKILLS FROM JOB INTELLIGENCE",
+            preferred_job_intelligence,
         ),
         "",
         render_section(
@@ -4906,6 +5221,8 @@ FULL ORIGINAL RESUME
                     "vndly_summary": "",
                     "exact_must_have_skills": [],
                     "exact_nice_to_have_skills": [],
+                    "required_vndly_skills_from_job_intelligence": [],
+                    "preferred_vndly_skills_from_job_intelligence": [],
                     "additional_vndly_skills": [],
                 }
                 vndly_package_error = None
@@ -4922,6 +5239,7 @@ FULL ORIGINAL RESUME
                             selected_vndly_context,
                             vetting_for_ai,
                             final_summary,
+                            calculated_total_experience,
                         )
                 except Exception as package_error:
                     vndly_package_error = str(package_error)
@@ -5129,6 +5447,18 @@ FULL ORIGINAL RESUME
                         [],
                     )
                 )
+                required_job_intelligence_names = fred_skill_names(
+                    vndly_package.get(
+                        "required_vndly_skills_from_job_intelligence",
+                        [],
+                    )
+                )
+                preferred_job_intelligence_names = fred_skill_names(
+                    vndly_package.get(
+                        "preferred_vndly_skills_from_job_intelligence",
+                        [],
+                    )
+                )
                 additional_names = fred_skill_names(
                     vndly_package.get(
                         "additional_vndly_skills",
@@ -5136,19 +5466,45 @@ FULL ORIGINAL RESUME
                     )
                 )
 
-                st.markdown("**Recommended VNDLY Skills — Exact Must Have Matches**")
-                if exact_must_names:
+                st.markdown("**Recommended VNDLY Skills — Exact Structured Must Have Matches**")
+                if not str(selected_vndly_context.get("must_have_skills", "") or "").strip():
+                    st.caption(
+                        "This requisition has no structured VNDLY Must Have skill tags. Formal JD/manager requirements are handled below under Job Intelligence."
+                    )
+                elif exact_must_names:
                     for skill_name in exact_must_names:
                         st.markdown(f"- `{skill_name}`")
                 else:
                     st.caption("None supported strongly enough to recommend.")
 
-                st.markdown("**Recommended VNDLY Skills — Exact Nice To Have Matches**")
-                if exact_nice_names:
+                st.markdown("**Recommended VNDLY Skills — Exact Structured Nice To Have Matches**")
+                if not str(selected_vndly_context.get("nice_to_have_skills", "") or "").strip():
+                    st.caption(
+                        "This requisition has no structured VNDLY Nice To Have skill tags. Formal JD/manager preferences are handled below under Job Intelligence."
+                    )
+                elif exact_nice_names:
                     for skill_name in exact_nice_names:
                         st.markdown(f"- `{skill_name}`")
                 else:
                     st.caption("None supported strongly enough to recommend.")
+
+                st.markdown("**Required VNDLY Skills from Job Intelligence**")
+                if required_job_intelligence_names:
+                    for skill_name in required_job_intelligence_names:
+                        st.markdown(f"- `{skill_name}`")
+                else:
+                    st.caption(
+                        "No additional candidate-supported required catalogue skills were identified."
+                    )
+
+                st.markdown("**Preferred VNDLY Skills from Job Intelligence**")
+                if preferred_job_intelligence_names:
+                    for skill_name in preferred_job_intelligence_names:
+                        st.markdown(f"- `{skill_name}`")
+                else:
+                    st.caption(
+                        "No candidate-supported preferred catalogue skills were identified."
+                    )
 
                 st.markdown("**Additional High-Value VNDLY Skills**")
                 if additional_names:
