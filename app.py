@@ -1266,6 +1266,36 @@ def fred_load_vndly_skill_catalog(path=FREDDIE_VNDLY_SKILLS_FILENAME):
         return []
 
 
+def fred_cap_skill_details(value, max_items=6):
+    """
+    Freddie-only safety cap for the right-hand Skills-table column.
+
+    Gemini is instructed to return at most six comma-separated details, but this
+    deterministic pass guarantees the Word output never exceeds that limit.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+
+    items = []
+    seen = set()
+
+    for part in raw.split(","):
+        clean = re.sub(r"\s+", " ", str(part or "")).strip()
+        key = clean.casefold()
+
+        if not clean or key in seen:
+            continue
+
+        items.append(clean)
+        seen.add(key)
+
+        if len(items) >= max_items:
+            break
+
+    return ", ".join(items)
+
+
 def fred_normalize_skill_name(value):
     """Conservative normalization used only for exact catalogue lookups."""
     return re.sub(
@@ -1582,11 +1612,37 @@ def fred_skill_work_history_evidence(skill_name, raw_resume_text):
         "gradle": ["gradle"],
         "eclipse ide": ["eclipse"],
         "python": ["python"],
+        "sql": ["sql"],
+        "snowflake": ["snowflake"],
+        "json": ["json"],
+        "opencv": ["opencv", "open cv"],
+        "pillow": ["pillow"],
+        "pytorch": ["pytorch", "py torch"],
+        "tensorflow": ["tensorflow", "tensor flow"],
+        "data engineering": [
+            "data engineer", "data engineering", "data pipeline", "etl", "elt",
+            "pyspark", "spark", "aws glue"
+        ],
+        "data quality": [
+            "data quality", "quality rule", "quality check", "reconciliation",
+            "data validation"
+        ],
+        "data validation": [
+            "data validation", "validate data", "validated data", "validation",
+            "reconciliation"
+        ],
+        "automation": ["automation", "automated", "automate"],
+        "finance": [
+            "bank", "banking", "financial", "investment", "portfolio",
+            "securit", "trading", "trade ", "retirement", "securities",
+            "asset", "capital markets"
+        ],
         "financial services": [
             "bank", "banking", "financial", "investment", "portfolio",
             "securit", "trading", "trade ", "retirement", "securities",
             "asset", "capital markets"
         ],
+        "mortgage industry": ["mortgage", "appraisal", "loan", "collateral", "uad"],
     }
 
     aliases = alias_map.get(key)
@@ -1654,6 +1710,17 @@ def fred_vndly_skill_family(skill_name):
             "github",
             "gitlab",
         },
+        "finance_generic": {
+            "finance",
+            "financial services",
+            "financial service",
+        },
+        "data_quality_validation": {
+            "data quality",
+            "data validation",
+            "data quality validation",
+            "validation",
+        },
     }
 
     for family_name, members in families.items():
@@ -1709,6 +1776,24 @@ def fred_skill_is_explicitly_named_in_job(skill_name, structured_req):
             "financial services",
             "financial domain",
         ],
+        "finance": [
+            "finance background",
+            "finance",
+            "financial",
+        ],
+        "python": ["python"],
+        "sql": ["sql"],
+        "snowflake": ["snowflake"],
+        "json": ["json"],
+        "opencv": ["opencv", "open cv"],
+        "pillow": ["pillow"],
+        "pytorch": ["pytorch", "py torch"],
+        "tensorflow": ["tensorflow", "tensor flow"],
+        "data engineering": ["data engineering"],
+        "data quality": ["data quality"],
+        "data validation": ["data validation", "validation"],
+        "automation": ["automation", "automate", "automated"],
+        "mortgage industry": ["mortgage", "appraisal", "collateral", "uad"],
     }
 
     terms = aliases.get(key, [key])
@@ -1764,6 +1849,20 @@ def fred_skill_aliases_for_requirement(skill_name):
         "gradle": ["gradle"],
         "maven": ["maven"],
         "java": ["java"],
+        "python": ["python"],
+        "sql": ["sql"],
+        "snowflake": ["snowflake"],
+        "json": ["json"],
+        "opencv": ["opencv", "open cv"],
+        "pillow": ["pillow"],
+        "pytorch": ["pytorch", "py torch"],
+        "tensorflow": ["tensorflow", "tensor flow"],
+        "data engineering": ["data engineering"],
+        "data quality": ["data quality"],
+        "data validation": ["data validation", "validation"],
+        "automation": ["automation", "automate", "automated"],
+        "finance": ["finance background", "finance", "financial"],
+        "mortgage industry": ["mortgage", "appraisal", "collateral", "uad"],
     }
     return aliases.get(key, [key])
 
@@ -1900,6 +1999,76 @@ def fred_supplement_explicit_required_skills(
     return output
 
 
+def fred_skill_is_formal_must_have(skill_name, structured_req):
+    """
+    True only when the catalogue skill is explicitly named in Freddie's formal
+    mandatory requirement text. Manager/Spotlight weighting is intentionally
+    unchanged; this helper is only a final Top-8 protection against broad skills
+    crowding out concrete Must-Have technologies.
+    """
+    structured_req = fred_coerce_structured_req(structured_req)
+
+    formal_parts = []
+    for key in [
+        "explicit_must_have_requirements",
+        "required_requirements",
+        "domain_requirements",
+    ]:
+        value = structured_req.get(key, []) or []
+        if isinstance(value, list):
+            formal_parts.extend(str(x) for x in value)
+        elif isinstance(value, str) and value.strip():
+            formal_parts.append(value)
+
+    formal_text = " ".join(formal_parts)
+    return fred_skill_matches_text(skill_name, formal_text)
+
+
+def fred_vndly_is_broad_generic_skill(skill_name):
+    """
+    Broad concepts remain useful, but with only eight slots they should not
+    displace a candidate-supported concrete technology explicitly required by
+    Freddie.
+    """
+    key = fred_normalize_skill_name(skill_name)
+
+    return key in {
+        "automation",
+        "data engineering",
+        "data quality",
+        "data validation",
+        "finance",
+        "financial services",
+        "software development",
+        "software engineering",
+        "programming",
+    }
+
+
+def fred_vndly_redundancy_preference(skill_name):
+    """
+    Tie-break only among known redundant/synonymous catalogue concepts.
+    Lower is better. This is not requisition weighting; it simply prefers the
+    clearer VNDLY label when two selections communicate essentially the same
+    screening signal.
+    """
+    key = fred_normalize_skill_name(skill_name)
+
+    preferences = {
+        # "Financial Services" is more useful/specific than generic "Finance"
+        # when only one of those redundant domain labels should consume a slot.
+        "financial services": 0,
+        "finance": 1,
+
+        # "Data Quality" is the cleaner umbrella when "data validation" would
+        # otherwise duplicate the same limited Top-8 screening dimension.
+        "data quality": 0,
+        "data validation": 1,
+    }
+
+    return preferences.get(key, 0)
+
+
 def fred_required_skill_sort_key(item, structured_req, original_index=0):
     category_priority = {
         "exact_structured_must": 0,
@@ -1914,6 +2083,9 @@ def fred_required_skill_sort_key(item, structured_req, original_index=0):
     evidence = int(item.get("work_history_evidence_strength", 0) or 0)
     return (
         category_priority.get(category, 99),
+        fred_vndly_redundancy_preference(
+            item.get("skill_name", "")
+        ),
         -clause_strength,
         group_index,
         -evidence,
@@ -1989,6 +2161,8 @@ def fred_apply_vndly_redundancy_control(
             "relational_database": 1,
             "source_control": 1,
             "testing": 2,
+            "finance_generic": 1,
+            "data_quality_validation": 1,
         }
 
         if family:
@@ -2017,7 +2191,32 @@ def fred_apply_vndly_redundancy_control(
             group_candidates.sort(key=lambda item: item["_sort_key"])
             add_item(group_candidates[0])
 
-    # Fill the remaining slots with the strongest uncovered formal requirements.
+    # Before broad/general concepts consume the remaining slots, protect
+    # candidate-supported CONCRETE technologies that Freddie explicitly names as
+    # formal Must Haves. This is the guardrail that keeps skills such as Python,
+    # SQL, JDBC, Snowflake, JSON, J2EE, JUnit, and Mockito from being crowded out
+    # by broader labels such as Automation, Data Engineering, Finance, or Data
+    # Validation.
+    protected_required = [
+        item
+        for item in candidates
+        if fred_skill_is_formal_must_have(
+            item.get("skill_name", ""),
+            structured_req,
+        )
+        and not fred_vndly_is_broad_generic_skill(
+            item.get("skill_name", "")
+        )
+    ]
+
+    for item in sorted(protected_required, key=lambda x: x["_sort_key"]):
+        if len(selected) >= cap:
+            break
+        if can_add(item):
+            add_item(item)
+
+    # Fill any remaining slots with the strongest uncovered requirements and
+    # supporting skills under the existing ranking/weighting logic.
     for item in sorted(candidates, key=lambda x: x["_sort_key"]):
         if len(selected) >= cap:
             break
@@ -6338,7 +6537,7 @@ SKILL AREA RULES
 SKILL DETAILS RULES
 ----------------------------------------------------------------------
 
-- Approximately 2-6 items when available.
+- Maximum 6 items. Use fewer when fewer than 6 materially strengthen the row.
 - Comma-separated plain text.
 - Prefer exact Freddie/JD terminology when the candidate truly supports it.
 - Include technologies, platforms, methodologies, functional capabilities, or
@@ -6584,6 +6783,19 @@ FULL ORIGINAL RESUME
                 # Keeping these separate avoids artificial tenure calculations
                 # and makes the first-page skills section easier for MSP reviewers
                 # to scan while preserving hiring-manager credibility.
+
+                # ====================================================
+                # FREDDIE-ONLY SKILL DETAILS HARD CAP
+                # ====================================================
+                # The prompt asks for no more than six details per row. Enforce
+                # that deterministically so long AI outputs cannot clutter the
+                # two-column Skills table.
+                for skill_num in range(1, 5):
+                    details_key = f"SKILLDETAILS{skill_num}"
+                    summary_data[details_key] = fred_cap_skill_details(
+                        summary_data.get(details_key, ""),
+                        max_items=6,
+                    )
 
                 # ====================================================
                 # BUILD VNDLY SUBMISSION SUMMARY + RECOMMENDED SKILLS
