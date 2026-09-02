@@ -4289,6 +4289,106 @@ def fred_clean_skill_role_indexes(value, max_roles):
     return result
 
 
+def fred_normalize_candidate_positioning_title(title):
+    """
+    Freddie-only cleanup for the professional identity used in the Summary/VNDLY
+    comments. This NEVER changes any title in the candidate's work history.
+
+    Some resumes use a title line like:
+        "Data Engineer, Python, Computer Vision & Data Pipelines"
+
+    The occupational title is "Data Engineer"; the remaining text describes
+    specialties. Returning them separately lets the Summary say:
+        "Data Engineer specializing in Python, Computer Vision & Data Pipelines"
+    instead of the incomplete:
+        "Data Engineer, Computer Vision & Data Pipelines with 7+ years..."
+    """
+    raw = re.sub(r"\s+", " ", str(title or "")).strip(" ,|/:;-")
+    if not raw:
+        return "", ""
+
+    # Occupational head words that usually make the left side a complete,
+    # conventional market title on its own.
+    occupation_pattern = re.compile(
+        r"\b("
+        r"engineer|developer|analyst|architect|scientist|specialist|"
+        r"manager|director|administrator|consultant|owner|lead|"
+        r"coordinator|writer|designer|tester|auditor|accountant|"
+        r"strategist|advisor|adviser|scrum master|product owner|"
+        r"project manager|program manager"
+        r")\b",
+        flags=re.IGNORECASE,
+    )
+
+    # Split only on separators commonly used to append skill/domain descriptors.
+    parts = re.split(r"\s*(?:\||,|:)\s*", raw, maxsplit=1)
+
+    if len(parts) != 2:
+        return raw, ""
+
+    left = parts[0].strip(" ,|/:;-")
+    right = parts[1].strip(" ,|/:;-")
+
+    if not left or not right:
+        return raw, ""
+
+    # Only split when the left side is already a complete occupational title.
+    # This prevents altering legitimate titles that need their qualifier.
+    if not occupation_pattern.search(left):
+        return raw, ""
+
+    # If the right side itself looks like another occupational title, preserve
+    # the full original phrase rather than guessing.
+    if occupation_pattern.search(right) and len(right.split()) <= 5:
+        return raw, ""
+
+    return left, right
+
+
+def fred_repair_summary_identity_phrase(
+    summary,
+    candidate_name,
+    raw_positioning_title,
+    clean_positioning_title,
+    specialty_text,
+):
+    """
+    Repair only the Freddie Summary's candidate-identity phrase when the model
+    copied an occupation + specialty heading too literally.
+
+    Work-history titles are untouched.
+    """
+    if not summary:
+        return ""
+
+    cleaned = str(summary).strip()
+    raw_title = str(raw_positioning_title or "").strip()
+    clean_title = str(clean_positioning_title or "").strip()
+    specialty = str(specialty_text or "").strip()
+
+    if not raw_title or not clean_title or raw_title == clean_title:
+        return cleaned
+
+    # Best case: replace the exact awkward identity with a grammatical version.
+    if specialty:
+        natural_identity = (
+            f"{clean_title} specializing in {specialty}"
+        )
+    else:
+        natural_identity = clean_title
+
+    # Replace only the first occurrence, which should be Sentence 1.
+    cleaned = re.sub(
+        re.escape(raw_title),
+        natural_identity,
+        cleaned,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
+    return cleaned
+
+
 def fred_clean_summary(summary, candidate_name):
     """
     Final deterministic cleanup for Freddie Mac summaries.
@@ -6001,6 +6101,23 @@ TITLE QUALITY RULES:
 - Prefer a conventional external-market title a recruiter or hiring manager
   would naturally say aloud.
 - Usually 2-5 words.
+- CANDIDATE_TITLE must be a grammatically complete occupational title that can
+  stand on its own after the words "[First Name] is a...".
+- Do NOT copy a resume heading or job title literally when it combines the
+  occupation with appended specialty descriptors after a comma, pipe, slash,
+  colon, or similar separator.
+- Example source/current title:
+  "Data Engineer, Python, Computer Vision & Data Pipelines"
+  Preferred CANDIDATE_TITLE:
+  "Data Engineer"
+  Then describe the specialties naturally in Sentence 1, for example:
+  "Vamshidhar is a Data Engineer specializing in Python, computer vision, and
+  data pipelines..."
+- Another acceptable construction is:
+  "[First Name] is a Data Engineer with 7+ years of professional experience in
+  Python, computer vision, and data pipelines..."
+- Never produce an incomplete construction such as:
+  "[First Name] is a Data Engineer, Computer Vision & Data Pipelines with..."
 - Keep it functional and specific enough to communicate the candidate's lane.
 - Use seniority only when BOTH the candidate's demonstrated career level and
   the target role support it.
@@ -6054,6 +6171,10 @@ Sentence 1 — MSP MATCH ANCHOR
 - Use the candidate's FIRST NAME.
 - Use the exact CANDIDATE_TITLE selected under the Natural Market Title rules
   above when identifying the candidate by title.
+- CANDIDATE_TITLE is the occupation only. If relevant specialties need to appear
+  in Sentence 1, connect them with natural grammar such as "specializing in",
+  "focused on", or "with experience in". Do not append specialty phrases to the
+  title with a comma or pipe and then continue directly into "with X+ years".
 - Do NOT copy the VNDLY Job Title merely because it is present in the structured
   requisition.
 - Do not relabel a Data Engineer as a Data Scientist solely because Freddie's
@@ -6710,12 +6831,19 @@ FULL ORIGINAL RESUME
                 # VALIDATE CANDIDATE POSITIONING TITLE / SUMMARY / SKILLS
                 # ====================================================
 
-                candidate_positioning_title = str(
+                raw_candidate_positioning_title = str(
                     summary_data.get(
                         "CANDIDATE_TITLE",
                         "",
                     )
                 ).strip()
+
+                (
+                    candidate_positioning_title,
+                    candidate_positioning_specialty,
+                ) = fred_normalize_candidate_positioning_title(
+                    raw_candidate_positioning_title
+                )
 
                 final_summary = str(
                     summary_data.get(
@@ -6723,6 +6851,14 @@ FULL ORIGINAL RESUME
                         "",
                     )
                 ).strip()
+
+                final_summary = fred_repair_summary_identity_phrase(
+                    final_summary,
+                    name,
+                    raw_candidate_positioning_title,
+                    candidate_positioning_title,
+                    candidate_positioning_specialty,
+                )
 
                 final_summary = fred_clean_summary(
                     final_summary,
