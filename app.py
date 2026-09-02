@@ -4376,7 +4376,8 @@ def process_freddie_word_doc(
                     pass
 
     # ================================================================
-    # 4. SKILLS — REMOVE UNUSED ROWS INSTEAD OF LEAVING BLANKS
+    # 4. SKILLS — TWO-COLUMN SKILL AREA / SKILL DETAILS TABLE
+    #    Remove unused rows instead of leaving blanks.
     # ================================================================
 
     skills_table = fred_find_table_containing(doc, "{{SKILL1}}")
@@ -6112,309 +6113,265 @@ table than to overstate the candidate.
 SKILLS TABLE — EXACTLY 4 HIGH-SIGNAL ROWS WHEN SUPPORTED
 ======================================================================
 
-The template has four Skills rows.
+The Freddie template has FOUR Skills rows and TWO columns:
 
-The Skills table serves as the MSP reviewer's FASTEST VISUAL CHECKLIST of the
-candidate's match to Freddie's requisition.
+LEFT COLUMN:
+SKILL AREA
 
-PRIMARY STRATEGY:
-- Start from Freddie's highest-priority supported Must Haves.
-- Use the four rows to make the strongest genuine Freddie requirements
-  immediately visible.
-- Prefer Freddie's exact terminology when supported by the candidate.
-- Write labels so a nontechnical MSP recruiter can compare them directly
-  against Freddie's Must Have / Required Qualifications language.
-- Keep labels short, specific, and easy to scan.
-- Do not make the reviewer decode a vague umbrella category to determine
-  whether a Must Have is present.
-- Do not bury a critical Freddie Must Have among several less-important tools
-  inside parentheses.
-- A Skills row should communicate ONE clear shortlist signal.
-- Technical detail in parentheses is useful only when it strengthens or proves
-  that signal.
-- The Skills table is not intended to summarize the candidate's entire career.
-  It is a four-row shortlist checklist.
+RIGHT COLUMN:
+SKILL DETAILS
 
-MSP-SCAN PRIORITY:
+PURPOSE:
 
-When multiple truthful Skills-row options exist, prefer the row that lets an
-MSP reviewer most quickly answer:
-"Does this candidate have the thing Freddie specifically asked for?"
+This table is the MSP reviewer's FASTEST VISUAL CHECKLIST of the candidate's
+match to the CURRENT Freddie requisition.
 
-For example, prefer a clear label such as:
-"Computer Vision & Image Analytics (OpenCV, TensorFlow)"
+It should borrow the clean grouping philosophy used by the Fannie template:
+one concise competency area on the left, with the most relevant supporting
+tools, technologies, methodologies, or domain capabilities on the right.
 
-over a broad label such as:
-"Advanced Data Technologies (Python, OpenCV, TensorFlow, JSON)"
+There are NO years-of-experience or year-last-used values in the Freddie
+Skills table.
 
-when Computer Vision / Image Analytics is what Freddie specifically requires.
+----------------------------------------------------------------------
+ROW FORMAT
+----------------------------------------------------------------------
 
-Likewise, prefer:
-"Mortgage / Financial Services Data"
+For every populated row return:
+
+SKILL#:
+A concise functional competency / skill area.
+
+SKILLDETAILS#:
+A comma-separated list of approximately 2-6 highly relevant supporting items.
+
+Examples of the desired structure:
+
+SKILL1:
+"Core Java & J2EE Development"
+
+SKILLDETAILS1:
+"Java, Spring Framework, J2EE, Servlets, JSP, JDBC"
+
+SKILL2:
+"Relational Database Development"
+
+SKILLDETAILS2:
+"Oracle, DB2, SQL Server"
+
+SKILL3:
+"Java Unit Testing"
+
+SKILLDETAILS3:
+"JUnit, Mockito"
+
+SKILL4:
+"Financial Services Application Development"
+
+SKILLDETAILS4:
+"Investment Data, Portfolio Data, Transaction Processing"
+
+Other role-dependent examples:
+
+"Programming & Backend"
+"Python, Django, Flask, FastAPI"
+
+"Cloud Development"
+"AWS Lambda, S3, RDS, Secrets Manager"
+
+"DevOps & CI/CD"
+"Jenkins, Docker, Kubernetes, Helm"
+
+"Data & Database Systems"
+"PostgreSQL, MySQL, Oracle, AuroraDB"
+
+"SAFe Agile Framework"
+"PI Planning, Scrum of Scrums, ART Leadership Sync"
+
+"Agile Project Management"
+"Jira, Confluence, Azure DevOps"
+
+"Stakeholder & Executive Reporting"
+"Tableau, Power BI, Executive Dashboards"
+
+These examples illustrate FORMAT and grouping philosophy only.
+Do NOT force any example terminology onto a candidate or requisition.
+
+----------------------------------------------------------------------
+HOW TO CHOOSE THE FOUR ROWS
+----------------------------------------------------------------------
+
+Use the full Freddie requisition intelligence already supplied to you.
+
+Priority order:
+
+1. Latest substantive hiring-manager selection feedback / correction.
+2. Current manager priorities and substantive Spotlight guidance.
+3. Current substantive MSP / VNDLY clarification that affects what candidates
+   must demonstrate.
+4. Formal Must Have requirements from the Official JD.
+5. Structured VNDLY Must Have skills when populated.
+6. Core recurring responsibilities / required domain expertise.
+7. Formal Preferred / Nice To Have requirements.
+8. Structured VNDLY Nice To Have skills when populated.
+
+The final four rows should represent the candidate's FOUR strongest,
+most useful shortlist signals for THIS requisition.
+
+Do NOT mechanically convert Freddie's four planned competency groups into
+four resume rows. Those groups are prioritization guidance. Build the final
+rows around the candidate's actual evidence and the requirements that matter
+most to the current requisition.
+
+----------------------------------------------------------------------
+MSP-SCAN STRATEGY
+----------------------------------------------------------------------
+
+The left column should make the requirement cluster recognizable immediately.
+
+Prefer:
+"Core Java & J2EE Development"
+
+over:
+"Programming"
+
+when Java/J2EE is central to the role.
+
+Prefer:
+"Mortgage Data & Analytics"
 
 over:
 "Domain Expertise"
 
-when Freddie specifically requires mortgage or financial-services experience.
-
-IMPORTANT:
-- This does NOT mean blindly copying Freddie's requirements.
-- Every label must still be supported by candidate evidence.
-- Do not manufacture a missing Must Have merely to create a visually perfect
-  checklist.
-
-CANDIDATE-EVIDENCE RULE:
-- A row may contain ONLY skills, tools, methodologies, or domain expertise
-  supported by the candidate's resume.
-- Official candidate-supplied Freddie vetting answers may clarify depth of
-  experience already grounded in the resume, but must not manufacture a skill.
-- If a Must Have group is not supported, DO NOT fabricate it merely to fill a
-  row.
-- A related or adjacent activity does NOT count as full support for a more
-  specific Freddie requirement.
-- If Freddie requires hands-on execution, the resume must explicitly support
-  hands-on execution before that requirement can appear as a Skills-row label.
-- Do not infer full competency from a single incidental mention of a tool,
-  platform, methodology, or domain.
-- Move to the next relevant Required or Preferred competency the candidate
-  genuinely possesses.
-- If fewer than four defensible relevant groups exist, leave the unused
-  SKILL/YEARS fields blank. The Word processor will remove those rows.
-
-YEARS / LAST USED — STRICT EVIDENCE-BASED CALCULATION:
-
-For every Skills-table row, you must ALSO return SKILL#_ROLE_INDEXES containing
-the 1-based indexes from STRUCTURED ORIGINAL EXPERIENCE that support the ENTIRE
-competency label as written.
-
-ROLE-INDEX RULES:
-- Return the dated roles that substantively support the CORE competency area.
-- Parenthetical technologies are representative examples/evidence; they are NOT
-  an AND checklist that must all appear in the same individual job.
-- A Professional Summary or top-level skills inventory is NOT sufficient for a
-  role index.
-- Do not include a role merely because it is vaguely related.
-- Example: for "Relational Databases & SQL (Oracle, DB2, SQL Server)", count
-  dated roles doing meaningful relational-database/SQL work even if one role used
-  Oracle and another used DB2. Do NOT require Oracle + DB2 + SQL Server in every
-  single role.
-- Example: for "Financial Services Background (Banking, Investment, Securities)",
-  include dated financial-services roles across those subdomains; do not require
-  all three words in every role.
-- Python will merge overlapping role periods and round down.
-- Avoid overstuffed rows that combine unrelated competency families. Keep each
-  row coherent enough that one aggregate years figure is meaningful.
-
-For every Skills-table row, calculate the displayed experience conservatively
-from the dated work history.
-
-CORE RULE:
-- The YEARS value must be defensible for the ENTIRE competency label as written.
-- Never use the tenure of one broad component to imply equal tenure with every
-  named technology or specialty in the same row.
-
-EXAMPLE OF WHAT NOT TO DO:
-If the candidate has 7+ years of Python/Data Engineering but only began using
-OpenCV and TensorFlow in 2026, DO NOT write:
-"Python, Computer Vision & Image Analytics (OpenCV, TensorFlow) —
-7+ years, current"
-
-because that falsely implies 7+ years of Computer Vision/OpenCV/TensorFlow.
-
-GROUPED-SKILL RULE:
-- When a row contains multiple material named technologies, specialties, or
-  domains, the displayed YEARS value must be literally defensible for the
-  entire label.
-
-- Do NOT solve a tenure mismatch merely by assigning the shortest tenure to a
-  combined row if doing so would materially UNDERSTATE an important long-tenure
-  Freddie Must Have.
-
-- In particular, a high-priority Must Have such as Python, SQL, Java,
-  ServiceNow, Snowflake, etc. should NOT be grouped with a much newer specialty
-  when the combined label would cause the long-tenure Must Have itself to appear
-  artificially inexperienced.
-
-DOMAIN-GROUPING RULE:
-- Apply the SAME tenure discipline to business/domain competencies as to
-  technologies.
-- Do not combine a narrower domain with a broader domain and assign the broader
-  domain's longer tenure to the entire row.
-
-EXAMPLES OF NARROWER VS. BROADER DOMAINS:
-- Fixed Income vs. Financial Services
-- Mortgage vs. Financial Services
-- Appraisal vs. Mortgage
-- IRM/GRC vs. ServiceNow
-- Capital Markets vs. Banking
-- Regulatory Reporting vs. General Data Analytics
-
-If the candidate has:
-- 4+ years of Regulatory Analytics
-- but only 2+ years of Fixed Income
-
-DO NOT write:
-"Fixed Income & Regulatory Analytics" — "4+ years, current"
-
-Instead either write:
-"Financial & Regulatory Analytics" — "4+ years, current"
-
-if that broader label is fully supported,
-
-OR:
-"Fixed Income & Capital Markets" — "2+ years, 2023"
-
-if the narrower Freddie-relevant domain is the more important signal.
-
-The label and YEARS value must describe the SAME defensible scope of
-experience.
-
-MANDATORY SPLIT RULE:
-- If one material component has substantially longer tenure than another
-  material component in the proposed row, and either component is important to
-  Freddie's requirements, SPLIT them into separate Skills rows whenever there
-  are available rows.
-
-- Treat a difference of approximately 2 or more completed years as materially
-  different unless the resume evidence clearly supports treating the items as
-  one inseparable competency.
-
-EXAMPLE:
-Candidate has:
-- Python: 7+ years, current
-- Computer Vision/OpenCV/TensorFlow: <1 year, current
-
-DO NOT write:
-"Python & Computer Vision (OpenCV, TensorFlow)" — "<1 year, current"
-
-because that incorrectly makes the candidate appear to have less than one year
-of Python.
-
-Instead prefer:
-"Python & Data Engineering" — "7+ years, current"
-"Computer Vision & Image Analytics (OpenCV, TensorFlow)" —
-"<1 year, current"
-
-Likewise, if:
-- SQL = 7+ years
-- Snowflake = <1 year
-
-do not combine them into:
-"SQL & Snowflake" — "<1 year"
-
-when separate rows can represent the candidate more accurately.
-
-ROW-ALLOCATION PRIORITY:
-When deciding how to use the four available Skills rows, prioritize:
-
-1. Freddie's explicit Must Have competencies that the candidate genuinely has.
-2. High-signal specialized competencies central to the actual role.
-3. Required domain expertise.
-4. Relevant secondary / preferred competencies.
-
-The objective is NOT to force Freddie's four planned competency groups directly
-into four resume rows. The planned competency groups are guidance. The final
-candidate Skills rows must be reorganized when necessary to represent the
-candidate's actual experience accurately and advantageously.
+when mortgage experience is specifically important.
 
 Prefer:
-- a truthful long-tenure Must Have row,
-- plus a truthful short-tenure specialty row,
+"ServiceNow IRM/GRC Testing"
 
-over one combined row whose YEARS value materially understates or overstates
-either skill.
+over:
+"Quality Assurance"
 
-EXAMPLE:
-If Python is supported for 7+ years but Computer Vision/OpenCV/TensorFlow only
-since February 2026, prefer:
-"Python & Data Engineering" — "7+ years, current"
-and
-"Computer Vision & Image Analytics (OpenCV, TensorFlow)" —
-"<1 year, current"
+when ServiceNow IRM/GRC is the actual screening requirement.
 
-rather than combining them under "7+ years".
+The right column then provides the exact supporting terms that make the match
+easy to see.
 
-CALCULATION RULES:
-- Determine experience only from actual dated roles where that specific skill,
-  technology, methodology, or domain competency is evidenced.
-- Do NOT assign total career length to a skill merely because the candidate
-  worked in a related occupation.
-- Do NOT automatically subtract 1-2 years as a heuristic.
-- Avoid double-counting overlapping employment periods.
-- Calculate through the CURRENT DATE supplied above for roles marked Present
-  or Current.
-- Round DOWN to completed years rather than up.
-- If clearly less than one completed year, use:
-  "<1 year, current"
-  or
-  "<1 year, YYYY"
-- Otherwise use:
-  "X+ years, current"
-  or
-  "X+ years, YYYY"
+The reviewer should NOT have to dig through the work history to discover the
+candidate's most important supported Freddie keywords.
 
-YEAR LAST USED:
-- "current" is allowed ONLY when that exact competency, or every material
-  component represented by the row, is evidenced in the candidate's actual
-  current role.
-- Otherwise give the latest actual year in which the competency is evidenced.
+----------------------------------------------------------------------
+CANDIDATE-EVIDENCE RULE — ABSOLUTE
+----------------------------------------------------------------------
 
-FINAL AUDIT BEFORE RETURNING EACH ROW:
+Every SKILL AREA and every SKILL DETAILS item must be genuinely supported by
+the candidate's resume or official candidate-supplied Freddie vetting answers.
 
-Ask BOTH questions:
+The JD, Spotlight transcript, MSP notes, Internal Notes, structured Must/Nice
+fields, and requirement analysis tell you WHAT TO PRIORITIZE.
 
-1. "If a Freddie Mac MSP reviewer reads this Skill label and its Years value
-   literally, would the candidate's dated resume support that interpretation?"
+They do NOT create candidate experience.
 
-2. "Does this grouping accidentally make an important long-tenure Freddie
-   requirement appear to have LESS experience merely because it was grouped
-   with a newer specialty?"
+Rules:
 
-3. "If this row combines two business/domain concepts, does the YEARS value
-   genuinely apply to BOTH concepts as written?"
+- Never copy a Freddie technology, methodology, responsibility, business
+  process, or domain term into the candidate's Skills table unless candidate
+  evidence supports it.
+- Never infer a specific technology from a broader one.
+- Never convert exposure/coordination/oversight into hands-on expertise.
+- Do not combine unrelated resume facts into a stronger candidate claim.
+- Do not use a vague broad category to disguise a missing central Must Have.
+- If the candidate lacks one Freddie requirement, do not fabricate it merely to
+  make the table look complete.
+- Move to the next highest-value relevant competency the candidate genuinely
+  possesses.
 
-If not, broaden the label to a truthful shared category, narrow the YEARS value,
-or split the concepts.
+If fewer than four defensible, role-relevant competency groups exist, leave
+the unused SKILL# and SKILLDETAILS# values blank. The Freddie Word processor
+will remove the unused row.
 
-If either answer reveals a misleading result:
-- split the competency,
-- narrow the label,
-- reduce the years when necessary,
-- or leave the row blank.
+----------------------------------------------------------------------
+GROUPING RULES
+----------------------------------------------------------------------
 
-Never solve an overstatement problem by creating a new material
-understatement.
+Each row should represent ONE coherent competency family.
 
-======================================================================
-FINAL MSP / HIRING-MANAGER SKILLS CHECK
-======================================================================
+Good:
+"Java Unit Testing" | "JUnit, Mockito"
 
-After the accuracy audit above, review the four Skills rows as a SET.
+Good:
+"Relational Database Development" | "Oracle, DB2, SQL Server"
 
-Ask:
+Good:
+"Change Communications" | "Business Communications, Job Aids, SharePoint Content"
 
-1. If an MSP recruiter looked ONLY at these four rows and Freddie's Must Have
+Avoid:
+"Development & Testing & Cloud & Databases" | "Java, JUnit, AWS, Oracle"
+
+because it mixes unrelated screening dimensions.
+
+Avoid unnecessary duplication between rows.
+
+For example, if:
+"Core Java & J2EE Development" already contains "Spring Framework"
+
+do not create a separate:
+"Spring Development" | "Spring Boot"
+
+unless Spring itself is independently important enough to deserve one of only
+four rows and doing so would not crowd out a more important supported Freddie
+requirement.
+
+----------------------------------------------------------------------
+SKILL AREA RULES
+----------------------------------------------------------------------
+
+- Usually 2-6 words.
+- Clear, professional, conventional terminology.
+- Specific enough that the MSP can understand why the row matters.
+- Do not write sentences.
+- Do not include years.
+- Do not include "current".
+- Do not put a long tool inventory in the left column.
+- Do not simply repeat the VNDLY/rate-card job title.
+
+----------------------------------------------------------------------
+SKILL DETAILS RULES
+----------------------------------------------------------------------
+
+- Approximately 2-6 items when available.
+- Comma-separated plain text.
+- Prefer exact Freddie/JD terminology when the candidate truly supports it.
+- Include technologies, platforms, methodologies, functional capabilities, or
+  domain concepts that substantively strengthen the SKILL AREA.
+- Prioritize the most important requirement-specific items rather than the
+  candidate's entire technology inventory.
+- Do not add weak filler merely to reach a certain number of items.
+- Do not include years, proficiency ratings, or "current".
+- Do not repeat the exact same detail across multiple rows unless unavoidable.
+
+----------------------------------------------------------------------
+FINAL MSP / HIRING-MANAGER CHECK
+----------------------------------------------------------------------
+
+Review the four rows together and ask:
+
+1. If an MSP recruiter looked ONLY at this table and Freddie's current
    requirements, would the candidate's strongest genuine matches be obvious?
 
-2. Are Freddie's most important supported requirements named directly enough
-   that the reviewer does not need to interpret a vague category?
+2. Are Freddie's most important supported Must Haves visible using recognizable
+   terminology?
 
-3. Did any broad or impressive-sounding secondary competency consume a row
-   that would be better used for a more important Freddie Must Have?
+3. Does each row represent a materially different screening dimension?
 
-4. Does each row still contain enough specificity to be meaningful to the
-   hiring manager?
+4. Did a broad secondary strength consume a row that should instead show a more
+   important supported Must Have?
 
-5. Are the four rows complementary rather than redundant?
+5. Would the hiring manager still consider every term technically and
+   factually defensible against the resume?
 
-If a row is accurate but unnecessarily vague, rename it more directly using
-Freddie's terminology when supported.
+6. Is the table easy to scan without looking cluttered?
 
-If a row is accurate but substantially less important than another supported
-Freddie Must Have, replace it with the higher-priority supported competency.
-
-Never sacrifice truthfulness or the strict YEARS rules merely to improve
-scanability.
+If not, revise the four rows before returning them.
 
 ======================================================================
 OFFICIAL FREDDIE VETTING ANSWERS
@@ -6520,17 +6477,13 @@ Return ONLY:
   "CANDIDATE_TITLE": "",
   "SUMMARY": "",
   "SKILL1": "",
-  "YEARS1": "",
-  "SKILL1_ROLE_INDEXES": [],
+  "SKILLDETAILS1": "",
   "SKILL2": "",
-  "YEARS2": "",
-  "SKILL2_ROLE_INDEXES": [],
+  "SKILLDETAILS2": "",
   "SKILL3": "",
-  "YEARS3": "",
-  "SKILL3_ROLE_INDEXES": [],
+  "SKILLDETAILS3": "",
   "SKILL4": "",
-  "YEARS4": "",
-  "SKILL4_ROLE_INDEXES": [],
+  "SKILLDETAILS4": "",
   "BULLET_ORDER": {{
     "1": [],
     "2": [],
@@ -6620,45 +6573,17 @@ FULL ORIGINAL RESUME
                     )
 
                 # ====================================================
-                # FREDDIE-ONLY DETERMINISTIC SKILL YEARS
+                # FREDDIE SKILLS TABLE
                 # ====================================================
-                # Gemini identifies only the dated roles that support the ENTIRE
-                # competency label. Python performs the actual month math,
-                # merges overlaps, rounds down, and determines year last used.
-                for skill_num in range(1, 5):
-                    years_key = f"YEARS{skill_num}"
-                    role_key = f"SKILL{skill_num}_ROLE_INDEXES"
-
-                    proposed_role_indexes = fred_clean_skill_role_indexes(
-                        summary_data.get(role_key, []),
-                        len(experience),
-                    )
-
-                    role_indexes = fred_filter_skill_role_indexes_by_label(
-                        summary_data.get(f"SKILL{skill_num}", ""),
-                        experience,
-                        proposed_role_indexes,
-                    )
-
-                    deterministic_skill_years = (
-                        fred_calculate_skill_years_from_roles(
-                            experience,
-                            role_indexes,
-                            current_date_obj,
-                        )
-                    )
-
-                    if deterministic_skill_years:
-                        summary_data[years_key] = deterministic_skill_years
-                    else:
-                        # Conservative fallback: never leave a populated skill row
-                        # with a blank years cell. If no role dates can be parsed,
-                        # retain Gemini's estimate only after enforcing the total
-                        # career ceiling.
-                        summary_data[years_key] = fred_cap_skill_years(
-                            summary_data.get(years_key, ""),
-                            calculated_total_experience,
-                        )
+                # Freddie does not require skill-by-skill years or year-last-used.
+                # The template now uses two columns:
+                #   SKILL#        = concise competency / skill area
+                #   SKILLDETAILS# = supporting tools, technologies, methodologies,
+                #                   or domain capabilities
+                #
+                # Keeping these separate avoids artificial tenure calculations
+                # and makes the first-page skills section easier for MSP reviewers
+                # to scan while preserving hiring-manager credibility.
 
                 # ====================================================
                 # BUILD VNDLY SUBMISSION SUMMARY + RECOMMENDED SKILLS
@@ -6717,9 +6642,9 @@ FULL ORIGINAL RESUME
                             "",
                         )
                     ).strip(),
-                    "YEARS1": str(
+                    "SKILLDETAILS1": str(
                         summary_data.get(
-                            "YEARS1",
+                            "SKILLDETAILS1",
                             "",
                         )
                     ).strip(),
@@ -6729,9 +6654,9 @@ FULL ORIGINAL RESUME
                             "",
                         )
                     ).strip(),
-                    "YEARS2": str(
+                    "SKILLDETAILS2": str(
                         summary_data.get(
-                            "YEARS2",
+                            "SKILLDETAILS2",
                             "",
                         )
                     ).strip(),
@@ -6741,9 +6666,9 @@ FULL ORIGINAL RESUME
                             "",
                         )
                     ).strip(),
-                    "YEARS3": str(
+                    "SKILLDETAILS3": str(
                         summary_data.get(
-                            "YEARS3",
+                            "SKILLDETAILS3",
                             "",
                         )
                     ).strip(),
@@ -6753,9 +6678,9 @@ FULL ORIGINAL RESUME
                             "",
                         )
                     ).strip(),
-                    "YEARS4": str(
+                    "SKILLDETAILS4": str(
                         summary_data.get(
-                            "YEARS4",
+                            "SKILLDETAILS4",
                             "",
                         )
                     ).strip(),
