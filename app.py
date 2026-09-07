@@ -1576,10 +1576,12 @@ def fred_skill_work_history_evidence(skill_name, raw_resume_text):
 
     Returns:
       2 = clear dated work-history evidence
-      1 = only broader/semantic domain evidence
-      0 = no meaningful dated work-history evidence found
+      1 = supported elsewhere in the resume / broader semantic domain evidence
+      0 = no meaningful candidate evidence found
     """
-    work = fred_extract_work_history_text(raw_resume_text)
+    full_resume = str(raw_resume_text or "")
+    full_fold = full_resume.casefold()
+    work = fred_extract_work_history_text(full_resume)
     work_fold = work.casefold()
     skill = str(skill_name or "").strip()
     key = fred_normalize_skill_name(skill)
@@ -1632,6 +1634,35 @@ def fred_skill_work_history_evidence(skill_name, raw_resume_text):
             "reconciliation"
         ],
         "automation": ["automation", "automated", "automate"],
+        "automation testing": [
+            "automation testing", "automated testing", "test automation",
+            "automation test", "automated test"
+        ],
+        "test automation": [
+            "test automation", "automation testing", "automated testing",
+            "automation test", "automated test"
+        ],
+        "test automation tools": [
+            "test automation", "automation testing", "automated testing",
+            "automation framework", "testing framework"
+        ],
+        "data modeling": [
+            "data modeling", "data model", "logical model", "physical model",
+            "dimensional model", "entity relationship", "erwin", "er/studio",
+            "er studio", "powerdesigner"
+        ],
+        "ai/ml": [
+            "ai/ml", "artificial intelligence", "machine learning",
+            "microsoft copilot", "github copilot", "chatgpt", "generative ai",
+            "genai"
+        ],
+        "jira": ["jira"],
+        "devops": ["devops", "devsecops"],
+        "quality assurance": ["quality assurance", "qa engineer", "qa testing"],
+        "software testing": [
+            "software testing", "functional testing", "regression testing",
+            "integration testing", "system testing", "uat"
+        ],
         "finance": [
             "bank", "banking", "financial", "investment", "portfolio",
             "securit", "trading", "trade ", "retirement", "securities",
@@ -1650,14 +1681,23 @@ def fred_skill_work_history_evidence(skill_name, raw_resume_text):
     if aliases:
         if any(alias.casefold() in work_fold for alias in aliases):
             return 2
+        if any(alias.casefold() in full_fold for alias in aliases):
+            # Supported elsewhere in the resume (for example a top-level
+            # technical-skills section), but not proven as strongly as dated
+            # work-history evidence.
+            return 1
         return 0
 
     # Generic fallback: strip catalogue parentheticals and test the meaningful
-    # core phrase in the dated work history.
+    # core phrase. Dated work-history evidence is stronger than a top-level
+    # skills-list mention, but both are valid candidate evidence.
     core = re.sub(r"\([^)]*\)", "", skill).strip().casefold()
 
     if core and len(core) >= 4 and core in work_fold:
         return 2
+
+    if core and len(core) >= 4 and core in full_fold:
+        return 1
 
     # Domain-like catalogue values can be supported semantically even if the
     # exact catalogue phrase is not present.
@@ -1709,6 +1749,14 @@ def fred_vndly_skill_family(skill_name):
             "git",
             "github",
             "gitlab",
+        },
+        "test_automation": {
+            "automation",
+            "automation testing",
+            "test automation",
+            "test automation tools",
+            "automated testing",
+            "testing automation",
         },
         "finance_generic": {
             "finance",
@@ -1793,6 +1841,15 @@ def fred_skill_is_explicitly_named_in_job(skill_name, structured_req):
         "data quality": ["data quality"],
         "data validation": ["data validation", "validation"],
         "automation": ["automation", "automate", "automated"],
+        "automation testing": ["automation testing", "automated testing", "test automation"],
+        "test automation": ["test automation", "automation testing", "automated testing"],
+        "test automation tools": ["test automation", "automation testing", "testing framework"],
+        "data modeling": ["data modeling", "logical data modeling", "logical model", "physical model"],
+        "ai/ml": ["ai/ml", "artificial intelligence", "machine learning", "ai enabled", "ai-enabled"],
+        "jira": ["jira"],
+        "devops": ["devops", "devsecops"],
+        "quality assurance": ["quality assurance", "qa"],
+        "software testing": ["software testing", "functional testing", "regression testing", "system testing"],
         "mortgage industry": ["mortgage", "appraisal", "collateral", "uad"],
     }
 
@@ -1861,6 +1918,15 @@ def fred_skill_aliases_for_requirement(skill_name):
         "data quality": ["data quality"],
         "data validation": ["data validation", "validation"],
         "automation": ["automation", "automate", "automated"],
+        "automation testing": ["automation testing", "automated testing", "test automation"],
+        "test automation": ["test automation", "automation testing", "automated testing"],
+        "test automation tools": ["test automation", "automation testing", "testing framework"],
+        "data modeling": ["data modeling", "logical data modeling", "logical model", "physical model"],
+        "ai/ml": ["ai/ml", "artificial intelligence", "machine learning", "ai enabled", "ai-enabled"],
+        "jira": ["jira"],
+        "devops": ["devops", "devsecops"],
+        "quality assurance": ["quality assurance", "qa"],
+        "software testing": ["software testing", "functional testing", "regression testing", "system testing"],
         "finance": ["finance background", "finance", "financial"],
         "mortgage industry": ["mortgage", "appraisal", "collateral", "uad"],
     }
@@ -2034,6 +2100,8 @@ def fred_vndly_is_broad_generic_skill(skill_name):
 
     return key in {
         "automation",
+        "automation testing",
+        "test automation tools",
         "data engineering",
         "data quality",
         "data validation",
@@ -2064,6 +2132,14 @@ def fred_vndly_redundancy_preference(skill_name):
         # otherwise duplicate the same limited Top-8 screening dimension.
         "data quality": 0,
         "data validation": 1,
+
+        # When the requisition is about automated testing, prefer the most
+        # precise testing label over generic Automation or tool-bucket labels.
+        "test automation": 0,
+        "automation testing": 1,
+        "test automation tools": 2,
+        "automated testing": 2,
+        "automation": 3,
     }
 
     return preferences.get(key, 0)
@@ -2161,6 +2237,7 @@ def fred_apply_vndly_redundancy_control(
             "relational_database": 1,
             "source_control": 1,
             "testing": 2,
+            "test_automation": 1,
             "finance_generic": 1,
             "data_quality_validation": 1,
         }
@@ -2181,22 +2258,41 @@ def fred_apply_vndly_redundancy_control(
         if family:
             family_counts[family] = family_counts.get(family, 0) + 1
 
-    for group_index in range(min(len(groups), cap)):
+    # PASS 1: Cover the highest-priority requirement groups, but do not let
+    # broad/generic labels win a group when a more precise candidate-supported
+    # screening skill communicates the same requirement better.
+    #
+    # Reserve at most half the final slots here. This prevents a requisition
+    # analyzer that produces many competency groups from consuming all eight
+    # slots before concrete Must-Have technologies (Python, SQL, JDBC, etc.)
+    # receive a chance to compete.
+    group_reservation_limit = min(len(groups), max(1, cap // 2))
+
+    for group_index in range(group_reservation_limit):
         group_candidates = [
             item for item in candidates
             if fred_skill_requirement_group(item.get("skill_name", ""), structured_req) == group_index
             and can_add(item)
         ]
         if group_candidates:
-            group_candidates.sort(key=lambda item: item["_sort_key"])
+            group_candidates.sort(
+                key=lambda item: (
+                    fred_vndly_is_broad_generic_skill(
+                        item.get("skill_name", "")
+                    ),
+                    fred_vndly_redundancy_preference(
+                        item.get("skill_name", "")
+                    ),
+                    item["_sort_key"],
+                )
+            )
             add_item(group_candidates[0])
 
-    # Before broad/general concepts consume the remaining slots, protect
-    # candidate-supported CONCRETE technologies that Freddie explicitly names as
-    # formal Must Haves. This is the guardrail that keeps skills such as Python,
-    # SQL, JDBC, Snowflake, JSON, J2EE, JUnit, and Mockito from being crowded out
-    # by broader labels such as Automation, Data Engineering, Finance, or Data
-    # Validation.
+    # PASS 2: Protect candidate-supported CONCRETE technologies explicitly named
+    # as formal Must Haves. This is the guardrail that keeps skills such as
+    # Python, SQL, JDBC, Snowflake, JSON, J2EE, JUnit, and Mockito from being
+    # crowded out by broad labels such as Automation, Data Engineering, Finance,
+    # or Data Validation.
     protected_required = [
         item
         for item in candidates
@@ -2214,6 +2310,30 @@ def fred_apply_vndly_redundancy_control(
             break
         if can_add(item):
             add_item(item)
+
+    # PASS 3: Return to any remaining requirement groups so distinct required
+    # dimensions are still represented after concrete Must-Haves are protected.
+    for group_index in range(group_reservation_limit, min(len(groups), cap)):
+        if len(selected) >= cap:
+            break
+        group_candidates = [
+            item for item in candidates
+            if fred_skill_requirement_group(item.get("skill_name", ""), structured_req) == group_index
+            and can_add(item)
+        ]
+        if group_candidates:
+            group_candidates.sort(
+                key=lambda item: (
+                    fred_vndly_is_broad_generic_skill(
+                        item.get("skill_name", "")
+                    ),
+                    fred_vndly_redundancy_preference(
+                        item.get("skill_name", "")
+                    ),
+                    item["_sort_key"],
+                )
+            )
+            add_item(group_candidates[0])
 
     # Fill any remaining slots with the strongest uncovered requirements and
     # supporting skills under the existing ranking/weighting logic.
@@ -2256,6 +2376,14 @@ def fred_rerank_vndly_skills_by_evidence(
             item.get("skill_name", ""),
             raw_resume_text,
         )
+
+        # Absolute candidate-evidence gate:
+        # A VNDLY/JD/Spotlight requirement does not become a candidate skill.
+        # If the exact/aliased catalogue concept cannot be found anywhere in
+        # the resume, it is not eligible for the recommended Top 8.
+        if evidence_strength <= 0:
+            continue
+
         copy_item = dict(item)
         copy_item["work_history_evidence_strength"] = evidence_strength
         rescored.append(
@@ -2415,8 +2543,33 @@ def fred_split_ranked_vndly_skills(ranked_skills):
     return groups
 
 
+def fred_extract_spotlight_hiring_manager_name(spotlight_transcript):
+    """
+    Freddie-only helper that extracts a hiring-manager name only when the
+    Spotlight transcript explicitly labels the speaker as the Hiring Manager.
+
+    This deliberately does NOT assume the VNDLY Resource Manager is the person
+    who spoke as the hiring manager on the supplier call.
+    """
+    transcript = str(spotlight_transcript or "").strip()
+    if not transcript:
+        return ""
+
+    patterns = [
+        r"(?im)^\s*([A-Z][A-Za-z'’.\-]+(?:\s+[A-Z][A-Za-z'’.\-]+){0,2})\s*\(\s*Hiring\s+Manager\s*\)\s*:",
+        r"(?im)^\s*([A-Z][A-Za-z'’.\-]+(?:\s+[A-Z][A-Za-z'’.\-]+){0,2})\s*[-–—]\s*Hiring\s+Manager\s*:",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, transcript)
+        if match:
+            return re.sub(r"\s+", " ", match.group(1)).strip()
+
+    return ""
+
+
 def fred_clean_vndly_submission_summary(summary, candidate_name):
-    """Deterministic cleanup for the recruiter-facing VNDLY comments summary."""
+    """Deterministic cleanup for the recruiter-facing VNDLY Comments field."""
     if not summary:
         return ""
 
@@ -2464,7 +2617,7 @@ def fred_build_vndly_candidate_package(
     candidate_positioning_title,
 ):
     """
-    Create the Freddie-only VNDLY submission summary and skill selections.
+    Create the Freddie-only VNDLY Comments text and skill selections.
     """
     structured_req = fred_coerce_structured_req(structured_req)
 
@@ -2495,6 +2648,11 @@ def fred_build_vndly_candidate_package(
     )
 
     vndly_context = vndly_context or {}
+
+    spotlight_hiring_manager_name = fred_extract_spotlight_hiring_manager_name(
+        vndly_context.get("transcript", "")
+    )
+
     raw_must = str(vndly_context.get("must_have_skills", "") or "").strip()
     raw_nice = str(vndly_context.get("nice_to_have_skills", "") or "").strip()
 
@@ -2553,6 +2711,9 @@ ALREADY-APPROVED RESUME SUMMARY:
 
 RECOMMENDED CANDIDATE POSITIONING TITLE:
 {candidate_positioning_title or "BLANK"}
+
+SPOTLIGHT HIRING MANAGER NAME — EXPLICIT TRANSCRIPT LABEL ONLY:
+{spotlight_hiring_manager_name or "BLANK"}
 
 CANDIDATE TITLE RULE:
 - The title above was selected from the candidate's evidence + actual role
@@ -2615,36 +2776,60 @@ EXACT VNDLY SKILL CATALOGUE:
 {catalog_json}
 
 ======================================================================
-TASK 1 — VNDLY SUBMISSION SUMMARY / COMMENTS BOX
+TASK 1 — VNDLY COMMENTS / MSP SHORTLIST JUSTIFICATION
 ======================================================================
 
-Write the short candidate snapshot that a recruiter will paste into the VNDLY
-submission Comments field. This is SEPARATE from the longer resume Summary.
+Write the recruiter Comments that will be pasted into VNDLY. This is NOT merely
+a shortened resume Summary. Treat it as a supplier-to-MSP explanation of WHY
+this candidate deserves manager review.
+
+PRIMARY AUDIENCE:
+An MSP recruiter who knows the requisition and attended/reviewed the supplier
+call, but may not be deeply technical.
 
 PRIMARY GOALS — IN THIS ORDER:
-1. Help the MSP reviewer quickly recognize that the candidate satisfies the
-   highest-signal current requirements and deserves to be shortlisted.
-2. Give the hiring manager a concise, evidence-based reason to interview the
-   candidate if the submission reaches them.
+1. Make the shortlist decision easy.
+2. Show that the supplier searched against the hiring manager's actual current
+   priorities, not just generic JD keywords.
+3. Give the MSP concrete candidate evidence they can confidently pass to the
+   hiring manager.
 
 MENTAL MODEL:
-The MSP may be scanning many submissions quickly. Write a compact "why this
-candidate" snapshot, NOT another executive resume summary and NOT marketing copy.
-The best version should feel like a strong recruiter condensed the most useful
-parts of the resume into the VNDLY comments box.
+The reader should be able to answer:
+- Who is this candidate?
+- Which 2-4 things the manager cares about do they genuinely demonstrate?
+- Where did they prove those things?
+- Why does that proven background transfer to this Freddie role?
+
+Use plain business language first and technical detail only where it strengthens
+the shortlist case.
 
 LENGTH / STRUCTURE:
 - 3-4 compact sentences as ONE paragraph.
-- Target roughly 80-115 words. Do not exceed 130 words.
+- Target roughly 85-120 words. Do not exceed 130 words.
 - Sentence 1: natural candidate positioning title + deterministic total career
-  experience + the 1-2 most important role-specific anchors.
-- Sentence 2: strongest concrete recent/repeated evidence for the manager/MSP's
-  highest-priority requirement(s). Name an employer only when it strengthens
-  credibility or gives useful scale/context.
-- Sentence 3: cover the next most important requirement cluster with concrete
-  evidence (domain, platform, content execution, testing, operations, etc.).
-- Optional Sentence 4: one final high-value differentiator only if it adds new
-  signal. Do not write a generic sales closer.
+  experience + the strongest genuine role anchors.
+- Sentence 2: strongest concrete recent/repeated proof. Name the employer when
+  it improves credibility.
+- Sentence 3: the next most important supported proof cluster, ideally including
+  relevant technical/domain depth.
+- Sentence 4: explain why the proven experience transfers to THIS role and makes
+  the candidate worth manager review.
+
+HIRING-MANAGER NAME RULE:
+- If SPOTLIGHT HIRING MANAGER NAME above is populated, you MAY and SHOULD use
+  that name ONCE when it makes the comments more useful to the MSP.
+- Best use: connect proven candidate evidence to a priority the hiring manager
+  explicitly emphasized on the supplier/Spotlight call.
+- Natural pattern:
+  "This combination gives Arunabh the hands-on testing and automation background
+  Mark emphasized on the supplier call, with the technical depth to support
+  structured testing of Freddie Mac's data-modeling platform."
+- Do NOT use the name merely for decoration or claim the manager emphasized
+  something unless STRUCTURED REQUISITION INTELLIGENCE actually supports it.
+- If the name is BLANK, do not invent or infer a hiring-manager name.
+- Do NOT substitute the VNDLY Resource Manager for the hiring manager unless the
+  transcript itself explicitly labels that person as Hiring Manager.
 
 REQUIREMENT PRIORITY:
 - Start from the CURRENT substantive requirement hierarchy in STRUCTURED
@@ -2660,6 +2845,18 @@ REQUIREMENT PRIORITY:
 - Prefer recurring responsibilities and direct hands-on execution over oversight,
   strategy, or one-time projects unless the role specifically asks for those.
 
+EVIDENCE / TRANSFERABILITY BOUNDARY — ABSOLUTE:
+- Candidate facts must come from the resume or official candidate vetting.
+- Freddie's JD, manager comments, MSP notes, and target environment define WHY
+  an experience matters; they do NOT become candidate history.
+- Do not write that the candidate tested data-modeling workflows, built an AI
+  platform, used a named database, worked in mortgage, etc. unless candidate
+  evidence actually supports that statement.
+- It IS appropriate to say supported prior experience "provides a foundation
+  for", "transfers to", or "can support" a Freddie responsibility.
+- When evidence is adjacent rather than direct, explain the transfer honestly
+  instead of upgrading it into direct experience.
+
 STYLE — VERY IMPORTANT:
 - Write like an experienced recruiter sending a concise internal candidate note.
 - Use the candidate's FIRST NAME naturally after the first sentence.
@@ -2671,6 +2868,9 @@ STYLE — VERY IMPORTANT:
 - Prefer factual evidence over claims about fit.
 - Keep the paragraph skimmable; avoid long comma-heavy inventory sentences.
 - Do not simply paraphrase or duplicate the formatted resume Summary.
+- The final sentence may be more explicit than the resume Summary about WHY the
+  candidate should advance, as long as it is phrased as evidence-based
+  transferability rather than unsupported praise.
 
 GOOD MODEL — communications example:
 "Kristin is a senior communications specialist with 18+ years of experience
@@ -2745,6 +2945,14 @@ PRIORITY HIERARCHY:
 
 SELECTION PRINCIPLES:
 - Optimize for SIGNAL, not coverage.
+- CANDIDATE-EVIDENCE GATE: never recommend a catalogue skill solely because it
+  appears in Freddie's JD, structured Must/Nice fields, manager comments, or
+  Spotlight transcript. The candidate's resume/vetting must independently
+  support the skill.
+- If the role requires Data Modeling but the resume does not demonstrate data
+  modeling concepts/work, do NOT recommend `Data Modeling`.
+- If the role requires SQL but the resume does not show SQL, do NOT recommend
+  `SQL`.
 - A skill that directly represents the core requirement is more valuable than
   several narrower synonyms/components of the same concept.
 - Prefer the exact terminology Freddie is screening for.
@@ -2766,9 +2974,24 @@ SELECTION PRINCIPLES:
   (for example Maven is not proof of Gradle).
 - Avoid redundant parent/child/synonym selections. With only 8 final slots,
   coverage of distinct explicit requirements is usually more valuable than a
-  second closely related variant. For example, when Spring Framework is already
-  selected and JDBC/J2EE are explicit candidate-proven requirements, do not spend
-  another slot on Spring Boot merely because it is a candidate strength.
+  second closely related variant.
+- TEST-AUTOMATION REDUNDANCY RULE: never recommend more than ONE of these when
+  they represent the same candidate capability:
+  `Automation`, `Automation Testing`, `Test Automation`,
+  `Test Automation Tools`, `Automated Testing`.
+  Prefer the most role-specific exact value the candidate truly supports.
+  For a QA automation role, normally prefer `Test Automation` over generic
+  `Automation`.
+- DATA-QUALITY REDUNDANCY RULE: normally choose one of `Data Quality` and
+  `data validation` unless the requisition clearly treats them as materially
+  different screening dimensions.
+- FINANCE REDUNDANCY RULE: normally choose one of `Finance` and
+  `Financial Services`.
+- SOURCE-CONTROL REDUNDANCY RULE: do not consume multiple slots with Git/GitHub/
+  GitLab unless a specific platform is independently central to the role.
+- Example: when Spring Framework is already selected and JDBC/J2EE are explicit
+  candidate-proven requirements, do not spend another slot on Spring Boot merely
+  because it is a candidate strength.
 - Candidate evidence must genuinely support every selection.
 
 STRUCTURED-SKILL RULE:
@@ -2791,10 +3014,18 @@ SOURCE CATEGORY must be exactly one of:
 
 BEFORE RETURNING:
 Ask yourself: "Which candidate-supported skills deserve to compete for the
-final 8 VNDLY selections?" Include enough high-quality Required alternatives for
-Python to make the final evidence-strength ranking. Do not omit a clearly
-work-history-evidenced Required skill merely to include a weaker summary-only
-Required skill.
+final 8 VNDLY selections?"
+
+Then perform this audit:
+1. Remove every skill that is supported only by the JOB and not by the candidate.
+2. Collapse synonym/redundancy families to the single strongest label.
+3. Confirm that concrete candidate-supported Must Haves (for example Python,
+   SQL, JDBC, Snowflake, JSON, Cucumber, etc. when applicable) are not being
+   crowded out by broad labels such as Automation, DevOps, Data Engineering, or
+   Data Validation.
+4. Prefer dated work-history evidence over a top-level skills-list mention.
+5. Do not omit a clearly work-history-evidenced Required skill merely to include
+   a weaker summary-only Required skill.
 
 ======================================================================
 OUTPUT
@@ -2939,7 +3170,7 @@ def fred_build_submission_email_body(
         f"Freddie Job: {job_id}" + (f" - {job_title}" if job_title else ""),
         f"Resource Manager: {manager or 'N/A'}",
         "",
-        "VNDLY SUBMISSION SUMMARY",
+        "VNDLY COMMENTS",
         str(package.get("vndly_summary", "") or "").strip(),
         "",
         f"RECOMMENDED VNDLY SKILLS - TOP {FREDDIE_VNDLY_SKILL_CAP} MAX",
@@ -6154,6 +6385,40 @@ SUMMARY — EXACTLY 4 SENTENCES
 
 Write exactly FOUR sentences as ONE paragraph.
 
+EVIDENCE-FIRST TRANSFERABILITY RULE — CRITICAL:
+The goal is NOT to make the candidate's past sound identical to the Freddie job.
+The goal is to show:
+1. WHAT the candidate actually did,
+2. HOW they did it / which supported tools or methods they used,
+3. WHAT impact, outcome, ownership, or operational value resulted when the
+   resume provides it, and
+4. WHY that proven experience transfers to the work Freddie needs done.
+
+Keep PAST EVIDENCE and TARGET-ROLE APPLICATION grammatically separate.
+
+BAD:
+"Arunabh specialized in data-modeling workflow testing and automated quality
+gates."
+
+when the resume only shows enterprise QA, Python automation, deployment
+validation, and CI/CD.
+
+GOOD:
+"Arunabh's enterprise QA and Python automation experience provides a strong
+foundation for building and executing structured test cases around Freddie's
+data-modeling platform."
+
+The GOOD version explains transferability without rewriting the candidate's
+history.
+
+Do not convert:
+- a Freddie requirement into a past candidate accomplishment,
+- a target platform/domain into an employer context the resume does not show,
+- related experience into direct hands-on ownership,
+- two unrelated resume facts into one stronger composite claim.
+
+Write exactly FOUR sentences as ONE paragraph.
+
 The Summary serves TWO human readers in sequence:
 
 1. An MSP recruiter who knows Freddie's requirements but may not be deeply
@@ -6165,7 +6430,7 @@ The second half must provide the concrete proof that preserves hiring-manager
 credibility.
 
 ----------------------------------------------------------------------
-Sentence 1 — MSP MATCH ANCHOR
+Sentence 1 — IDENTITY + STRONGEST DIFFERENTIATOR
 ----------------------------------------------------------------------
 
 - Use the candidate's FIRST NAME.
@@ -6200,7 +6465,7 @@ Sentence 1 — MSP MATCH ANCHOR
 - Keep this sentence understandable without requiring deep technical knowledge.
 
 ----------------------------------------------------------------------
-Sentence 2 — SPECIALIZED MATCH IN PLAIN ENGLISH
+Sentence 2 — CONCRETE RECENT PROOF
 ----------------------------------------------------------------------
 
 - Use the current/most-recent employer when it provides strong relevant proof.
@@ -6229,7 +6494,7 @@ when that is supported by the resume.
 The technical specifics can then appear in Sentence 3.
 
 ----------------------------------------------------------------------
-Sentence 3 — TECHNICAL / OPERATIONAL PROOF
+Sentence 3 — SUPPORTING DEPTH + IMPACT
 ----------------------------------------------------------------------
 
 - Now provide the concrete technical proof behind the plain-English match.
@@ -6247,7 +6512,7 @@ Sentence 3 — TECHNICAL / OPERATIONAL PROOF
   workflow accurately.
 
 ----------------------------------------------------------------------
-Sentence 4 — DOMAIN + IMMEDIATE VALUE
+Sentence 4 — TRANSFER TO THIS FREDDIE ROLE
 ----------------------------------------------------------------------
 
 - Tie together the strongest remaining evidence that increases confidence in
@@ -6257,6 +6522,13 @@ Sentence 4 — DOMAIN + IMMEDIATE VALUE
   IRM/GRC, etc., make that domain connection explicit when genuinely supported.
 - State the specific value the candidate's demonstrated experience indicates
   they can provide to THIS Freddie role.
+- This is the ONE sentence where target-role language may be used explicitly to
+  explain transferability, even when the candidate did not previously work in
+  that exact Freddie environment.
+- Make the grammar unmistakable: prior experience "provides a foundation for",
+  "transfers to", "supports", or "can be applied to" the Freddie need.
+- NEVER phrase the Freddie target responsibility as though the candidate
+  already performed it at a prior employer.
 - The conclusion should make the candidate's relevance obvious rather than
   merely praise the candidate.
 - Keep it evidence based and grounded in prior execution.
@@ -6362,6 +6634,12 @@ Before returning the Summary, ask:
    operational, and domain-specific depth?
 
 5. Is every candidate claim defensible against the resume?
+
+6. Did I accidentally turn a Freddie requirement, manager comment, or target
+   environment into a statement about the candidate's past experience?
+
+7. Does the final sentence explain TRANSFERABILITY rather than fabricate
+   previous performance of the target-role work?
 
 If any answer is no, revise the Summary before returning it.
 
@@ -6951,7 +7229,7 @@ FULL ORIGINAL RESUME
 
                 try:
                     with st.spinner(
-                        "Building VNDLY submission summary and exact skill recommendations..."
+                        "Building VNDLY comments and exact skill recommendations..."
                     ):
                         vndly_package = fred_build_vndly_candidate_package(
                             API_KEY,
@@ -7145,18 +7423,18 @@ FULL ORIGINAL RESUME
                 if vndly_package_error:
                     st.warning(
                         "⚠️ The resume was generated successfully, but the "
-                        "VNDLY summary/skill package could not be created. "
+                        "VNDLY comments/skill package could not be created. "
                         f"Package error: {vndly_package_error}"
                     )
 
-                st.markdown("**VNDLY Submission Summary**")
+                st.markdown("**VNDLY Comments**")
                 if vndly_package.get("vndly_summary", ""):
                     st.code(
                         vndly_package.get("vndly_summary", ""),
                         language=None,
                     )
                 else:
-                    st.caption("No VNDLY submission summary was generated.")
+                    st.caption("No VNDLY comments were generated.")
 
                 ranked_vndly_skills = vndly_package.get(
                     "final_recommended_vndly_skills",
