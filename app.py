@@ -9736,539 +9736,166 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
     import re
     from docx.shared import Pt, Inches
     from docx.enum.text import WD_TAB_ALIGNMENT
+    from copy import deepcopy
 
     doc = docx.Document(template_path)
+    orig_doc = docx.Document(resume_path)
 
-    # ================================================================
-    # 1. DELETE EMPTY SKILL MATRIX ROWS BEFORE REPLACING TEXT
-    # ================================================================
+    # 1. Delete empty skill rows BEFORE replacing text
     for tbl in doc.tables:
         rows_to_delete = []
-
         for row in tbl.rows:
             cell_text = row.cells[0].text
-
             for i in range(1, 9):
                 if f"{{{{SKILL{i}}}}}" in cell_text:
                     if not mapping.get(f"SKILL{i}", "").strip():
                         rows_to_delete.append(row)
-
         for row in rows_to_delete:
+            # Safer XML removal method for table rows
             row._element.getparent().remove(row._element)
 
-    # ================================================================
-    # 2. REPLACE DELOITTE TEMPLATE PLACEHOLDERS
-    # ================================================================
+    # 2. Replace placeholders while preserving formatting
     for p in doc.paragraphs:
-
-        # Explicitly rebuild these lines so the label remains bold.
+        # Explicitly rebuild the header lines to maintain the bold prefix
         if "Candidate Legal Name:" in p.text and "{{FullName}}" in p.text:
             p.text = ""
-
             r1 = p.add_run("Candidate Legal Name: ")
             r1.bold = True
-
-            p.add_run(
-                str(
-                    mapping.get(
-                        "FullName",
-                        ""
-                    )
-                )
-            )
-
+            p.add_run(str(mapping.get("FullName", "")))
             continue
-
         if "Preferred Name:" in p.text and "{{PreferredName}}" in p.text:
             p.text = ""
-
             r1 = p.add_run("Preferred Name: ")
             r1.bold = True
-
-            p.add_run(
-                str(
-                    mapping.get(
-                        "PreferredName",
-                        ""
-                    )
-                )
-            )
-
+            p.add_run(str(mapping.get("PreferredName", "")))
             continue
-
         if "Current Location:" in p.text and "{{Location}}" in p.text:
             p.text = ""
-
             r1 = p.add_run("Current Location: ")
             r1.bold = True
-
-            p.add_run(
-                str(
-                    mapping.get(
-                        "Location",
-                        ""
-                    )
-                )
-            )
-
+            p.add_run(str(mapping.get("Location", "")))
             continue
-
-        if (
-            "Upcoming Scheduled Time off:" in p.text
-            and "{{TimeOff}}" in p.text
-        ):
+        if "Upcoming Scheduled Time off:" in p.text and "{{TimeOff}}" in p.text:
             p.text = ""
-
-            r1 = p.add_run(
-                "Upcoming Scheduled Time off: "
-            )
+            r1 = p.add_run("Upcoming Scheduled Time off: ")
             r1.bold = True
-
-            p.add_run(
-                str(
-                    mapping.get(
-                        "TimeOff",
-                        ""
-                    )
-                )
-            )
-
+            p.add_run(str(mapping.get("TimeOff", "")))
             continue
 
-        # Replace normal paragraph placeholders.
+        # For all other paragraphs (like Summary points)
         for k, v in mapping.items():
-
-            # This is structured data used later to build the resume body.
-            # It is NOT a Word template placeholder.
-            if k == "DeloitteBodyBlocks":
-                continue
-
             placeholder = f"{{{{{k}}}}}"
-
             if placeholder in p.text:
                 replaced = False
-
                 for run in p.runs:
                     if placeholder in run.text:
-                        run.text = run.text.replace(
-                            placeholder,
-                            str(v)
-                        )
+                        run.text = run.text.replace(placeholder, str(v))
                         replaced = True
-
-                # Word sometimes splits a placeholder across multiple runs.
+                # Fallback if the placeholder got split across multiple runs by Word
                 if not replaced:
-                    p.text = p.text.replace(
-                        placeholder,
-                        str(v)
-                    )
+                    p.text = p.text.replace(placeholder, str(v))
 
-    # Replace placeholders inside the Skills Matrix table.
+    # Replace placeholders in table cells
     for tbl in doc.tables:
         for row in tbl.rows:
             for cell in row.cells:
                 for p in cell.paragraphs:
                     for k, v in mapping.items():
-
-                        if k == "DeloitteBodyBlocks":
-                            continue
-
                         placeholder = f"{{{{{k}}}}}"
-
                         if placeholder in p.text:
                             replaced = False
-
                             for run in p.runs:
                                 if placeholder in run.text:
-                                    run.text = run.text.replace(
-                                        placeholder,
-                                        str(v)
-                                    )
+                                    run.text = run.text.replace(placeholder, str(v))
                                     replaced = True
-
                             if not replaced:
-                                p.text = p.text.replace(
-                                    placeholder,
-                                    str(v)
-                                )
+                                p.text = p.text.replace(placeholder, str(v))
 
-    # ================================================================
-    # 3. BUILD THE REST OF THE RESUME FROM STRUCTURED AI EXTRACTION
-    # ================================================================
+    # --- XML SCRUBBER FUNCTION ---
+    def clean_xml_element(element):
+        for hl in element.xpath('.//w:hyperlink'):
+            parent = hl.getparent()
+            if parent is not None:
+                idx = parent.index(hl)
+                for child in list(hl):
+                    parent.insert(idx, child)
+                    idx += 1
+                parent.remove(hl)
+        for drawing in element.xpath('.//w:drawing | .//w:pict | .//w:object'):
+            parent = drawing.getparent()
+            if parent is not None:
+                parent.remove(drawing)
+        for bm in element.xpath('.//w:bookmarkStart | .//w:bookmarkEnd'):
+            parent = bm.getparent()
+            if parent is not None:
+                parent.remove(bm)
+        for sectPr in element.xpath('.//w:sectPr'):
+            parent = sectPr.getparent()
+            if parent is not None:
+                parent.remove(sectPr)
+        return element
+    # ----------------------------------
 
-    body_blocks = mapping.get(
-        "DeloitteBodyBlocks",
-        []
-    )
+    # 3. Extract the "Rest of Resume"
+    body_elements = orig_doc._body._body
+    start_copying = False
+    elements_to_copy = []
 
-    if not isinstance(body_blocks, list):
-        body_blocks = []
-
-    def clean_value(value):
-        if value is None:
-            return ""
-
-        return re.sub(
-            r"\s+",
-            " ",
-            str(value)
-        ).strip()
-
-    def set_deloitte_paragraph_format(paragraph):
-
+    for element in body_elements:
         try:
-            paragraph.style = doc.styles["No Spacing"]
+            text = "".join(element.itertext())
         except Exception:
-            try:
-                paragraph.style = doc.styles["Normal"]
-            except Exception:
-                pass
+            text = ""
+            
+        if "Links:" in text or "Technical Skills" in text:
+            start_copying = True
+        
+        if start_copying:
+            clean_el = clean_xml_element(deepcopy(element))
+            elements_to_copy.append(clean_el)
 
-        paragraph.paragraph_format.space_before = Pt(0)
-        paragraph.paragraph_format.space_after = Pt(0)
-        paragraph.paragraph_format.right_indent = Inches(0)
-
-        try:
-            paragraph.paragraph_format.tab_stops.clear_all()
-
-            paragraph.paragraph_format.tab_stops.add_tab_stop(
-                Inches(7.5),
-                WD_TAB_ALIGNMENT.RIGHT
-            )
-        except Exception:
-            pass
-
-    def format_run(
-        run,
-        bold=False,
-        italic=False
-    ):
-        run.font.name = "Arial"
-        run.font.size = Pt(10)
-        run.bold = bold
-        run.italic = italic
-
-    def add_body_paragraph(
-        before_p,
-        kind,
-        block
-    ):
-        p = before_p.insert_paragraph_before("")
-
-        set_deloitte_paragraph_format(p)
-
-        text = clean_value(
-            block.get(
-                "Text",
-                ""
-            )
-        )
-
-        left_text = clean_value(
-            block.get(
-                "LeftText",
-                ""
-            )
-        )
-
-        dates = clean_value(
-            block.get(
-                "Dates",
-                ""
-            )
-        )
-
-        label = clean_value(
-            block.get(
-                "Label",
-                ""
-            )
-        )
-
-        value = clean_value(
-            block.get(
-                "Value",
-                ""
-            )
-        )
-
-        # ------------------------------------------------------------
-        # BLANK SEPARATOR
-        # ------------------------------------------------------------
-        if kind == "spacer":
-            return p
-
-        # ------------------------------------------------------------
-        # SECTION HEADING
-        # Examples:
-        # Technical Skills:
-        # Education:
-        # Work Experience:
-        # Core Strengths:
-        # Tools and Platforms:
-        # Publications:
-        # ------------------------------------------------------------
-        if kind == "section_heading":
-
-            if text and not text.endswith(":"):
-                text += ":"
-
-            r = p.add_run(text)
-
-            format_run(
-                r,
-                bold=True
-            )
-
-            return p
-
-        # ------------------------------------------------------------
-        # DATED HEADER
-        #
-        # Left side is preserved exactly from the candidate resume.
-        # Dates are aligned to the right.
-        #
-        # Example:
-        # Amazon/AWS – Arlington, VA          Feb. 2025 – Present
-        #
-        # Example:
-        # Enlightened, Inc. – Technical Recruiter    June 2024 – Dec. 2024
-        # ------------------------------------------------------------
-        if kind in {
-            "experience_header",
-            "education_header",
-            "dated_header"
-        }:
-
-            left = left_text or text
-
-            if left:
-                r = p.add_run(left)
-
-                format_run(
-                    r,
-                    bold=True
-                )
-
-            if dates:
-                r = p.add_run(
-                    "\t" + dates
-                )
-
-                format_run(
-                    r,
-                    bold=True
-                )
-
-            return p
-
-        # ------------------------------------------------------------
-        # BOLD SUBHEADING
-        #
-        # Used for a company, job title, school, certification, etc.
-        # when it appears on its own source line.
-        # ------------------------------------------------------------
-        if kind in {
-            "subheading",
-            "bold_line"
-        }:
-            r = p.add_run(text)
-
-            format_run(
-                r,
-                bold=True
-            )
-
-            return p
-
-        # ------------------------------------------------------------
-        # LABELED LINE
-        #
-        # Example:
-        # Programming Languages: Swift, Objective-C, Python
-        # ------------------------------------------------------------
-        if kind == "labeled_line":
-
-            if label:
-                r1 = p.add_run(
-                    label.rstrip(":") +
-                    ": "
-                )
-
-                format_run(
-                    r1,
-                    bold=True
-                )
-
-            r2 = p.add_run(value)
-
-            format_run(r2)
-
-            return p
-
-        # ------------------------------------------------------------
-        # BULLET
-        # ------------------------------------------------------------
-        if kind == "bullet":
-
-            try:
-                p.style = doc.styles[
-                    "List Bullet"
-                ]
-            except Exception:
-                pass
-
-            p.paragraph_format.left_indent = Inches(
-                0.25
-            )
-
-            p.paragraph_format.first_line_indent = Inches(
-                -0.15
-            )
-
-            r = p.add_run(text)
-
-            format_run(r)
-
-            return p
-
-        # ------------------------------------------------------------
-        # DEFAULT / PLAIN BODY LINE
-        # ------------------------------------------------------------
-        r = p.add_run(
-            text or left_text or value
-        )
-
-        format_run(r)
-
-        return p
-
-    # ================================================================
-    # LOCATE {{RESUME_BODY}} AND INSERT THE GENERATED BODY BEFORE IT
-    # ================================================================
-
-    resume_body_marker = None
-
+    # 4. Insert extracted elements perfectly at {{RESUME_BODY}}
     for p in doc.paragraphs:
         if "{{RESUME_BODY}}" in p.text:
-            resume_body_marker = p
+            parent = p._element.getparent()
+            index = parent.index(p._element)
+            for el in elements_to_copy:
+                parent.insert(index, el)
+                index += 1
+            parent.remove(p._element)
             break
 
-    if resume_body_marker is not None:
-
-        previous_kind = None
-
-        for raw_block in body_blocks:
-
-            if not isinstance(
-                raw_block,
-                dict
-            ):
-                continue
-
-            kind = clean_value(
-                raw_block.get(
-                    "Type",
-                    "plain"
-                )
-            ).lower()
-
-            kind = (
-                kind
-                .replace(
-                    " ",
-                    "_"
-                )
-                .replace(
-                    "-",
-                    "_"
-                )
-            )
-
-            # One blank line before a new major section.
-            if (
-                kind == "section_heading"
-                and previous_kind not in {
-                    None,
-                    "spacer"
-                }
-            ):
-                add_body_paragraph(
-                    resume_body_marker,
-                    "spacer",
-                    {}
-                )
-
-            # One blank line between separate dated entries/roles.
-            elif (
-                kind in {
-                    "experience_header",
-                    "education_header",
-                    "dated_header"
-                }
-                and previous_kind not in {
-                    None,
-                    "section_heading",
-                    "spacer"
-                }
-            ):
-                add_body_paragraph(
-                    resume_body_marker,
-                    "spacer",
-                    {}
-                )
-
-            add_body_paragraph(
-                resume_body_marker,
-                kind,
-                raw_block
-            )
-
-            previous_kind = kind
-
-        # Always remove the actual placeholder line.
-        marker_parent = (
-            resume_body_marker
-            ._element
-            .getparent()
-        )
-
-        marker_parent.remove(
-            resume_body_marker._element
-        )
-
-    # ================================================================
-    # 4. FINAL DELOITTE FORMATTING SWEEP
-    # ================================================================
-
+    # 5. STRICT FORMATTING & TAB STOP FIX
     def apply_strict_formatting(paragraph):
-
+        # A. Set Tab Stop to 7.5" Right-Aligned and remove right indent margins
         try:
             paragraph.paragraph_format.tab_stops.clear_all()
-
-            paragraph.paragraph_format.tab_stops.add_tab_stop(
-                Inches(7.5),
-                WD_TAB_ALIGNMENT.RIGHT
-            )
-
+            paragraph.paragraph_format.tab_stops.add_tab_stop(Inches(7.5), WD_TAB_ALIGNMENT.RIGHT)
             paragraph.paragraph_format.right_indent = Inches(0)
-
         except Exception:
             pass
 
+        # B. Clean up runs: Set Arial 10pt and collapse multiple tabs/spaces
         for run in paragraph.runs:
-            run.font.name = "Arial"
+            run.font.name = 'Arial'
             run.font.size = Pt(10)
-
             if run.text:
-                # Preserve normal sentence spacing.
-                # Only eliminate duplicate tabs.
-                run.text = re.sub(
-                    r"\t{2,}",
-                    "\t",
-                    run.text
-                )
+                # Convert 3 or more spaces to a single tab
+                run.text = re.sub(r' {3,}', '\t', run.text)
+                # Collapse multiple tabs into a single tab
+                run.text = re.sub(r'\t{2,}', '\t', run.text)
+                # Remove spaces that are directly next to tabs
+                run.text = re.sub(r' \t|\t ', '\t', run.text)
 
+        # C. Cross-Run Cleanup: Catch tabs that are split across formatting boundaries
+        for i in range(len(paragraph.runs) - 1):
+            if paragraph.runs[i].text and paragraph.runs[i].text.endswith('\t'):
+                j = i + 1
+                while j < len(paragraph.runs) and paragraph.runs[j].text.startswith('\t'):
+                    paragraph.runs[j].text = paragraph.runs[j].text.lstrip('\t')
+                    j += 1
+
+    # Apply the formatting sweep across the entire generated document
     for p in doc.paragraphs:
         apply_strict_formatting(p)
 
@@ -10278,8 +9905,9 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
                 for p in cell.paragraphs:
                     apply_strict_formatting(p)
 
+    # Collapse extra blank body paragraphs left by removed/empty sections.
     collapse_extra_blank_paragraphs(doc)
-
+    
     doc.save(output_path)
 def deloitte_app():
     TEMPLATE_FILENAME = "Deloitte_Template.docx"
@@ -10397,382 +10025,56 @@ def deloitte_app():
                     with open(resume_path, "wb") as f:
                         f.write(resume_file.getbuffer())
 
-                    # Deloitte now rebuilds the resume body from structured
-                    # resume content instead of copying source Word XML.
-                    # Therefore PDFs do NOT need to be converted to DOCX first.
-                    raw_text = extract_text(resume_path)
+                    # Deloitte later reopens the source resume with python-docx
+                    # so it can copy the original resume content/XML into the
+                    # Deloitte template. PDFs therefore need a temporary DOCX
+                    # version for that step.
+                    resume_docx_path = resume_path
 
-                    client = genai.Client(
-                        api_key=API_KEY
-                    )
+                    if os.path.splitext(resume_path)[1].lower() == ".pdf":
+                        resume_docx_path = (
+                            os.path.splitext(resume_path)[0] +
+                            "_converted.docx"
+                        )
+
+                        pdf_converter = Converter(resume_path)
+
+                        try:
+                            pdf_converter.convert(
+                                resume_docx_path,
+                                start=0,
+                                end=None
+                            )
+                        finally:
+                            pdf_converter.close()
+
+                    # Keep extracting text from the ORIGINAL uploaded file.
+                    # extract_text() already handles PDFs correctly.
+                    raw_text = extract_text(resume_path)
+                    client = genai.Client(api_key=API_KEY)
 
                     prompt = f"""
                     Return a valid JSON object ONLY.
 
-                    ==================================================
-                    DELOITTE RESUME EXTRACTION
-                    ==================================================
+                    RULES:
+                    1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
+                    2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors.
+                    3. Education: Extract School and Degree.
+                    4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - For 'Dates', preserve the date precision from the original resume. If a role lists only years, return only those years (for example, "2018 - 2020"). NEVER invent January, "01", or any other month. If month + year are present, preserve them; mixed-precision ranges must stay mixed.
+                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
+                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
+                    5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
 
-                    You are extracting data from a candidate resume.
-
-                    ZERO-TOLERANCE ACCURACY RULE:
-                    The candidate's resume is the ONLY source of truth.
-                    Never invent, infer, rewrite, enhance, summarize,
-                    or add information that is not explicitly contained
-                    in the resume.
-
-                    ==================================================
-                    GENERAL STRUCTURED DATA
-                    ==================================================
-
-                    1. FullName
-                       - Pull the candidate name from the top/header.
-                       - Return it in normal Title Case.
-                       - If the name is completely missing or unreadable,
-                         derive it from the uploaded filename.
-
-                    2. Company Name Cleaning
-                       - For the separate Experience array's "Company"
-                         field, extract the primary employer/end-client.
-                       - Remove geographic locations from that specific
-                         Company field.
-                       - Do NOT alter the DeloitteBodyBlocks source text.
-
-                    3. Education
-                       - Extract every school and degree explicitly listed.
-
-                    4. Experience
-                       - Extract every professional role.
-                       - Fields:
-                         Company
-                         Title
-                         Bullets
-                         Environment
-                         Dates
-
-                       DATES:
-                       - Preserve exactly the date precision present.
-                       - Never invent a month.
-                       - "2018 - 2020" must remain year-only.
-                       - Preserve month/year when month/year is supplied.
-
-                       TITLE:
-                       - Remove employment-type modifiers or trailing
-                         parenthetical employment labels only when clearly
-                         separate from the actual title.
-
-                       ENVIRONMENT:
-                       - Only populate Environment if the source explicitly
-                         labels a role with "Environment:" or "Technologies:".
-                       - Otherwise return "".
-                       - Never create an Environment from bullet content.
-
-                    5. Certifications
-                       - Extract explicitly stated certifications.
-                       - Return one comma-separated string.
-                       - If none exist, return "".
-
-                    ==================================================
-                    DELOITTE BODY BLOCKS
-                    ==================================================
-
-                    You must ALSO create "DeloitteBodyBlocks".
-
-                    PURPOSE:
-                    These blocks will be used to reconstruct the candidate's
-                    original resume content underneath Deloitte's generated
-                    Summary section.
-
-                    IMPORTANT:
-                    The generated Deloitte document already creates:
-                    - Candidate Name
-                    - Candidate information
-                    - Skills Matrix
-                    - Recruiter Summary
-
-                    Therefore DO NOT include the candidate's:
-                    - Name/header/contact information
-                    - introductory Career Summary
-                    - Professional Summary
-                    - Recruiter Summary
-                    - Profile
-                    - Objective
-                    - introductory narrative summary
-
-                    in DeloitteBodyBlocks.
-
-                    START the Deloitte body with the first substantive
-                    resume section AFTER that introductory information.
-
-                    Examples of sections that MUST be preserved when present:
-                    - Core Strengths
-                    - Technical Skills
-                    - Skills
-                    - Links
-                    - Professional Experience
-                    - Experience
-                    - Work Experience
-                    - Education
-                    - Certifications
-                    - Tools and Platforms
-                    - Projects
-                    - Publications
-                    - Awards
-                    - Affiliations
-                    - Any other substantive candidate resume section
-
-                    CRITICAL PRESERVATION RULES:
-                    - Preserve all substantive resume information.
-                    - Preserve the original order.
-                    - Preserve the original wording.
-                    - Do NOT improve grammar.
-                    - Do NOT rewrite bullets.
-                    - Do NOT combine bullets.
-                    - Do NOT shorten bullets.
-                    - Do NOT invent content.
-                    - Do NOT silently remove older jobs.
-                    - Do NOT reorder jobs.
-                    - Preserve section names from the source where practical.
-
-                    ==================================================
-                    BLOCK TYPES
-                    ==================================================
-
-                    Every DeloitteBodyBlocks object must use ONE of these
-                    Type values:
-
-                    "section_heading"
-                    Use for major headings such as:
-                    Technical Skills
-                    Experience
-                    Education
-                    Tools and Platforms
-                    Publications
-
-                    Format:
-                    {{
-                        "Type": "section_heading",
-                        "Text": "Experience"
-                    }}
-
-                    ----------------------------------------------
-
-                    "experience_header"
-                    Use when a company/title/location line contains a date
-                    range that should be aligned to the right.
-
-                    Keep EVERYTHING to the left of the dates in LeftText.
-
-                    Example source:
-                    Amazon/AWS – Arlington, VA     Feb. 2025 – Present
-
-                    Output:
-                    {{
-                        "Type": "experience_header",
-                        "LeftText": "Amazon/AWS – Arlington, VA",
-                        "Dates": "Feb. 2025 – Present"
-                    }}
-
-                    Example source:
-                    Enlightened, Inc. – Technical Recruiter
-                    June 2024 — Dec. 2024
-
-                    This may still be represented as:
-                    {{
-                        "Type": "experience_header",
-                        "LeftText": "Enlightened, Inc. – Technical Recruiter",
-                        "Dates": "June 2024 — Dec. 2024"
-                    }}
-
-                    ----------------------------------------------
-
-                    "education_header"
-                    Use for a school/education line containing dates.
-
-                    Format:
-                    {{
-                        "Type": "education_header",
-                        "LeftText": "Georgia Highlands College",
-                        "Dates": "Aug 2016"
-                    }}
-
-                    ----------------------------------------------
-
-                    "subheading"
-                    Use for an important standalone bold line, such as:
-                    - a company on its own line
-                    - a job title on its own line
-                    - a school name on its own line
-
-                    Format:
-                    {{
-                        "Type": "subheading",
-                        "Text": "Grand Canyon University"
-                    }}
-
-                    ----------------------------------------------
-
-                    "labeled_line"
-                    Use when a line contains a meaningful category label
-                    followed by its content.
-
-                    Example:
-                    Programming Languages: Swift, Objective-C, Python
-
-                    Output:
-                    {{
-                        "Type": "labeled_line",
-                        "Label": "Programming Languages",
-                        "Value": "Swift, Objective-C, Python"
-                    }}
-
-                    ----------------------------------------------
-
-                    "bullet"
-                    Use for EVERY actual bullet from the source resume.
-
-                    Do not include the source bullet glyph itself.
-
-                    Format:
-                    {{
-                        "Type": "bullet",
-                        "Text": "Recruited to support mission critical technical and managerial level roles."
-                    }}
-
-                    ----------------------------------------------
-
-                    "plain"
-                    Use for legitimate resume text that does not belong to
-                    one of the categories above.
-
-                    Format:
-                    {{
-                        "Type": "plain",
-                        "Text": "LinkedIn Recruiter | Indeed | Workday | Greenhouse"
-                    }}
-
-                    ==================================================
-                    CRITICAL BODY EXTRACTION EXAMPLE
-                    ==================================================
-
-                    A resume like:
-
-                    CAREER SUMMARY
-                    [introductory summary text]
-
-                    CORE STRENGTHS
-                    Full-Life Cycle Recruiting | Boolean Search
-
-                    EXPERIENCE
-
-                    Amazon/AWS – Arlington, VA        Feb. 2025 – Present
-                    • Recruited to support mission critical roles.
-                    • Averaged 300-500 weekly reach outs.
-
-                    EDUCATION
-
-                    Grand Canyon University
-                    Bachelor's Degree – Information Technology
-
-                    TOOLS AND PLATFORMS
-
-                    LinkedIn Recruiter | Workday | Greenhouse
-
-                    should produce DeloitteBodyBlocks beginning with
-                    CORE STRENGTHS, NOT Career Summary:
-
-                    [
-                        {{
-                            "Type": "section_heading",
-                            "Text": "Core Strengths"
-                        }},
-                        {{
-                            "Type": "plain",
-                            "Text": "Full-Life Cycle Recruiting | Boolean Search"
-                        }},
-                        {{
-                            "Type": "section_heading",
-                            "Text": "Experience"
-                        }},
-                        {{
-                            "Type": "experience_header",
-                            "LeftText": "Amazon/AWS – Arlington, VA",
-                            "Dates": "Feb. 2025 – Present"
-                        }},
-                        {{
-                            "Type": "bullet",
-                            "Text": "Recruited to support mission critical roles."
-                        }},
-                        {{
-                            "Type": "bullet",
-                            "Text": "Averaged 300-500 weekly reach outs."
-                        }},
-                        {{
-                            "Type": "section_heading",
-                            "Text": "Education"
-                        }},
-                        {{
-                            "Type": "subheading",
-                            "Text": "Grand Canyon University"
-                        }},
-                        {{
-                            "Type": "plain",
-                            "Text": "Bachelor's Degree – Information Technology"
-                        }},
-                        {{
-                            "Type": "section_heading",
-                            "Text": "Tools and Platforms"
-                        }},
-                        {{
-                            "Type": "plain",
-                            "Text": "LinkedIn Recruiter | Workday | Greenhouse"
-                        }}
-                    ]
-
-                    ==================================================
-                    JSON STRUCTURE
-                    ==================================================
-
+                    JSON Structure:
                     {{
                         "FullName": "",
                         "Certifications": "",
-                        "Education": [
-                            {{
-                                "School": "",
-                                "Degree": ""
-                            }}
-                        ],
-                        "Experience": [
-                            {{
-                                "Company": "",
-                                "Title": "",
-                                "Bullets": [],
-                                "Environment": "",
-                                "Dates": ""
-                            }}
-                        ],
-                        "DeloitteBodyBlocks": [
-                            {{
-                                "Type": "section_heading",
-                                "Text": ""
-                            }},
-                            {{
-                                "Type": "experience_header",
-                                "LeftText": "",
-                                "Dates": ""
-                            }},
-                            {{
-                                "Type": "bullet",
-                                "Text": ""
-                            }}
-                        ]
+                        "Education": [{{"School": "", "Degree": ""}}],
+                        "Experience": [{{"Company": "", "Title": "", "Bullets": [], "Environment": "", "Dates": ""}}]
                     }}
 
-                    ==================================================
-                    RESUME
-                    ==================================================
-
-                    {raw_text}
+                    RESUME: {raw_text}
                     """
 
                     models_to_try = ['gemini-2.5-flash', 'gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview', 'gemini-pro-latest']
@@ -10810,13 +10112,7 @@ def deloitte_app():
                         "SKILL5": "", "YEARS5": "", "SKILL5COMPANIES": "",
                         "SKILL6": "", "YEARS6": "", "SKILL6COMPANIES": "",
                         "SKILL7": "", "YEARS7": "", "SKILL7COMPANIES": "",
-                        "SKILL8": "", "YEARS8": "", "SKILL8COMPANIES": "",
-
-                        # Structured resume body used by the Deloitte renderer.
-                        "DeloitteBodyBlocks": data.get(
-                            "DeloitteBodyBlocks",
-                            []
-                        )
+                        "SKILL8": "", "YEARS8": "", "SKILL8COMPANIES": ""
                     }
 
                     edu = data.get('Education', [])
@@ -10993,17 +10289,15 @@ def deloitte_app():
                         except Exception as e:
                             st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
 
-                    out_file = (
-                        f"Submission_Deloitte_"
-                        f"{final_name.replace(' ', '_')}.docx"
-                    )
+                    out_file = f"Submission_Deloitte_{final_name.replace(' ', '_')}.docx"
 
-                    # Deloitte now reconstructs the resume body from the
-                    # structured AI extraction rather than copying source XML.
+                    # Deloitte needs a Word-compatible source here because
+                    # process_deloitte_doc() copies XML/content from the
+                    # candidate's original resume into the template.
                     process_deloitte_doc(
                         TEMPLATE_FILENAME,
                         mapping,
-                        resume_path,
+                        resume_docx_path,
                         out_file
                     )
                     
@@ -11019,8 +10313,13 @@ def deloitte_app():
                     st.success(f"✅ Success! Document is ready for download.")
 
                     try:
-                        if os.path.exists(resume_path):
-                            os.remove(resume_path)
+                        os.remove(resume_path)
+
+                        if (
+                            resume_docx_path != resume_path
+                            and os.path.exists(resume_docx_path)
+                        ):
+                            os.remove(resume_docx_path)
                     except:
                         pass
 
