@@ -10025,6 +10025,31 @@ def deloitte_app():
                     with open(resume_path, "wb") as f:
                         f.write(resume_file.getbuffer())
 
+                    # Deloitte later reopens the source resume with python-docx
+                    # so it can copy the original resume content/XML into the
+                    # Deloitte template. PDFs therefore need a temporary DOCX
+                    # version for that step.
+                    resume_docx_path = resume_path
+
+                    if os.path.splitext(resume_path)[1].lower() == ".pdf":
+                        resume_docx_path = (
+                            os.path.splitext(resume_path)[0] +
+                            "_converted.docx"
+                        )
+
+                        pdf_converter = Converter(resume_path)
+
+                        try:
+                            pdf_converter.convert(
+                                resume_docx_path,
+                                start=0,
+                                end=None
+                            )
+                        finally:
+                            pdf_converter.close()
+
+                    # Keep extracting text from the ORIGINAL uploaded file.
+                    # extract_text() already handles PDFs correctly.
                     raw_text = extract_text(resume_path)
                     client = genai.Client(api_key=API_KEY)
 
@@ -10265,8 +10290,16 @@ def deloitte_app():
                             st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
 
                     out_file = f"Submission_Deloitte_{final_name.replace(' ', '_')}.docx"
-                    # Pass resume_path to the new function so it can extract the raw XML elements
-                    process_deloitte_doc(TEMPLATE_FILENAME, mapping, resume_path, out_file)
+
+                    # Deloitte needs a Word-compatible source here because
+                    # process_deloitte_doc() copies XML/content from the
+                    # candidate's original resume into the template.
+                    process_deloitte_doc(
+                        TEMPLATE_FILENAME,
+                        mapping,
+                        resume_docx_path,
+                        out_file
+                    )
                     
                     with open(out_file, "rb") as file:
                         btn = st.download_button(
@@ -10281,6 +10314,12 @@ def deloitte_app():
 
                     try:
                         os.remove(resume_path)
+
+                        if (
+                            resume_docx_path != resume_path
+                            and os.path.exists(resume_docx_path)
+                        ):
+                            os.remove(resume_docx_path)
                     except:
                         pass
 
