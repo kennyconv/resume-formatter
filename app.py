@@ -10501,6 +10501,696 @@ def navy_set_cell_text_preserve_format(cell, value):
             run.text = ""
 
 
+def navy_normalize_evidence_text(value):
+    """
+    Normalize text only for deterministic grounding checks.
+
+    This deliberately ignores punctuation/case/whitespace differences while
+    preserving the actual words and numbers. It is NOT used to invent semantic
+    equivalence between the JD and the candidate's resume.
+    """
+    value = str(value or "")
+    value = (
+        value.replace("\u00a0", " ")
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+        .replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2013", "-")
+        .replace("\u2014", "-")
+    )
+    value = value.casefold()
+    value = re.sub(r"[^a-z0-9+#./'\-]+", " ", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
+
+
+def navy_evidence_snippet_found(resume_text, snippet):
+    """
+    Return True only when the cited evidence is actually present in the uploaded
+    resume after conservative punctuation/whitespace normalization.
+    """
+    normalized_resume = navy_normalize_evidence_text(resume_text)
+    normalized_snippet = navy_normalize_evidence_text(snippet)
+
+    if not normalized_snippet or len(normalized_snippet) < 6:
+        return False
+
+    return normalized_snippet in normalized_resume
+
+
+def navy_clean_summary_style(value):
+    """
+    Deterministically remove common AI-sounding resume phrasing from Navy Federal
+    summary bullets and standardize whole-year experience anchors to X+ years.
+    """
+    value = re.sub(r"\s+", " ", str(value or "")).strip()
+
+    # "Progressive experience" is valid English but reads formulaic/AI-generated
+    # in recruiter summaries. Navy Federal uses the simpler human phrasing.
+    value = re.sub(
+        r"\bprogressive\s+(?:professional\s+)?experience\b",
+        "experience",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(
+        r"\bprogressive\s+career\b",
+        "career",
+        value,
+        flags=re.IGNORECASE,
+    )
+
+    # Standardize a leading whole-year anchor to the requested recruiter style.
+    value = re.sub(
+        r"^\s*(\d+)\s+years?\b(?!\s*\+)",
+        lambda m: f"{m.group(1)}+ years",
+        value,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(
+        r"^\s*(\d+)\+\s+year\b",
+        lambda m: f"{m.group(1)}+ years",
+        value,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
+    return value
+
+
+def navy_string_list(value):
+    """Normalize an AI JSON value into a clean list of non-empty strings."""
+    if isinstance(value, list):
+        return [
+            re.sub(r"\s+", " ", str(item or "")).strip()
+            for item in value
+            if str(item or "").strip()
+        ]
+
+    if value is None:
+        return []
+
+    cleaned = re.sub(r"\s+", " ", str(value)).strip()
+    return [cleaned] if cleaned else []
+
+
+def navy_skill_detail_records(value):
+    """
+    Normalize skill-detail evidence records.
+
+    Expected AI shape:
+      [{"item": "NIST SP 800-53", "evidence": "exact resume quote"}]
+    """
+    if not isinstance(value, list):
+        return []
+
+    records = []
+
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+
+        item = re.sub(
+            r"\s+",
+            " ",
+            str(
+                entry.get("item")
+                or entry.get("name")
+                or entry.get("value")
+                or ""
+            ),
+        ).strip()
+
+        evidence = re.sub(
+            r"\s+",
+            " ",
+            str(entry.get("evidence") or ""),
+        ).strip()
+
+        if item and evidence:
+            records.append(
+                {
+                    "item": item,
+                    "evidence": evidence,
+                }
+            )
+
+    return records
+
+
+def navy_signal_tokens(value):
+    """
+    Create conservative lexical tokens for candidate-evidence checks.
+
+    Very common connector words are ignored. Lightweight suffix normalization
+    allows "track" to support "tracking" while still requiring the substantive
+    words in a skill detail to appear in the cited resume evidence.
+    """
+    stop_words = {
+        "a", "an", "and", "as", "at", "by", "for", "from", "in", "into",
+        "of", "on", "or", "the", "to", "using", "with", "within",
+        "management", "support", "process", "processes", "program", "programs",
+    }
+
+    def root(token):
+        token = token.casefold().strip()
+
+        # Safe derivational normalization for common resume terminology.
+        # These are grammatical variants, not semantic substitutions.
+        derivational_roots = {
+            "compliance": "compli",
+            "compliant": "compli",
+            "comply": "compli",
+            "auditor": "audit",
+            "auditors": "audit",
+            "auditing": "audit",
+            "audits": "audit",
+            "assessment": "assess",
+            "assessments": "assess",
+            "assessing": "assess",
+            "assessed": "assess",
+            "validation": "valid",
+            "validate": "valid",
+            "validated": "valid",
+            "validating": "valid",
+            "remediation": "remedi",
+            "remediate": "remedi",
+            "remediated": "remedi",
+            "remediating": "remedi",
+            "analysis": "analy",
+            "analyze": "analy",
+            "analyzed": "analy",
+            "analytical": "analy",
+        }
+
+        if token in derivational_roots:
+            return derivational_roots[token]
+
+        # Preserve acronyms/numerical framework identifiers naturally.
+        if len(token) <= 3:
+            return token
+
+        for suffix in ("ing", "ed", "es", "s"):
+            if token.endswith(suffix) and len(token) - len(suffix) >= 4:
+                return token[:-len(suffix)]
+
+        return token
+
+    raw_tokens = re.findall(
+        r"[A-Za-z0-9]+(?:[./+-][A-Za-z0-9]+)*",
+        str(value or ""),
+    )
+
+    output = []
+
+    for token in raw_tokens:
+        lowered = token.casefold()
+
+        if lowered in stop_words:
+            continue
+
+        normalized = root(lowered)
+
+        if normalized and normalized not in output:
+            output.append(normalized)
+
+    return output
+
+
+def navy_skill_item_supported_by_evidence(item, evidence):
+    """
+    Deterministically require the substantive words in each right-column skill
+    detail to be present in its cited resume evidence.
+
+    This blocks JD-only details such as GLBA/FFIEC from surviving merely because
+    the model cited some unrelated compliance sentence.
+    """
+    item_tokens = navy_signal_tokens(item)
+    evidence_tokens = set(navy_signal_tokens(evidence))
+
+    if not item_tokens:
+        return False
+
+    matched = sum(1 for token in item_tokens if token in evidence_tokens)
+
+    # One-token items (e.g. "FFIEC", "ServiceNow") must match exactly.
+    if len(item_tokens) == 1:
+        return matched == 1
+
+    # Multi-token methods can tolerate one morphological/wording mismatch but
+    # still require strong lexical support from the exact cited resume passage.
+    required = max(1, int((len(item_tokens) * 0.75) + 0.9999))
+    return matched >= required
+
+
+def navy_jd_only_phrase_hits(output_text, jd_text, resume_text):
+    """
+    Detect suspicious multi-word phrases copied from the JD into candidate-owned
+    output when that same phrase does not appear in the resume.
+
+    This is a deterministic backstop against phrases such as "effective challenge"
+    or "Issue Owners" leaking from the requisition into the candidate profile.
+    """
+    output_norm = navy_normalize_evidence_text(output_text)
+    jd_norm = navy_normalize_evidence_text(jd_text)
+    resume_norm = navy_normalize_evidence_text(resume_text)
+
+    if not output_norm or not jd_norm:
+        return []
+
+    output_words = output_norm.split()
+
+    stop_words = {
+        "a", "an", "and", "as", "at", "be", "by", "for", "from", "in", "is",
+        "of", "on", "or", "the", "to", "with", "within", "years", "year",
+        "experience", "candidate", "role",
+    }
+
+    hits = []
+    seen = set()
+
+    # Prefer longer overlaps first so a 4-word JD leak is reported once rather
+    # than as every possible 2-word sub-phrase.
+    for size in (5, 4, 3, 2):
+        if len(output_words) < size:
+            continue
+
+        for idx in range(0, len(output_words) - size + 1):
+            phrase_words = output_words[idx:idx + size]
+            phrase = " ".join(phrase_words)
+
+            if phrase in seen:
+                continue
+
+            signal_words = [
+                word for word in phrase_words
+                if word not in stop_words and len(word) >= 4
+            ]
+
+            if not signal_words:
+                continue
+
+            if phrase in jd_norm and phrase not in resume_norm:
+                # Do not add shorter phrases that are fully contained in an
+                # already-reported longer phrase.
+                if any(phrase in existing for existing in hits):
+                    continue
+
+                hits.append(phrase)
+                seen.add(phrase)
+
+    return hits[:12]
+
+
+def navy_validate_grounded_output(resume_text, jd_text, data):
+    """
+    Deterministically validate the audited Navy Federal summary/skills package.
+
+    The document is allowed to proceed only when:
+    - every Summary bullet cites real resume evidence,
+    - every skill row cites real resume evidence,
+    - every right-column skill detail cites real resume evidence and is
+      lexically supported by that evidence,
+    - no suspicious JD-only multi-word phrase survives,
+    - AI-sounding "progressive experience" wording is absent.
+    """
+    errors = []
+
+    for i in range(1, 5):
+        summary_key = f"SUMMARY{i}"
+        evidence_key = f"SUMMARY{i}_EVIDENCE"
+
+        summary = navy_clean_summary_style(
+            data.get(summary_key, "")
+        )
+        data[summary_key] = summary
+
+        if not summary:
+            errors.append(f"{summary_key} is blank.")
+            continue
+
+        if re.search(r"\bprogressive\b", summary, flags=re.IGNORECASE):
+            errors.append(
+                f"{summary_key} still contains the prohibited word 'progressive'."
+            )
+
+        evidence_items = navy_string_list(
+            data.get(evidence_key, [])
+        )
+
+        if not evidence_items:
+            errors.append(
+                f"{summary_key} has no resume evidence."
+            )
+        else:
+            for evidence in evidence_items:
+                if not navy_evidence_snippet_found(
+                    resume_text,
+                    evidence,
+                ):
+                    errors.append(
+                        f"{summary_key} cites evidence not found in the resume: "
+                        f"{evidence[:120]}"
+                    )
+
+        jd_hits = navy_jd_only_phrase_hits(
+            summary,
+            jd_text,
+            resume_text,
+        )
+
+        if jd_hits:
+            errors.append(
+                f"{summary_key} contains JD-only wording not found in the resume: "
+                + "; ".join(jd_hits)
+            )
+
+    for i in range(1, 5):
+        skill_key = f"SKILL{i}"
+        skill_evidence_key = f"SKILL{i}_EVIDENCE"
+        details_key = f"SKILLDETAILS{i}"
+
+        skill = re.sub(
+            r"\s+",
+            " ",
+            str(data.get(skill_key, "") or ""),
+        ).strip()
+        data[skill_key] = skill
+
+        if not skill:
+            errors.append(f"{skill_key} is blank.")
+            continue
+
+        skill_evidence = navy_string_list(
+            data.get(skill_evidence_key, [])
+        )
+
+        if not skill_evidence:
+            errors.append(
+                f"{skill_key} has no resume evidence."
+            )
+        else:
+            for evidence in skill_evidence:
+                if not navy_evidence_snippet_found(
+                    resume_text,
+                    evidence,
+                ):
+                    errors.append(
+                        f"{skill_key} cites evidence not found in the resume: "
+                        f"{evidence[:120]}"
+                    )
+
+            if not navy_skill_item_supported_by_evidence(
+                skill,
+                " ".join(skill_evidence),
+            ):
+                errors.append(
+                    f"{skill_key} is not sufficiently supported by its cited "
+                    "resume evidence."
+                )
+
+        skill_jd_hits = navy_jd_only_phrase_hits(
+            skill,
+            jd_text,
+            resume_text,
+        )
+
+        if skill_jd_hits:
+            errors.append(
+                f"{skill_key} contains JD-only wording not found in the resume: "
+                + "; ".join(skill_jd_hits)
+            )
+
+        detail_records = navy_skill_detail_records(
+            data.get(details_key, [])
+        )
+
+        if not detail_records:
+            errors.append(
+                f"{details_key} has no grounded detail records."
+            )
+            continue
+
+        if len(detail_records) > 6:
+            detail_records = detail_records[:6]
+
+        for detail in detail_records:
+            item = detail["item"]
+            evidence = detail["evidence"]
+
+            if not navy_evidence_snippet_found(
+                resume_text,
+                evidence,
+            ):
+                errors.append(
+                    f"{details_key} item '{item}' cites evidence not found "
+                    f"in the resume: {evidence[:120]}"
+                )
+                continue
+
+            if not navy_skill_item_supported_by_evidence(
+                item,
+                evidence,
+            ):
+                errors.append(
+                    f"{details_key} item '{item}' is not sufficiently supported "
+                    f"by its cited resume evidence."
+                )
+
+            detail_jd_hits = navy_jd_only_phrase_hits(
+                item,
+                jd_text,
+                resume_text,
+            )
+
+            if detail_jd_hits:
+                errors.append(
+                    f"{details_key} item '{item}' contains JD-only wording "
+                    "not found in the resume."
+                )
+
+        data[details_key] = detail_records
+
+    return errors
+
+
+def navy_finalize_grounded_output(data):
+    """
+    Convert the audited/evidence-rich JSON into the simple strings expected by
+    the Word template. Internal evidence fields never appear in the resume.
+    """
+    output = {}
+
+    for i in range(1, 5):
+        output[f"SUMMARY{i}"] = navy_clean_summary_style(
+            data.get(f"SUMMARY{i}", "")
+        )
+
+        output[f"SKILL{i}"] = re.sub(
+            r"\s+",
+            " ",
+            str(data.get(f"SKILL{i}", "") or ""),
+        ).strip()
+
+        detail_records = navy_skill_detail_records(
+            data.get(f"SKILLDETAILS{i}", [])
+        )
+
+        detail_names = []
+        seen = set()
+
+        for record in detail_records:
+            item = re.sub(
+                r"\s+",
+                " ",
+                str(record.get("item", "") or ""),
+            ).strip()
+
+            key = item.casefold()
+
+            if not item or key in seen:
+                continue
+
+            detail_names.append(item)
+            seen.add(key)
+
+            if len(detail_names) >= 6:
+                break
+
+        output[f"SKILLDETAILS{i}"] = ", ".join(detail_names)
+
+    return output
+
+
+def navy_grounding_audit_prompt(
+    resume_text,
+    jd_text,
+    internal_notes,
+    draft_data,
+    current_date,
+    validator_errors=None,
+):
+    """
+    Build the independent Navy Federal evidence-audit prompt.
+
+    This pass is intentionally separate from the recruiter-writing pass. Its job
+    is not to make the candidate sound better; its job is to remove/rewrite any
+    claim that the uploaded resume does not support.
+    """
+    error_section = ""
+
+    if validator_errors:
+        error_section = (
+            "\nDETERMINISTIC VALIDATOR ERRORS FROM THE PREVIOUS PASS:\n- "
+            + "\n- ".join(validator_errors)
+            + "\nYou MUST fix every listed problem.\n"
+        )
+
+    return f"""
+Return a valid JSON object ONLY.
+
+You are the FINAL FACT-CHECKER for a Navy Federal Credit Union Fieldglass
+resume formatter.
+
+CURRENT DATE:
+{current_date}
+
+YOUR ONLY PURPOSE:
+Make the four Summary bullets and four Skills rows accurate, grounded, and
+useful for the requisition WITHOUT EVER assigning JD-only experience to the
+candidate.
+
+This is a compliance/fact-audit step, NOT a creative-writing step.
+
+SOURCE ROLES:
+- ORIGINAL RESUME = the ONLY source of truth for candidate experience, skills,
+  tools, frameworks, methodologies, employers, scope, ownership, metrics, and
+  domain knowledge.
+- OFFICIAL FIELDGLASS JD = relevance/prioritization only. It tells you which
+  genuine resume evidence matters most.
+- INTERNAL NOTES = relevance/prioritization only. They are NEVER candidate
+  evidence.
+
+ABSOLUTE RULE:
+If a word/phrase comes from the JD or Internal Notes and describes the
+CANDIDATE, it may be used only when the same capability is explicitly
+demonstrated in the Original Resume. Do not infer that a related skill is the
+same skill.
+
+Examples:
+- JD says FFIEC; resume does not -> DO NOT output FFIEC.
+- JD says GLBA; resume does not -> DO NOT output GLBA.
+- JD says "effective challenge"; resume only says "presented gap analysis" ->
+  use the resume-supported wording, NOT "effective challenge".
+- JD says "Issue Owners"; resume says stakeholders/control owners -> use the
+  resume's actual stakeholder/control-owner wording.
+- JD says "root cause analysis"; resume only says gap analysis -> DO NOT output
+  root cause analysis.
+- JD says "remediation validation"; resume says tracked remediation -> use
+  remediation tracking, not remediation validation.
+
+SUMMARY STYLE:
+- Exactly 4 bullets.
+- One sentence per bullet.
+- Do NOT use the word "progressive" anywhere.
+- Prefer natural recruiter language such as "10+ years of experience..." rather
+  than "10 years of progressive experience".
+- Do NOT start with the candidate's name.
+- No "strong background", "highly experienced", "seasoned professional",
+  "excellent fit", "aligns well", or similar filler.
+- If using a total-years statement, calculate only from dated work history,
+  round DOWN to completed whole years, and format as "X+ years".
+- Do not turn the target role's responsibilities into claims that the candidate
+  already performed them.
+
+SUMMARY EVIDENCE:
+For EACH summary bullet, return 1-3 short VERBATIM excerpts copied from the
+Original Resume that together support every substantive candidate claim in that
+bullet.
+- Evidence must be exact source wording, not paraphrased.
+- Do not cite the JD.
+- If you cannot support a bullet with exact resume evidence, rewrite the bullet.
+
+SKILL ROWS:
+- Exactly 4 rows.
+- Left column = concise high-level competency.
+- A high-level category may summarize multiple resume bullets, but it must be a
+  fair umbrella for work explicitly demonstrated in the resume.
+- Do not use a formal discipline/title from the JD merely because it sounds
+  adjacent to the candidate's experience.
+
+SKILL ROW EVIDENCE:
+For EACH left-column Skill, return 1-3 VERBATIM resume excerpts supporting that
+category.
+
+RIGHT-COLUMN DETAILS:
+- 3-6 items per row.
+- Every item must be a tool, technology, framework, methodology, process, or
+  domain method explicitly named or directly demonstrated in the resume.
+- Return each detail as an object containing:
+  "item": the concise resume skill/detail
+  "evidence": one VERBATIM resume excerpt that explicitly supports that item
+- Do not return an item when you cannot quote resume evidence for it.
+
+ATS RULE:
+Exact JD language is helpful ONLY when the same language/capability is genuinely
+supported by the resume. Truth outranks keyword coverage.
+
+{error_section}
+
+OUTPUT SCHEMA:
+{{
+  "SUMMARY1": "",
+  "SUMMARY1_EVIDENCE": [""],
+  "SUMMARY2": "",
+  "SUMMARY2_EVIDENCE": [""],
+  "SUMMARY3": "",
+  "SUMMARY3_EVIDENCE": [""],
+  "SUMMARY4": "",
+  "SUMMARY4_EVIDENCE": [""],
+
+  "SKILL1": "",
+  "SKILL1_EVIDENCE": [""],
+  "SKILLDETAILS1": [
+    {{"item": "", "evidence": ""}}
+  ],
+
+  "SKILL2": "",
+  "SKILL2_EVIDENCE": [""],
+  "SKILLDETAILS2": [
+    {{"item": "", "evidence": ""}}
+  ],
+
+  "SKILL3": "",
+  "SKILL3_EVIDENCE": [""],
+  "SKILLDETAILS3": [
+    {{"item": "", "evidence": ""}}
+  ],
+
+  "SKILL4": "",
+  "SKILL4_EVIDENCE": [""],
+  "SKILLDETAILS4": [
+    {{"item": "", "evidence": ""}}
+  ]
+}}
+
+DRAFT TO AUDIT/CORRECT:
+{json.dumps(draft_data, indent=2, ensure_ascii=False)}
+
+OFFICIAL FIELDGLASS JOB DESCRIPTION:
+{jd_text}
+
+INTERNAL NOTES:
+{internal_notes if str(internal_notes or "").strip() else "No internal notes were provided."}
+
+ORIGINAL RESUME:
+{resume_text}
+"""
+
+
+
 def process_navy_federal_word_doc(temp_path, mapping, out_path):
     """
     Navy Federal Word processor.
@@ -11123,7 +11813,7 @@ ORIGINAL RESUME:
                 tailoring_prompt = f"""
 Return a valid JSON object ONLY.
 
-You are an elite Senior Recruiter preparing a Navy Federal Credit Union
+You are a Senior Recruiter preparing a Navy Federal Credit Union
 contingent-worker resume submission through Fieldglass.
 
 CURRENT DATE:
@@ -11132,121 +11822,191 @@ CURRENT DATE:
 There are TWO sequential goals:
 
 1. FIELDGLASS / MSP SHORTLISTING
-Make the candidate's genuine match to the requisition obvious to an automated
-matching system and an MSP recruiter reviewing quickly. Preserve important
-exact JD terminology when the resume genuinely supports it.
+Make the candidate's GENUINE match to the requisition easy to recognize for an
+automated matching system and an MSP recruiter. Preserve important exact JD
+terminology ONLY when the uploaded resume itself supports that terminology or
+capability.
 
 2. NAVY FEDERAL HIRING-MANAGER INTERVIEW SELECTION
-If shortlisted, give the hiring manager specific, credible evidence of the
-candidate's depth, recurring ownership, tools/methodologies, business impact,
-and relevant domain experience so the candidate is worth interviewing.
+If shortlisted, surface the strongest resume-proven evidence of recurring
+ownership, tools/methodologies, business impact, domain experience, controls,
+operations, stakeholder work, or technical execution that matters for the role.
 
 SOURCE HIERARCHY FOR ROLE PRIORITIES:
-1. Internal Notes, when they provide substantive recruiter/hiring-team context
-   about what matters most right now.
+1. Internal Notes, when they provide substantive recruiter/hiring-team context.
 2. Official Fieldglass Job Description.
 
-IMPORTANT:
-- Internal Notes can change EMPHASIS but are NOT evidence that the candidate
-  personally has a skill or performed a responsibility.
-- The candidate's ORIGINAL RESUME is the source of truth for candidate claims.
-- Never copy a JD/internal-note skill into the candidate's summary or skills
-  unless supported by the resume.
-- Do not infer a specific tool from a broader technology.
-- Do not inflate years, ownership, scope, seniority, or business impact.
+SOURCE HIERARCHY FOR CANDIDATE FACTS:
+1. ORIGINAL RESUME ONLY.
+
+THE JD AND INTERNAL NOTES ARE NEVER CANDIDATE EVIDENCE.
+
+======================================================================
+HARD SOURCE FIREWALL — ZERO TOLERANCE
+======================================================================
+
+Before writing ANY candidate claim, mentally ask:
+"Could I point to the uploaded resume and show the exact experience that proves
+this?"
+
+If NO, DO NOT WRITE IT.
+
+This applies to:
+- skills
+- tools
+- frameworks
+- regulations
+- methodologies
+- responsibilities
+- ownership
+- scope
+- metrics
+- titles
+- domains
+- stakeholder types
+- governance models
+- issue/risk terminology
+- audit/compliance terminology
+
+NEVER upgrade a related concept into the JD's more specific concept.
+
+Examples:
+- General financial regulation does NOT prove a named regulation.
+- General risk management does NOT automatically prove formal Issue Management.
+- Stakeholder communication does NOT automatically prove "effective challenge".
+- Corrective action tracking does NOT automatically prove "remediation
+  validation".
+- Working with managers/stakeholders does NOT prove work with formal "Issue
+  Owners".
+- General information security does NOT prove a named NIST/FFIEC/NCUA/GLBA
+  framework unless the resume names or clearly demonstrates it.
+- A broader platform does NOT prove a specific module/tool.
+
+When the JD contains a term the resume does not support, simply omit that term.
+An honest partial match is better than a fabricated exact match.
 
 ======================================================================
 SUMMARY — EXACTLY 4 BULLET POINTS
 ======================================================================
 
-Create exactly four concise, high-signal bullets mapped to SUMMARY1-SUMMARY4.
-These are resume bullets, NOT a paragraph.
+Create exactly four concise resume bullets mapped to SUMMARY1-SUMMARY4.
 
 STYLE:
-- Do NOT start with the candidate's name or phrases such as "Ziad is...".
-- Prefer the style Annabelle requested: "10+ years as...", "Led...",
-  "Managed...", "Built...", "Delivered...", etc.
-- Do not use pronouns unless unavoidable.
+- Do NOT start with the candidate's name.
+- Do NOT use the word "progressive" anywhere.
+- Do NOT use "progressive experience", "progressive professional experience",
+  "seasoned professional", "highly experienced", "strong background",
+  "excellent candidate", "great fit", "aligns well", or similar AI/recruiter
+  filler.
+- When years can be calculated responsibly, use natural phrasing such as
+  "10+ years of experience..." or "10+ years in..." — never
+  "10 years of progressive experience".
 - One strong sentence per bullet.
-- No generic filler such as "strong background", "highly experienced",
-  "excellent candidate", "great fit", or "aligns well".
-- Do not mention location, work authorization, or availability in the Summary.
+- No pronouns unless unavoidable.
+- Do not mention location, work authorization, or availability.
 
 BULLET 1 — EXPERIENCE ANCHOR
-- State total progressive professional experience conservatively from the dated
-  work history, rounded DOWN to completed whole years, and the candidate's most
-  relevant functional identity/expertise for this specific role.
-- If the dates are too ambiguous to calculate responsibly, omit the years
-  rather than guessing.
+- Calculate total professional experience ONLY from dated work history.
+- Round DOWN to completed whole years and format as "X+ years".
+- Pair that with the candidate's most relevant resume-proven functional
+  identity/expertise for this requisition.
+- If dates are too ambiguous, omit the years rather than guessing.
 
 BULLET 2 — CORE ROLE MATCH
-- Use the strongest recent recurring responsibility or accomplishment that
-  proves the primary must-have/core responsibility in the JD.
-- Name the employer/client when useful evidence comes from a specific role.
+- Select the strongest recent/recurring resume responsibility that proves the
+  requisition's primary need.
+- Use only the scope and terminology the resume supports.
 
-BULLET 3 — EXECUTION / TOOLS / IMPACT
-- Show HOW the candidate executed relevant work, using only tools,
-  technologies, methodologies, or processes actually supported by the resume.
-- Favor operational ownership, scale, measurable impact, issue resolution,
-  controls, or production/business outcomes over one-off project participation.
+BULLET 3 — EXECUTION / CONTROLS / TOOLS / IMPACT
+- Show how the candidate performed relevant work.
+- Use only tools, frameworks, methodologies, processes, scale, and outcomes
+  actually supported by the resume.
+- Prefer repeated operational ownership over isolated projects.
 
-BULLET 4 — SECONDARY DIFFERENTIATOR / DAY-1 VALUE
-- Highlight the strongest additional requirement, domain experience, stakeholder
-  capability, compliance/process expertise, or complementary technical skill
-  that increases interview value.
-- Keep it evidence-based rather than saying the candidate is simply "a fit".
+BULLET 4 — SECONDARY DIFFERENTIATOR
+- Use the strongest additional resume-proven requirement, domain experience,
+  stakeholder capability, process expertise, or complementary technical skill.
+- Do NOT convert a target-role responsibility into past candidate experience.
 
-ATS / FIELDGLASS COVERAGE:
-- Naturally use the most important exact JD terms and phrases when the resume
-  supports them.
-- Do not keyword-stuff.
-- Do not repeat the same skill/concept across multiple bullets unless necessary.
+For EACH bullet, also return SUMMARY#_EVIDENCE containing 1-3 short VERBATIM
+excerpts copied from the ORIGINAL RESUME that support every substantive claim in
+the bullet. Evidence must be exact resume wording, not a paraphrase.
 
 ======================================================================
 SKILL & COMPETENCY REQUIREMENTS — EXACTLY 4 ROWS
 ======================================================================
 
-Create exactly four two-column skill rows.
-
-SKILL# (LEFT COLUMN):
+SKILL# — LEFT COLUMN
 - Concise high-level competency/category.
-- Prefer categories that directly correspond to the requisition's most important
-  required capabilities AND are substantively demonstrated by the resume.
-- Do not put years of experience in this field.
+- Choose categories that matter to the JD AND are substantially demonstrated by
+  the resume.
+- Do not borrow a formal JD discipline/category merely because it is adjacent to
+  the candidate's background.
+- Return SKILL#_EVIDENCE with 1-3 short VERBATIM resume excerpts proving the
+  category.
 
-SKILLDETAILS# (RIGHT COLUMN):
-- 3-6 specific supported Tools / Technologies / Methodologies / domain methods.
-- Comma-separated.
-- Do NOT repeat the left-column category wording in the right column.
-- Favor demonstrated work-history evidence over a standalone resume skills list.
-- Preserve exact JD terminology when supported.
-- Do not include years used or last-used dates.
+SKILLDETAILS# — RIGHT COLUMN
+- Return a JSON ARRAY of 3-6 objects.
+- Each object MUST have:
+  "item": a concise Tool / Technology / Methodology / Process / domain method
+  "evidence": a VERBATIM resume excerpt explicitly supporting that exact item
+- Every item must be supported by its own evidence.
+- Do not use a JD-only skill.
+- Do not use years used / last used.
+- Do not repeat the left-column category wording in the right column.
 
 OPERATIONAL OWNERSHIP RULE:
 Prefer recurring responsibilities and direct ownership over isolated projects.
-Unless the role is explicitly implementation-focused, favor day-to-day execution,
-production/business operations, issue resolution, reporting, controls,
-compliance, stakeholder support, and measurable outcomes.
+Unless the role is explicitly implementation-focused, favor day-to-day
+execution, issue/problem resolution, reporting, controls, compliance,
+operations, stakeholder support, and measurable outcomes.
 
-ZERO-TOLERANCE TRUTH RULE:
-Every candidate claim must survive a side-by-side comparison against the original
-resume. The JD and Internal Notes define what matters; they do not create
-candidate experience.
+FINAL SELF-AUDIT BEFORE OUTPUT:
+1. Is every framework/regulation/tool in the output present or directly
+   demonstrated in the resume?
+2. Did any phrase sneak in only because it appeared in the JD?
+3. Did I accidentally convert "related experience" into a more specific formal
+   discipline?
+4. Would every candidate claim survive a side-by-side resume audit?
+5. Is every evidence excerpt copied verbatim from the resume?
+6. Did I avoid the word "progressive"?
+7. Did I prioritize the best evidence for this JD rather than the flashiest
+   unrelated project?
 
 OUTPUT:
 {{
   "SUMMARY1": "",
+  "SUMMARY1_EVIDENCE": [""],
   "SUMMARY2": "",
+  "SUMMARY2_EVIDENCE": [""],
   "SUMMARY3": "",
+  "SUMMARY3_EVIDENCE": [""],
   "SUMMARY4": "",
+  "SUMMARY4_EVIDENCE": [""],
+
   "SKILL1": "",
-  "SKILLDETAILS1": "",
+  "SKILL1_EVIDENCE": [""],
+  "SKILLDETAILS1": [
+    {{"item": "", "evidence": ""}}
+  ],
+
   "SKILL2": "",
-  "SKILLDETAILS2": "",
+  "SKILL2_EVIDENCE": [""],
+  "SKILLDETAILS2": [
+    {{"item": "", "evidence": ""}}
+  ],
+
   "SKILL3": "",
-  "SKILLDETAILS3": "",
+  "SKILL3_EVIDENCE": [""],
+  "SKILLDETAILS3": [
+    {{"item": "", "evidence": ""}}
+  ],
+
   "SKILL4": "",
-  "SKILLDETAILS4": ""
+  "SKILL4_EVIDENCE": [""],
+  "SKILLDETAILS4": [
+    {{"item": "", "evidence": ""}}
+  ]
 }}
 
 OFFICIAL FIELDGLASS JOB DESCRIPTION:
@@ -11262,29 +12022,82 @@ FULL ORIGINAL RESUME:
 {raw_text}
 """
 
-                summary_data = navy_generate_json(
+                # Pass 2A: recruiter-written draft with explicit resume evidence.
+                draft_data = navy_generate_json(
                     API_KEY,
                     tailoring_prompt,
                 )
 
-                # Deterministic cleanup/safety cap for the right-hand Skills column.
-                for skill_num in range(1, 5):
-                    details_key = f"SKILLDETAILS{skill_num}"
-                    summary_data[details_key] = fred_cap_skill_details(
-                        summary_data.get(details_key, ""),
-                        max_items=6,
+                # Pass 2B: independent fact-checking pass. This pass is not asked
+                # to sell the candidate; it is asked to remove/rewrite unsupported
+                # claims and provide exact resume evidence for everything retained.
+                audited_data = navy_generate_json(
+                    API_KEY,
+                    navy_grounding_audit_prompt(
+                        resume_text=raw_text,
+                        jd_text=Job_Description,
+                        internal_notes=Internal_Notes,
+                        draft_data=draft_data,
+                        current_date=current_date,
+                    ),
+                )
+
+                grounding_errors = navy_validate_grounded_output(
+                    raw_text,
+                    Job_Description,
+                    audited_data,
+                )
+
+                if grounding_errors:
+                    # One automatic repair pass using the deterministic validator's
+                    # exact failures. If this still cannot be proven from the resume,
+                    # fail closed instead of generating a potentially fabricated file.
+                    audited_data = navy_generate_json(
+                        API_KEY,
+                        navy_grounding_audit_prompt(
+                            resume_text=raw_text,
+                            jd_text=Job_Description,
+                            internal_notes=Internal_Notes,
+                            draft_data=audited_data,
+                            current_date=current_date,
+                            validator_errors=grounding_errors,
+                        ),
                     )
+
+                    grounding_errors = navy_validate_grounded_output(
+                        raw_text,
+                        Job_Description,
+                        audited_data,
+                    )
+
+                if grounding_errors:
+                    raise RuntimeError(
+                        "The Navy Federal grounding safety check could not verify "
+                        "all generated Summary/Skills content against the uploaded "
+                        "resume, so no document was created. Please run the formatter "
+                        "again rather than using unverified content. Verification "
+                        "issues: "
+                        + " | ".join(grounding_errors[:8])
+                    )
+
+                summary_data = navy_finalize_grounded_output(
+                    audited_data
+                )
 
                 missing_summary = [
                     str(i)
                     for i in range(1, 5)
-                    if not str(summary_data.get(f"SUMMARY{i}", "") or "").strip()
+                    if not str(
+                        summary_data.get(f"SUMMARY{i}", "") or ""
+                    ).strip()
                 ]
 
                 missing_skills = [
                     str(i)
                     for i in range(1, 5)
-                    if not str(summary_data.get(f"SKILL{i}", "") or "").strip()
+                    if not str(
+                        summary_data.get(f"SKILL{i}", "") or ""
+                    ).strip()
                     or not str(
                         summary_data.get(f"SKILLDETAILS{i}", "") or ""
                     ).strip()
@@ -11292,15 +12105,15 @@ FULL ORIGINAL RESUME:
 
                 if missing_summary:
                     raise RuntimeError(
-                        "The Navy Federal optimization step did not return all four "
-                        "required Summary bullets. Missing: "
+                        "The Navy Federal verified optimization step did not return "
+                        "all four required Summary bullets. Missing: "
                         + ", ".join(missing_summary)
                     )
 
                 if missing_skills:
                     raise RuntimeError(
-                        "The Navy Federal optimization step did not return all four "
-                        "required Skills rows. Missing: "
+                        "The Navy Federal verified optimization step did not return "
+                        "all four required Skills rows. Missing: "
                         + ", ".join(missing_skills)
                     )
 
