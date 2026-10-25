@@ -10328,6 +10328,1093 @@ def deloitte_app():
 
 
 # ====================================================================
+# --- ⚓ CLIENT APP 2: NAVY FEDERAL CREDIT UNION ⚓ ---
+# ====================================================================
+
+def navy_generate_json(api_key, prompt, max_attempts=6):
+    """Navy Federal Gemini JSON helper using the Freddie retry pattern."""
+    client = genai.Client(api_key=api_key)
+
+    models_to_try = [
+        "gemini-2.5-flash",
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-pro-latest",
+    ]
+
+    last_error = None
+
+    for attempt in range(max_attempts):
+        if attempt == 0:
+            current_model = models_to_try[0]
+        elif attempt in [1, 2]:
+            current_model = models_to_try[1]
+        elif attempt in [3, 4]:
+            current_model = models_to_try[2]
+        else:
+            current_model = models_to_try[3]
+
+        try:
+            response = client.models.generate_content(
+                model=current_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json"
+                ),
+            )
+
+            data = repair_and_load_json(response.text)
+
+            if data:
+                return data
+
+        except Exception as e:
+            last_error = e
+
+            if "503" in str(e) and attempt < max_attempts - 1:
+                time.sleep(2 ** ((attempt % 2) + 1))
+                continue
+
+            if attempt < max_attempts - 1:
+                time.sleep(1)
+                continue
+
+    raise RuntimeError(
+        "Gemini could not return usable Navy Federal JSON after retries. "
+        f"Last error: {last_error}"
+    )
+
+
+def navy_normalize_completion_status(education_item, current_year=None):
+    """
+    Determine whether an education entry is completed without defaulting to Yes.
+
+    The AI extraction supplies explicit status/date evidence, but this deterministic
+    pass overrides any contradictory result when the resume says the credential is
+    still in progress or shows a future completion year.
+    """
+    if not isinstance(education_item, dict):
+        return ""
+
+    if current_year is None:
+        current_year = date.today().year
+
+    school = str(education_item.get("School", "") or "").strip()
+    degree = str(education_item.get("Degree", "") or "").strip()
+    completion = str(
+        education_item.get("CompletionStatus", "")
+        or education_item.get("Completed", "")
+        or ""
+    ).strip()
+    completion_date = str(
+        education_item.get("CompletionDate", "")
+        or education_item.get("EducationDate", "")
+        or ""
+    ).strip()
+
+    combined = " ".join(
+        value for value in [school, degree, completion, completion_date] if value
+    )
+    normalized = combined.casefold()
+
+    unfinished_patterns = [
+        r"\bin\s+progress\b",
+        r"\bpursuing\b",
+        r"\bcurrently\s+enrolled\b",
+        r"\bexpected\b",
+        r"\banticipated\b",
+        r"\bpending\b",
+        r"\bongoing\b",
+        r"\bnot\s+completed\b",
+        r"\bnot\s+yet\s+completed\b",
+    ]
+
+    if any(re.search(pattern, normalized) for pattern in unfinished_patterns):
+        return "No"
+
+    future_years = [
+        int(match)
+        for match in re.findall(r"\b(?:19|20)\d{2}\b", completion_date)
+        if int(match) > current_year
+    ]
+
+    if future_years:
+        return "No"
+
+    completion_key = completion.casefold()
+
+    if completion_key in {
+        "no",
+        "n",
+        "incomplete",
+        "in progress",
+        "pursuing",
+        "pending",
+    }:
+        return "No"
+
+    if completion_key in {
+        "yes",
+        "y",
+        "completed",
+        "complete",
+        "graduated",
+        "earned",
+        "awarded",
+    }:
+        return "Yes"
+
+    # A past completion/graduation year is affirmative evidence when the model
+    # extracted it specifically as the completion date rather than an attendance
+    # date. If the resume is ambiguous, leave the field blank instead of guessing.
+    past_or_current_years = [
+        int(match)
+        for match in re.findall(r"\b(?:19|20)\d{2}\b", completion_date)
+        if int(match) <= current_year
+    ]
+
+    if past_or_current_years:
+        return "Yes"
+
+    return ""
+
+
+def navy_set_cell_text_preserve_format(cell, value):
+    """Replace simple cell text while preserving the template paragraph styling."""
+    value = str(value or "")
+
+    if not cell.paragraphs:
+        cell.add_paragraph(value)
+        return
+
+    paragraph = cell.paragraphs[0]
+
+    if paragraph.runs:
+        paragraph.runs[0].text = value
+        for run in paragraph.runs[1:]:
+            run.text = ""
+    else:
+        paragraph.add_run(value)
+
+    for extra_paragraph in cell.paragraphs[1:]:
+        for run in extra_paragraph.runs:
+            run.text = ""
+
+
+def process_navy_federal_word_doc(temp_path, mapping, out_path):
+    """
+    Navy Federal Word processor.
+
+    Uses the same expandable work-history mechanics as Freddie so resumes with
+    more than seven roles remain complete, while adding Navy-specific education
+    completion handling for the template's literal Yes/No column.
+    """
+    doc = docx.Document(temp_path)
+    expand_experience_placeholders(doc, mapping)
+    ensure_experience_spacing(doc, mapping)
+
+    # ================================================================
+    # 1. CERTIFICATIONS
+    # ================================================================
+    certifications = str(mapping.get("Certifications", "") or "").strip()
+
+    if not certifications:
+        cert_table = fred_find_table_containing(doc, "{{CERTIFICATIONS}}")
+        if cert_table is not None:
+            fred_remove_table(cert_table)
+
+    # ================================================================
+    # 2. EDUCATION + COMPLETION STATUS
+    # ================================================================
+    has_any_education = any(
+        str(mapping.get(f"School{i}", "") or "").strip()
+        for i in range(1, 4)
+    )
+
+    education_table = fred_find_table_containing(doc, "{{School1}}")
+
+    if education_table is not None:
+        if not has_any_education:
+            fred_remove_table(education_table)
+        else:
+            rows_to_delete = []
+
+            for row in education_table.rows:
+                row_text = " ".join(cell.text for cell in row.cells).lower()
+
+                for i in range(1, 4):
+                    school_tag = f"{{{{school{i}}}}}".lower()
+
+                    if school_tag not in row_text:
+                        continue
+
+                    if not str(mapping.get(f"School{i}", "") or "").strip():
+                        rows_to_delete.append(row)
+                    elif len(row.cells) >= 3:
+                        navy_set_cell_text_preserve_format(
+                            row.cells[2],
+                            mapping.get(f"Completed{i}", ""),
+                        )
+
+                    break
+
+            for row in rows_to_delete:
+                try:
+                    education_table._tbl.remove(row._tr)
+                except Exception:
+                    pass
+
+    # ================================================================
+    # 3. SKILLS — TWO-COLUMN SKILL AREA / DETAILS TABLE
+    # ================================================================
+    skills_table = fred_find_table_containing(doc, "{{SKILL1}}")
+
+    if skills_table is not None:
+        rows_to_delete = []
+
+        for row in skills_table.rows:
+            row_text = " ".join(cell.text for cell in row.cells).lower()
+
+            for i in range(1, 5):
+                if (
+                    f"{{{{skill{i}}}}}".lower() in row_text
+                    and not str(mapping.get(f"SKILL{i}", "") or "").strip()
+                ):
+                    rows_to_delete.append(row)
+                    break
+
+        for row in rows_to_delete:
+            try:
+                skills_table._tbl.remove(row._tr)
+            except Exception:
+                pass
+
+    # ================================================================
+    # 4. REPLACE TAGS IN BODY PARAGRAPHS
+    # ================================================================
+    paras_to_remove = []
+
+    kill_keys = [
+        "Company",
+        "Title",
+        "Bullets",
+        "Dates",
+        "Summary",
+        "Skill",
+        "Certification",
+        "School",
+        "Degree",
+    ]
+
+    for p in list(doc.paragraphs):
+        for key, value in mapping.items():
+            tag = f"{{{{{key}}}}}"
+
+            if tag.lower() not in p.text.lower():
+                continue
+
+            if not value or not str(value).strip():
+                if any(k.lower() in key.lower() for k in kill_keys):
+                    if p not in paras_to_remove:
+                        paras_to_remove.append(p)
+                else:
+                    replace_tag_safely(p, tag, "")
+                continue
+
+            if "Bullets" in key:
+                for run in p.runs:
+                    if "\n" in run.text:
+                        run.text = run.text.replace("\n", "")
+
+                lines = [
+                    line.strip()
+                    for line in str(value).split("\n")
+                    if line.strip()
+                ]
+
+                if not lines:
+                    if p not in paras_to_remove:
+                        paras_to_remove.append(p)
+                    continue
+
+                replace_tag_safely(p, tag, lines[0])
+                curr_p = p
+
+                for line in lines[1:]:
+                    curr_p = insert_bullet_line_after(curr_p, line)
+
+                spacer = curr_p.insert_paragraph_before("")
+                curr_p._p.addnext(spacer._p)
+
+                try:
+                    spacer.style = doc.styles["Normal"]
+                except Exception:
+                    pass
+
+                spacer.paragraph_format.space_after = Pt(0)
+                spacer.paragraph_format.space_before = Pt(0)
+
+            else:
+                replace_tag_safely(p, tag, str(value).strip())
+
+    # ================================================================
+    # 5. REPLACE TAGS INSIDE TABLE CELLS
+    # ================================================================
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for key, value in mapping.items():
+                        tag = f"{{{{{key}}}}}"
+
+                        if tag.lower() in p.text.lower():
+                            replace_tag_safely(
+                                p,
+                                tag,
+                                str(value) if value else "",
+                            )
+
+    # ================================================================
+    # 6. DELETE EMPTY WORK-HISTORY PARAGRAPHS
+    # ================================================================
+    for p in paras_to_remove:
+        try:
+            delete_paragraph(p)
+        except Exception:
+            pass
+
+    collapse_extra_blank_paragraphs(doc)
+    doc.save(out_path)
+    return out_path
+
+
+def navy_federal_app():
+    TEMPLATE_FILENAME = "Navy_Federal.docx"
+
+    st.title("Navy Federal Precision Extractor")
+
+    # ================================================================
+    # API CONFIGURATION
+    # ================================================================
+    with st.sidebar:
+        st.header("🔑 API Configuration")
+
+        if "API_KEY" in st.secrets:
+            API_KEY = st.secrets["API_KEY"]
+            st.success("✅ API Key loaded from Secrets")
+        else:
+            API_KEY = st.text_input(
+                "Gemini API Key",
+                type="password",
+                key="navy_api_key",
+            )
+            st.info("Paste your Gemini API key here to run the tool.")
+
+    # ================================================================
+    # CANDIDATE INFORMATION
+    # ================================================================
+    st.header("📋 Candidate Information")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        Full_Legal_Name = st.text_input(
+            "Full Legal Name",
+            key="navy_full_name",
+        )
+
+        Work_Location = st.text_input(
+            "Work Location",
+            key="navy_location",
+        )
+
+    with col2:
+        Work_Arrangement = st.selectbox(
+            "Hybrid/Onsite/Remote",
+            ["Hybrid", "Onsite", "Remote"],
+            index=0,
+            key="navy_remote",
+        )
+
+        Work_Authorization = st.selectbox(
+            "Work Authorization",
+            [
+                "Authorized to work in the U.S. and will not require visa sponsorship now or in the future",
+                "Authorized to work in the U.S. and may require visa sponsorship in the future",
+            ],
+            index=0,
+            key="navy_work_auth",
+        )
+
+    # ================================================================
+    # NAVY FEDERAL REQUISITION
+    # ================================================================
+    st.header("📝 Navy Federal Requisition")
+
+    SHEET_URL = (
+        "https://docs.google.com/spreadsheets/d/"
+        "1swKaDhGdlmO0ILv7tngkRCbsK-7jF89cdCpf5bypzwM/"
+        "edit?usp=sharing"
+    )
+
+    @st.cache_data(ttl=600)
+    def load_navy_federal_reqs(url):
+        """Load the Navy Federal worksheet from the shared req tracker."""
+        # First use the same public-sheet approach already used by Fannie/Deloitte.
+        try:
+            base_url = url.split("/edit")[0]
+            csv_url = (
+                base_url
+                + "/gviz/tq?tqx=out:csv&sheet=Navy%20Federal"
+            )
+            df = pd.read_csv(csv_url)
+            return df.fillna("")
+        except Exception:
+            pass
+
+        # Fallback to the configured Streamlit Google Sheets connection.
+        try:
+            conn = st.connection(
+                "gsheets",
+                type=GSheetsConnection,
+            )
+            df = conn.read(
+                spreadsheet=url,
+                worksheet="Navy Federal",
+                ttl=600,
+            )
+            return df.fillna("")
+        except Exception as e:
+            st.error(
+                "❌ Unable to load the Navy Federal requisition sheet. "
+                f"{str(e)}"
+            )
+            return pd.DataFrame()
+
+    df_reqs = load_navy_federal_reqs(SHEET_URL)
+
+    options = ["None"]
+    req_mapping = {}
+
+    if not df_reqs.empty:
+        for _, row in df_reqs.iterrows():
+            req_id = str(row.get("ID", "")).replace(".0", "").strip()
+            vms_id = str(row.get("VMS ID", "")).replace(".0", "").strip()
+            title = str(row.get("Job Title", "")).strip()
+            manager = str(row.get("Manager", "")).strip()
+            status = str(row.get("Status", "")).strip()
+            client_company = str(row.get("Client Company", "")).strip()
+            description = str(row.get("Description", "") or "").strip()
+            published_description = str(
+                row.get("Published Description", "") or ""
+            ).strip()
+
+            if not any([req_id, vms_id, title]):
+                continue
+
+            option_parts = [req_id, vms_id, title, manager]
+            option_str = " - ".join(
+                part for part in option_parts if part
+            )
+
+            if option_str and option_str != "-":
+                options.append(option_str)
+                req_mapping[option_str] = {
+                    "id": req_id,
+                    "vms_id": vms_id,
+                    "job_title": title,
+                    "manager": manager,
+                    "client_company": client_company,
+                    "status": status,
+                    "date_added": str(row.get("Date Added", "") or "").strip(),
+                    "published_description": published_description,
+                    # Per Annabelle's workflow, Column I / Description is the
+                    # official Fieldglass job description used by the formatter.
+                    "description": description,
+                }
+
+    if "navy_jd" not in st.session_state:
+        st.session_state.navy_jd = ""
+
+    if "navy_internal_notes" not in st.session_state:
+        st.session_state.navy_internal_notes = ""
+
+    def update_navy_jd_text():
+        selected = st.session_state.get("navy_req_selector", "None")
+
+        if selected != "None" and selected in req_mapping:
+            st.session_state.navy_jd = req_mapping[selected].get(
+                "description",
+                "",
+            ).strip()
+            # Internal Notes are intentionally recruiter-entered only for now.
+            st.session_state.navy_internal_notes = ""
+        else:
+            st.session_state.navy_jd = ""
+            st.session_state.navy_internal_notes = ""
+
+    selected_req = st.selectbox(
+        "🔍 Select a Navy Federal Requisition (Type to search):",
+        options=options,
+        key="navy_req_selector",
+        on_change=update_navy_jd_text,
+    )
+
+    selected_req_context = (
+        req_mapping.get(selected_req, {})
+        if selected_req != "None"
+        else {}
+    )
+
+    Job_Description = st.text_area(
+        "1. Official Fieldglass Job Description:",
+        height=175,
+        key="navy_jd",
+    )
+
+    Internal_Notes = st.text_area(
+        "2. Internal Notes (Optional - Recruiter Context):",
+        height=100,
+        key="navy_internal_notes",
+    )
+
+    # ================================================================
+    # FILE UPLOAD
+    # ================================================================
+    st.header("📂 File Uploads")
+
+    resume_file = st.file_uploader(
+        "📤 Upload the candidate's resume...",
+        type=["pdf", "docx", "doc"],
+        key="navy_res",
+    )
+
+    if st.button(
+        "🚀 Generate Navy Federal Submission",
+        type="primary",
+        key="navy_generate",
+    ):
+        validation_errors = []
+
+        if not API_KEY:
+            validation_errors.append("Enter the Gemini API Key.")
+
+        if not Full_Legal_Name.strip():
+            validation_errors.append("Enter the candidate's Full Legal Name.")
+
+        if not Work_Location.strip():
+            validation_errors.append("Enter the candidate's Work Location.")
+
+        if not Job_Description.strip():
+            validation_errors.append(
+                "Select a Navy Federal requisition or paste the Official Fieldglass Job Description."
+            )
+
+        if not resume_file:
+            validation_errors.append("Upload the candidate's resume.")
+
+        if not os.path.exists(TEMPLATE_FILENAME):
+            validation_errors.append(
+                f"The template '{TEMPLATE_FILENAME}' was not found."
+            )
+
+        if validation_errors:
+            for error in validation_errors:
+                st.error(f"❌ {error}")
+            return
+
+        with st.spinner("Building optimized Navy Federal submission..."):
+            resume_path = None
+
+            try:
+                safe_original_name = os.path.basename(resume_file.name)
+                resume_path = f"temp_navy_{safe_original_name}"
+
+                with open(resume_path, "wb") as f:
+                    f.write(resume_file.getbuffer())
+
+                raw_text = extract_text(resume_path)
+                current_date_obj = date.today()
+                current_date = current_date_obj.isoformat()
+
+                # ====================================================
+                # PASS 1 — FACTUAL RESUME EXTRACTION
+                # ====================================================
+                extraction_prompt = f"""
+Return a valid JSON object ONLY.
+
+You are extracting a candidate's ORIGINAL resume into a clean structured
+format for a Navy Federal Credit Union Fieldglass submission.
+
+CURRENT DATE:
+{current_date}
+
+CRITICAL:
+- This is an extraction step, NOT a tailoring step.
+- Preserve the candidate's factual work history.
+- Do NOT add job-description terminology.
+- Do NOT rewrite accomplishments to sound more relevant.
+- Do NOT invent technologies, metrics, employers, dates, responsibilities,
+  education completion, or certifications.
+
+RULES:
+
+1. NAME
+- Extract the candidate name from the resume header when available.
+- The user-entered Full Legal Name will control the final template, so do not
+  alter or "correct" that user-entered value.
+
+2. COMPANY
+- Extract the primary employer/end-client actually represented by the resume.
+- Strip geographic locations that are merely appended to the company line.
+- Do not guess an end-client that is not stated.
+
+3. EDUCATION
+For every education entry return:
+- School
+- Degree
+- CompletionStatus: ONLY "Yes", "No", or ""
+- CompletionDate: graduation/completion/expected-completion date or year ONLY;
+  do not put attendance-start dates here.
+
+COMPLETION RULES:
+- "Yes" only when the resume explicitly indicates the degree/credential was
+  completed/earned/graduated OR provides a completion/graduation year that is
+  not in the future.
+- "No" when the resume says In Progress, Pursuing, Expected, Anticipated,
+  Pending, Currently Enrolled, or otherwise clearly unfinished, or when the
+  completion date/year is in the future.
+- If completion cannot be established from the resume, return "" rather than
+  guessing Yes.
+
+4. EXPERIENCE
+Return EVERY dated professional role shown anywhere in the resume, including
+condensed/abbreviated entries under Earlier Experience or similar sections.
+Do not stop after seven roles.
+
+For every role return:
+- Company
+- Title
+- Bullets as an ARRAY
+- Dates
+
+TITLE:
+- Remove only obvious employment-type suffixes such as "(Contract)" or
+  "- Contract" when they are not part of the actual title.
+- Do not upgrade seniority.
+
+BULLETS:
+- Preserve every substantive original bullet in original order.
+- Light cleanup of malformed bullet characters/spacing is allowed.
+- Do NOT rewrite bullets to match the Navy Federal JD.
+
+DATES:
+- Preserve the source date precision.
+- NEVER invent a month when the source provides only a year.
+- Mixed-precision ranges must stay mixed.
+
+5. CERTIFICATIONS
+- Extract certifications into one comma-separated string.
+- Preserve explicit In Progress / Pursuing / Pending status rather than
+  presenting unfinished certifications as completed.
+- If none are found, return "".
+
+OUTPUT:
+{{
+  "FullName": "",
+  "Certifications": "",
+  "Education": [
+    {{
+      "School": "",
+      "Degree": "",
+      "CompletionStatus": "",
+      "CompletionDate": ""
+    }}
+  ],
+  "Experience": [
+    {{
+      "Company": "",
+      "Title": "",
+      "Bullets": [""],
+      "Dates": ""
+    }}
+  ]
+}}
+
+FILENAME:
+{resume_file.name}
+
+ORIGINAL RESUME:
+{raw_text}
+"""
+
+                data = navy_generate_json(
+                    API_KEY,
+                    extraction_prompt,
+                )
+
+                certifications = str(
+                    data.get("Certifications", "") or ""
+                ).strip()
+
+                education = data.get("Education", [])
+                if not isinstance(education, list):
+                    education = []
+
+                experience = data.get("Experience", [])
+                if not isinstance(experience, list):
+                    experience = []
+
+                normalized_experience = []
+
+                for role in experience:
+                    if not isinstance(role, dict):
+                        continue
+
+                    bullets = role.get("Bullets", [])
+                    if isinstance(bullets, str):
+                        bullets = [
+                            line.strip()
+                            for line in bullets.split("\n")
+                            if line.strip()
+                        ]
+                    if not isinstance(bullets, list):
+                        bullets = []
+
+                    clean_role = {
+                        "Company": str(role.get("Company", "") or "").strip(),
+                        "Title": re.sub(
+                            r"\s*(?:\(|-|–|—)\s*(?:contract|consultant|contractor)\b.*$",
+                            "",
+                            str(role.get("Title", "") or "").strip(),
+                            flags=re.IGNORECASE,
+                        ).strip(),
+                        "Bullets": [
+                            re.sub(
+                                r"^[\s\-\•\*\d\.\)]+",
+                                "",
+                                str(item),
+                            ).strip()
+                            for item in bullets
+                            if str(item).strip()
+                        ],
+                        "Dates": standardize_dates(
+                            str(role.get("Dates", "") or "").strip()
+                        ),
+                    }
+
+                    if any(
+                        clean_role.get(key)
+                        for key in ["Company", "Title", "Dates", "Bullets"]
+                    ):
+                        normalized_experience.append(clean_role)
+
+                experience = normalized_experience
+
+                # ====================================================
+                # PASS 2 — NAVY FEDERAL SUMMARY + SKILLS OPTIMIZATION
+                # ====================================================
+                structured_experience = json.dumps(
+                    experience,
+                    indent=2,
+                    ensure_ascii=False,
+                )
+
+                tailoring_prompt = f"""
+Return a valid JSON object ONLY.
+
+You are an elite Senior Recruiter preparing a Navy Federal Credit Union
+contingent-worker resume submission through Fieldglass.
+
+CURRENT DATE:
+{current_date}
+
+There are TWO sequential goals:
+
+1. FIELDGLASS / MSP SHORTLISTING
+Make the candidate's genuine match to the requisition obvious to an automated
+matching system and an MSP recruiter reviewing quickly. Preserve important
+exact JD terminology when the resume genuinely supports it.
+
+2. NAVY FEDERAL HIRING-MANAGER INTERVIEW SELECTION
+If shortlisted, give the hiring manager specific, credible evidence of the
+candidate's depth, recurring ownership, tools/methodologies, business impact,
+and relevant domain experience so the candidate is worth interviewing.
+
+SOURCE HIERARCHY FOR ROLE PRIORITIES:
+1. Internal Notes, when they provide substantive recruiter/hiring-team context
+   about what matters most right now.
+2. Official Fieldglass Job Description.
+
+IMPORTANT:
+- Internal Notes can change EMPHASIS but are NOT evidence that the candidate
+  personally has a skill or performed a responsibility.
+- The candidate's ORIGINAL RESUME is the source of truth for candidate claims.
+- Never copy a JD/internal-note skill into the candidate's summary or skills
+  unless supported by the resume.
+- Do not infer a specific tool from a broader technology.
+- Do not inflate years, ownership, scope, seniority, or business impact.
+
+======================================================================
+SUMMARY — EXACTLY 4 BULLET POINTS
+======================================================================
+
+Create exactly four concise, high-signal bullets mapped to SUMMARY1-SUMMARY4.
+These are resume bullets, NOT a paragraph.
+
+STYLE:
+- Do NOT start with the candidate's name or phrases such as "Ziad is...".
+- Prefer the style Annabelle requested: "10+ years as...", "Led...",
+  "Managed...", "Built...", "Delivered...", etc.
+- Do not use pronouns unless unavoidable.
+- One strong sentence per bullet.
+- No generic filler such as "strong background", "highly experienced",
+  "excellent candidate", "great fit", or "aligns well".
+- Do not mention location, work authorization, or availability in the Summary.
+
+BULLET 1 — EXPERIENCE ANCHOR
+- State total progressive professional experience conservatively from the dated
+  work history, rounded DOWN to completed whole years, and the candidate's most
+  relevant functional identity/expertise for this specific role.
+- If the dates are too ambiguous to calculate responsibly, omit the years
+  rather than guessing.
+
+BULLET 2 — CORE ROLE MATCH
+- Use the strongest recent recurring responsibility or accomplishment that
+  proves the primary must-have/core responsibility in the JD.
+- Name the employer/client when useful evidence comes from a specific role.
+
+BULLET 3 — EXECUTION / TOOLS / IMPACT
+- Show HOW the candidate executed relevant work, using only tools,
+  technologies, methodologies, or processes actually supported by the resume.
+- Favor operational ownership, scale, measurable impact, issue resolution,
+  controls, or production/business outcomes over one-off project participation.
+
+BULLET 4 — SECONDARY DIFFERENTIATOR / DAY-1 VALUE
+- Highlight the strongest additional requirement, domain experience, stakeholder
+  capability, compliance/process expertise, or complementary technical skill
+  that increases interview value.
+- Keep it evidence-based rather than saying the candidate is simply "a fit".
+
+ATS / FIELDGLASS COVERAGE:
+- Naturally use the most important exact JD terms and phrases when the resume
+  supports them.
+- Do not keyword-stuff.
+- Do not repeat the same skill/concept across multiple bullets unless necessary.
+
+======================================================================
+SKILL & COMPETENCY REQUIREMENTS — EXACTLY 4 ROWS
+======================================================================
+
+Create exactly four two-column skill rows.
+
+SKILL# (LEFT COLUMN):
+- Concise high-level competency/category.
+- Prefer categories that directly correspond to the requisition's most important
+  required capabilities AND are substantively demonstrated by the resume.
+- Do not put years of experience in this field.
+
+SKILLDETAILS# (RIGHT COLUMN):
+- 3-6 specific supported Tools / Technologies / Methodologies / domain methods.
+- Comma-separated.
+- Do NOT repeat the left-column category wording in the right column.
+- Favor demonstrated work-history evidence over a standalone resume skills list.
+- Preserve exact JD terminology when supported.
+- Do not include years used or last-used dates.
+
+OPERATIONAL OWNERSHIP RULE:
+Prefer recurring responsibilities and direct ownership over isolated projects.
+Unless the role is explicitly implementation-focused, favor day-to-day execution,
+production/business operations, issue resolution, reporting, controls,
+compliance, stakeholder support, and measurable outcomes.
+
+ZERO-TOLERANCE TRUTH RULE:
+Every candidate claim must survive a side-by-side comparison against the original
+resume. The JD and Internal Notes define what matters; they do not create
+candidate experience.
+
+OUTPUT:
+{{
+  "SUMMARY1": "",
+  "SUMMARY2": "",
+  "SUMMARY3": "",
+  "SUMMARY4": "",
+  "SKILL1": "",
+  "SKILLDETAILS1": "",
+  "SKILL2": "",
+  "SKILLDETAILS2": "",
+  "SKILL3": "",
+  "SKILLDETAILS3": "",
+  "SKILL4": "",
+  "SKILLDETAILS4": ""
+}}
+
+OFFICIAL FIELDGLASS JOB DESCRIPTION:
+{Job_Description}
+
+INTERNAL NOTES (OPTIONAL RECRUITER CONTEXT):
+{Internal_Notes if Internal_Notes.strip() else "No internal notes were provided."}
+
+STRUCTURED ORIGINAL EXPERIENCE:
+{structured_experience}
+
+FULL ORIGINAL RESUME:
+{raw_text}
+"""
+
+                summary_data = navy_generate_json(
+                    API_KEY,
+                    tailoring_prompt,
+                )
+
+                # Deterministic cleanup/safety cap for the right-hand Skills column.
+                for skill_num in range(1, 5):
+                    details_key = f"SKILLDETAILS{skill_num}"
+                    summary_data[details_key] = fred_cap_skill_details(
+                        summary_data.get(details_key, ""),
+                        max_items=6,
+                    )
+
+                missing_summary = [
+                    str(i)
+                    for i in range(1, 5)
+                    if not str(summary_data.get(f"SUMMARY{i}", "") or "").strip()
+                ]
+
+                missing_skills = [
+                    str(i)
+                    for i in range(1, 5)
+                    if not str(summary_data.get(f"SKILL{i}", "") or "").strip()
+                    or not str(
+                        summary_data.get(f"SKILLDETAILS{i}", "") or ""
+                    ).strip()
+                ]
+
+                if missing_summary:
+                    raise RuntimeError(
+                        "The Navy Federal optimization step did not return all four "
+                        "required Summary bullets. Missing: "
+                        + ", ".join(missing_summary)
+                    )
+
+                if missing_skills:
+                    raise RuntimeError(
+                        "The Navy Federal optimization step did not return all four "
+                        "required Skills rows. Missing: "
+                        + ", ".join(missing_skills)
+                    )
+
+                # ====================================================
+                # BUILD WORD MAPPING
+                # ====================================================
+                mapping = {
+                    "FullName": Full_Legal_Name.strip(),
+                    "Location": Work_Location.strip(),
+                    "Remote": Work_Arrangement,
+                    "WorkAuthorization": Work_Authorization,
+                    "Certifications": certifications,
+                    "SUMMARY1": str(summary_data.get("SUMMARY1", "") or "").strip(),
+                    "SUMMARY2": str(summary_data.get("SUMMARY2", "") or "").strip(),
+                    "SUMMARY3": str(summary_data.get("SUMMARY3", "") or "").strip(),
+                    "SUMMARY4": str(summary_data.get("SUMMARY4", "") or "").strip(),
+                    "SKILL1": str(summary_data.get("SKILL1", "") or "").strip(),
+                    "SKILLDETAILS1": str(summary_data.get("SKILLDETAILS1", "") or "").strip(),
+                    "SKILL2": str(summary_data.get("SKILL2", "") or "").strip(),
+                    "SKILLDETAILS2": str(summary_data.get("SKILLDETAILS2", "") or "").strip(),
+                    "SKILL3": str(summary_data.get("SKILL3", "") or "").strip(),
+                    "SKILLDETAILS3": str(summary_data.get("SKILLDETAILS3", "") or "").strip(),
+                    "SKILL4": str(summary_data.get("SKILL4", "") or "").strip(),
+                    "SKILLDETAILS4": str(summary_data.get("SKILLDETAILS4", "") or "").strip(),
+                }
+
+                # Education — never default completion to Yes.
+                for i in range(1, 4):
+                    if i <= len(education) and isinstance(education[i - 1], dict):
+                        edu_item = education[i - 1]
+
+                        mapping[f"School{i}"] = clean_school(
+                            str(edu_item.get("School", "") or "")
+                        )
+                        mapping[f"Degree{i}"] = str(
+                            edu_item.get("Degree", "") or ""
+                        ).strip()
+                        mapping[f"Completed{i}"] = navy_normalize_completion_status(
+                            edu_item,
+                            current_year=current_date_obj.year,
+                        )
+                    else:
+                        mapping[f"School{i}"] = ""
+                        mapping[f"Degree{i}"] = ""
+                        mapping[f"Completed{i}"] = ""
+
+                # Work History — preserve EVERY extracted role and rely on the
+                # shared dynamic template expander for Company8/9/etc.
+                for i in range(1, max(7, len(experience)) + 1):
+                    if i <= len(experience):
+                        role = experience[i - 1]
+                        mapping[f"Company{i}"] = str(
+                            role.get("Company", "") or ""
+                        ).strip()
+                        mapping[f"Title{i}"] = str(
+                            role.get("Title", "") or ""
+                        ).strip()
+                        mapping[f"Bullets{i}"] = clean_bullets(
+                            role.get("Bullets", [])
+                        )
+                        mapping[f"Dates{i}"] = str(
+                            role.get("Dates", "") or ""
+                        ).strip()
+                    else:
+                        mapping[f"Company{i}"] = ""
+                        mapping[f"Title{i}"] = ""
+                        mapping[f"Bullets{i}"] = ""
+                        mapping[f"Dates{i}"] = ""
+
+                safe_name = (
+                    re.sub(
+                        r"[^A-Za-z0-9_\-]+",
+                        "_",
+                        Full_Legal_Name.strip(),
+                    ).strip("_")
+                    or "Candidate"
+                )
+
+                out_file = f"Submission_NavyFederal_{safe_name}.docx"
+
+                process_navy_federal_word_doc(
+                    TEMPLATE_FILENAME,
+                    mapping,
+                    out_file,
+                )
+
+                with open(out_file, "rb") as file:
+                    st.download_button(
+                        label="⬇️ Download Generated Document",
+                        data=file,
+                        file_name=out_file,
+                        mime=(
+                            "application/vnd.openxmlformats-"
+                            "officedocument.wordprocessingml.document"
+                        ),
+                        type="primary",
+                    )
+
+                st.success("✅ Navy Federal submission is ready.")
+
+            except Exception as e:
+                st.error(
+                    f"❌ Navy Federal processing failed: {str(e)}"
+                )
+
+            finally:
+                if resume_path and os.path.exists(resume_path):
+                    try:
+                        os.remove(resume_path)
+                    except Exception:
+                        pass
+
+
+# ====================================================================
 # --- MAIN ROUTING LOGIC (The Dropdown Page) ---
 # ====================================================================
 
@@ -10336,7 +11423,7 @@ st.markdown("Please select your client account below to access the customized fo
 
 client_selection = st.selectbox(
     "Select Client Account or Tool:", 
-    ["Fannie Mae", "Freddie Mac", "Deloitte", "Peraton", "Capital One", "ADUSA", "CBRE", "BNSF", "Dallas Generic", "PDF to Word"]
+    ["Fannie Mae", "Freddie Mac", "Navy Federal", "Deloitte", "Peraton", "Capital One", "ADUSA", "CBRE", "BNSF", "Dallas Generic", "PDF to Word"]
 )
 
 st.divider()
@@ -10345,6 +11432,8 @@ if client_selection == "Fannie Mae":
     fannie_mae_app()
 elif client_selection == "Freddie Mac":
     freddie_mac_app()
+elif client_selection == "Navy Federal":
+    navy_federal_app()
 elif client_selection == "Deloitte":
     deloitte_app()
 elif client_selection == "Peraton":
