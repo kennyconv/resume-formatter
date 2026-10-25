@@ -10683,6 +10683,20 @@ def navy_signal_tokens(value):
             "analyze": "analy",
             "analyzed": "analy",
             "analytical": "analy",
+            "policy": "polic",
+            "policies": "polic",
+            "procedure": "procedur",
+            "procedures": "procedur",
+            "tracking": "track",
+            "tracked": "track",
+            "tracks": "track",
+            "controls": "control",
+            "controlled": "control",
+            "governance": "govern",
+            "governing": "govern",
+            "regulation": "regulat",
+            "regulations": "regulat",
+            "regulatory": "regulat",
         }
 
         if token in derivational_roots:
@@ -10739,10 +10753,67 @@ def navy_skill_item_supported_by_evidence(item, evidence):
     if len(item_tokens) == 1:
         return matched == 1
 
-    # Multi-token methods can tolerate one morphological/wording mismatch but
-    # still require strong lexical support from the exact cited resume passage.
-    required = max(1, int((len(item_tokens) * 0.75) + 0.9999))
+    # Multi-token conceptual methods may legitimately summarize the exact resume
+    # wording (for example, "Security Policies & Procedures" from evidence that
+    # says "information security policy ... procedures"). Require a clear
+    # majority of the substantive words rather than near-verbatim overlap. Named
+    # one-token tools/frameworks still require an exact match above.
+    required = max(1, int((len(item_tokens) * 0.60) + 0.9999))
     return matched >= required
+
+
+def navy_explicit_identifiers(value):
+    """
+    Extract concrete identifiers that should never be invented by an umbrella
+    skill label: acronyms, mixed-case product names, and framework/version tokens.
+
+    Examples: FFIEC, GLBA, NIST, ServiceNow, ZenGRC, BitSight, 800-53.
+    Generic title-cased words such as Security, Risk, Policies, or Procedures are
+    intentionally ignored because high-level categories may summarize evidence.
+    """
+    text = str(value or "")
+    identifiers = []
+
+    # All-caps acronyms / named standards. Ignore very common presentation words
+    # that can safely appear as general resume terminology.
+    for token in re.findall(r"\b[A-Z][A-Z0-9./+-]{1,}\b", text):
+        if token not in identifiers:
+            identifiers.append(token)
+
+    # Mixed-case product/vendor names such as ServiceNow, BitSight, ZenGRC.
+    for token in re.findall(r"\b[A-Z][a-z]+[A-Z][A-Za-z0-9]*\b", text):
+        if token not in identifiers:
+            identifiers.append(token)
+
+    # Version/control identifiers containing digits and separators.
+    for token in re.findall(r"\b(?:[A-Za-z]{1,8}\s*)?\d{2,4}(?:[-./]\d+[A-Za-z]?)?\b", text):
+        clean = re.sub(r"\s+", " ", token).strip()
+        if clean and clean not in identifiers:
+            identifiers.append(clean)
+
+    return identifiers
+
+
+def navy_explicit_identifiers_supported(value, evidence_text, resume_text):
+    """
+    Return unsupported concrete identifiers from an output label/item.
+
+    The evidence snippets must come from the resume already; this extra check
+    prevents an umbrella phrase from smuggling in a named regulation/tool that
+    the resume never contained.
+    """
+    evidence_norm = navy_normalize_evidence_text(evidence_text)
+    resume_norm = navy_normalize_evidence_text(resume_text)
+    unsupported = []
+
+    for identifier in navy_explicit_identifiers(value):
+        ident_norm = navy_normalize_evidence_text(identifier)
+        if not ident_norm:
+            continue
+        if ident_norm not in evidence_norm and ident_norm not in resume_norm:
+            unsupported.append(identifier)
+
+    return unsupported
 
 
 def navy_jd_only_phrase_hits(output_text, jd_text, resume_text):
@@ -10902,13 +10973,21 @@ def navy_validate_grounded_output(resume_text, jd_text, data):
                         f"{evidence[:120]}"
                     )
 
-            if not navy_skill_item_supported_by_evidence(
+            # Left-column Skills are intentionally high-level umbrella categories.
+            # Do NOT demand near-verbatim lexical overlap with the evidence; that
+            # creates false failures for legitimate summaries such as
+            # "Security Policies & Procedures." Instead, verify that any concrete
+            # named identifiers embedded in the category are actually resume-backed.
+            unsupported_identifiers = navy_explicit_identifiers_supported(
                 skill,
                 " ".join(skill_evidence),
-            ):
+                resume_text,
+            )
+
+            if unsupported_identifiers:
                 errors.append(
-                    f"{skill_key} is not sufficiently supported by its cited "
-                    "resume evidence."
+                    f"{skill_key} contains unsupported named identifier(s): "
+                    + ", ".join(unsupported_identifiers)
                 )
 
         skill_jd_hits = navy_jd_only_phrase_hits(
@@ -10917,10 +10996,17 @@ def navy_validate_grounded_output(resume_text, jd_text, data):
             resume_text,
         )
 
-        if skill_jd_hits:
+        # High-level competency labels may legitimately paraphrase resume wording.
+        # Only treat JD overlap as suspicious when the cited resume evidence does
+        # NOT independently support the concept. This still blocks formal JD-only
+        # labels such as "Second Line of Defense" when the resume lacks them.
+        if skill_jd_hits and not navy_skill_item_supported_by_evidence(
+            skill,
+            " ".join(skill_evidence),
+        ):
             errors.append(
-                f"{skill_key} contains JD-only wording not found in the resume: "
-                + "; ".join(skill_jd_hits)
+                f"{skill_key} contains JD-only wording not supported by its "
+                "resume evidence: " + "; ".join(skill_jd_hits)
             )
 
         detail_records = navy_skill_detail_records(
@@ -10933,45 +11019,70 @@ def navy_validate_grounded_output(resume_text, jd_text, data):
             )
             continue
 
-        if len(detail_records) > 6:
-            detail_records = detail_records[:6]
+        verified_detail_records = []
+        rejected_detail_items = []
 
-        for detail in detail_records:
+        for detail in detail_records[:6]:
             item = detail["item"]
             evidence = detail["evidence"]
+            reject_reason = ""
 
             if not navy_evidence_snippet_found(
                 resume_text,
                 evidence,
             ):
-                errors.append(
-                    f"{details_key} item '{item}' cites evidence not found "
-                    f"in the resume: {evidence[:120]}"
+                reject_reason = "evidence was not found in the resume"
+            else:
+                unsupported_identifiers = navy_explicit_identifiers_supported(
+                    item,
+                    evidence,
+                    resume_text,
                 )
-                continue
 
-            if not navy_skill_item_supported_by_evidence(
+                if unsupported_identifiers:
+                    reject_reason = (
+                        "unsupported named identifier(s): "
+                        + ", ".join(unsupported_identifiers)
+                    )
+
+            if not reject_reason and not navy_skill_item_supported_by_evidence(
                 item,
                 evidence,
             ):
-                errors.append(
-                    f"{details_key} item '{item}' is not sufficiently supported "
-                    f"by its cited resume evidence."
-                )
+                reject_reason = "wording was not sufficiently supported by its evidence"
 
-            detail_jd_hits = navy_jd_only_phrase_hits(
-                item,
-                jd_text,
-                resume_text,
+            # At this point the detail has real resume evidence, no unsupported
+            # named identifiers, and sufficient lexical/conceptual support from
+            # that evidence. A matching JD phrase is therefore relevance, not a
+            # hallucination, and should not cause a false rejection.
+
+            if reject_reason:
+                rejected_detail_items.append(
+                    f"{item} ({reject_reason})"
+                )
+                continue
+
+            verified_detail_records.append(detail)
+
+        # Safe-prune isolated questionable details rather than failing the entire
+        # resume when the row still has enough fully grounded content. If fewer
+        # than three verified details survive, trigger the automatic AI repair
+        # pass so the row can be rebuilt from resume-native evidence.
+        data[details_key] = verified_detail_records
+
+        if len(verified_detail_records) < 3:
+            error_text = (
+                f"{details_key} has only {len(verified_detail_records)} verified "
+                "detail item(s); at least 3 are required."
             )
 
-            if detail_jd_hits:
-                errors.append(
-                    f"{details_key} item '{item}' contains JD-only wording "
-                    "not found in the resume."
+            if rejected_detail_items:
+                error_text += (
+                    " Rejected: "
+                    + "; ".join(rejected_detail_items[:4])
                 )
 
-        data[details_key] = detail_records
+            errors.append(error_text)
 
     return errors
 
@@ -11123,16 +11234,28 @@ SKILL ROWS:
 
 SKILL ROW EVIDENCE:
 For EACH left-column Skill, return 1-3 VERBATIM resume excerpts supporting that
-category.
+category. The left-column label is an umbrella category, so it may reasonably
+paraphrase/summarize multiple cited resume excerpts. It does NOT need to be a
+verbatim phrase from the resume. However, never put a named tool, regulation,
+framework, or formal discipline in the category unless the resume supports it.
 
 RIGHT-COLUMN DETAILS:
 - 3-6 items per row.
 - Every item must be a tool, technology, framework, methodology, process, or
   domain method explicitly named or directly demonstrated in the resume.
+- USE RESUME-NATIVE WORDING whenever possible. If the resume says "defects",
+  prefer "Defect Tracking" rather than renaming it "Issue Tracking" just because
+  the JD uses the word issue.
+- KEEP EACH DETAIL ATOMIC. Do not combine two concepts with "&", "/", or "and"
+  when they require different resume excerpts. Example: if one resume bullet
+  supports defect tracking and another supports remediation plans, output
+  "Defect Tracking" and "Risk Treatment Plans" as separate details rather than
+  "Issue Tracking & Remediation".
 - Return each detail as an object containing:
   "item": the concise resume skill/detail
   "evidence": one VERBATIM resume excerpt that explicitly supports that item
-- Do not return an item when you cannot quote resume evidence for it.
+- Do not return an item when you cannot quote one resume excerpt that supports
+  the item.
 
 ATS RULE:
 Exact JD language is helpful ONLY when the same language/capability is genuinely
@@ -11940,8 +12063,10 @@ SKILL# — LEFT COLUMN
 - Concise high-level competency/category.
 - Choose categories that matter to the JD AND are substantially demonstrated by
   the resume.
-- Do not borrow a formal JD discipline/category merely because it is adjacent to
-  the candidate's background.
+- The category may be a natural umbrella label summarizing multiple resume
+  bullets; it does not need to appear verbatim in the resume.
+- Do not borrow a named framework, regulation, tool, or formal JD discipline
+  merely because it is adjacent to the candidate's background.
 - Return SKILL#_EVIDENCE with 1-3 short VERBATIM resume excerpts proving the
   category.
 
@@ -11951,6 +12076,10 @@ SKILLDETAILS# — RIGHT COLUMN
   "item": a concise Tool / Technology / Methodology / Process / domain method
   "evidence": a VERBATIM resume excerpt explicitly supporting that exact item
 - Every item must be supported by its own evidence.
+- USE RESUME-NATIVE WORDING. Never rename a resume concept to a more attractive
+  JD term unless the resume itself supports that JD term.
+- KEEP EACH DETAIL ATOMIC: one evidence excerpt must support the full item. Split
+  combined concepts into separate items when different bullets are needed.
 - Do not use a JD-only skill.
 - Do not use years used / last used.
 - Do not repeat the left-column category wording in the right column.
@@ -12074,8 +12203,8 @@ FULL ORIGINAL RESUME:
                     raise RuntimeError(
                         "The Navy Federal grounding safety check could not verify "
                         "all generated Summary/Skills content against the uploaded "
-                        "resume, so no document was created. Please run the formatter "
-                        "again rather than using unverified content. Verification "
+                        "resume, so no document was created. The formatter already "
+                        "attempted an automatic correction pass. Verification "
                         "issues: "
                         + " | ".join(grounding_errors[:8])
                     )
