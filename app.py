@@ -1471,6 +1471,11 @@ def fred_signal_tokens(value):
         "skill", "skills", "work", "working", "professional", "professionals",
         "provide", "provides", "provided", "providing", "function", "functions",
         "ability", "able", "help", "helps", "helping",
+        # Generic framing nouns should not require literal resume wording when the
+        # substantive domain/competency itself is proven. For example,
+        # "Multifamily Business Context" is grounded by Multifamily + business
+        # experience; the word "context" is only a label wrapper.
+        "context", "industry", "domain",
     }
 
     derivational_roots = {
@@ -1521,6 +1526,48 @@ def fred_signal_tokens(value):
         "transform": "transform",
         "transformed": "transform",
         "transforming": "transform",
+        # Common competency-label noun/verb pairs. These normalize natural
+        # recruiter labels to the same concept as resume action verbs without
+        # granting support for a different skill or named technology.
+        "facilitation": "facilitat",
+        "facilitate": "facilitat",
+        "facilitated": "facilitat",
+        "facilitating": "facilitat",
+        "integration": "integrat",
+        "integrations": "integrat",
+        "integrate": "integrat",
+        "integrated": "integrat",
+        "integrating": "integrat",
+        "coordination": "coordinat",
+        "coordinate": "coordinat",
+        "coordinated": "coordinat",
+        "coordinating": "coordinat",
+        "collaboration": "collaborat",
+        "collaborate": "collaborat",
+        "collaborated": "collaborat",
+        "collaborating": "collaborat",
+        "implementation": "implement",
+        "implement": "implement",
+        "implemented": "implement",
+        "implementing": "implement",
+        "delivery": "deliver",
+        "deliver": "deliver",
+        "delivered": "deliver",
+        "delivering": "deliver",
+        "documentation": "document",
+        "document": "document",
+        "documented": "document",
+        "documenting": "document",
+        "recommendation": "recommend",
+        "recommendations": "recommend",
+        "recommend": "recommend",
+        "recommended": "recommend",
+        "recommending": "recommend",
+        "escalation": "escalat",
+        "escalations": "escalat",
+        "escalate": "escalat",
+        "escalated": "escalat",
+        "escalating": "escalat",
     }
 
     # Hyphens are treated as word separators here so natural umbrella labels
