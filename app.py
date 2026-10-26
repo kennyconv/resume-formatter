@@ -1305,6 +1305,390 @@ def fred_normalize_skill_name(value):
     ).strip().casefold()
 
 
+def fred_normalize_match_surface(value):
+    """Normalize Freddie text for safe token/phrase matching."""
+    value = str(value or "")
+    value = (
+        value.replace("\u00a0", " ")
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+        .replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2013", "-")
+        .replace("\u2014", "-")
+    )
+    value = re.sub(r"\s+", " ", value).strip().casefold()
+    return value
+
+
+def fred_text_contains_term(text_value, term):
+    """
+    Boundary-aware Freddie matcher.
+
+    This deliberately prevents short catalogue values from matching inside
+    unrelated words (for example `Git` inside `digital`). It also protects
+    short terms such as AI, R, C, QA, BI, and UI from substring false positives.
+    """
+    text = fred_normalize_match_surface(text_value)
+    term_text = fred_normalize_match_surface(term).strip()
+
+    if not text or not term_text:
+        return False
+
+    # Permit flexible whitespace without changing the actual characters in the
+    # catalogue/source term. Boundaries are based on alphanumerics rather than
+    # Python's \b so values such as C++, C#, .NET, J2EE, and CI/CD remain usable.
+    pieces = [re.escape(piece) for piece in term_text.split() if piece]
+    if not pieces:
+        return False
+
+    body = r"\s+".join(pieces)
+    pattern = rf"(?<![a-z0-9]){body}(?![a-z0-9])"
+    return bool(re.search(pattern, text, flags=re.IGNORECASE))
+
+
+def fred_text_contains_any(text_value, terms):
+    return any(
+        fred_text_contains_term(text_value, term)
+        for term in (terms or [])
+        if str(term or "").strip()
+    )
+
+
+def fred_normalize_quote_match_text(value):
+    """Normalize harmless punctuation/whitespace for source-quote verification."""
+    value = str(value or "")
+    value = (
+        value.replace("\u00a0", " ")
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+        .replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2013", "-")
+        .replace("\u2014", "-")
+    )
+    value = value.casefold()
+    value = re.sub(r"[^a-z0-9+#./'-]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def fred_source_quote_found(source_text, quote):
+    source = fred_normalize_quote_match_text(source_text)
+    quote_norm = fred_normalize_quote_match_text(quote)
+    if not quote_norm or len(quote_norm) < 5:
+        return False
+    return quote_norm in source
+
+
+def fred_string_list(value):
+    if isinstance(value, list):
+        return [
+            re.sub(r"\s+", " ", str(item or "")).strip()
+            for item in value
+            if str(item or "").strip()
+        ]
+    if value is None:
+        return []
+    cleaned = re.sub(r"\s+", " ", str(value)).strip()
+    return [cleaned] if cleaned else []
+
+
+def fred_signal_tokens(value):
+    """Conservative lexical tokens for Freddie candidate-evidence checks."""
+    stop_words = {
+        "a", "an", "and", "as", "at", "by", "for", "from", "in", "into",
+        "of", "on", "or", "the", "to", "using", "with", "within", "via",
+        "support", "supports", "supported", "experience", "experienced",
+        "skill", "skills", "work", "working", "professional", "professionals",
+    }
+
+    derivational_roots = {
+        "management": "manag",
+        "manager": "manag",
+        "managed": "manag",
+        "managing": "manag",
+        "analysis": "analy",
+        "analyst": "analy",
+        "analyze": "analy",
+        "analyzed": "analy",
+        "analytical": "analy",
+        "requirements": "require",
+        "requirement": "require",
+        "reporting": "report",
+        "reports": "report",
+        "reported": "report",
+        "communications": "communicat",
+        "communication": "communicat",
+        "communicating": "communicat",
+        "presentation": "present",
+        "presentations": "present",
+        "presenting": "present",
+        "automation": "automat",
+        "automated": "automat",
+        "automating": "automat",
+        "governance": "govern",
+        "validation": "valid",
+        "validate": "valid",
+        "validated": "valid",
+        "testing": "test",
+        "tested": "test",
+        "planning": "plan",
+        "prioritization": "priorit",
+        "prioritize": "priorit",
+        "prioritized": "priorit",
+        "stakeholders": "stakeholder",
+        "strategic": "strateg",
+        "strategy": "strateg",
+        "technical": "tech",
+        "technology": "tech",
+        "technologies": "tech",
+        "translate": "translat",
+        "translated": "translat",
+        "translating": "translat",
+        "translation": "translat",
+        "transformation": "transform",
+        "transform": "transform",
+        "transformed": "transform",
+        "transforming": "transform",
+    }
+
+    # Hyphens are treated as word separators here so natural umbrella labels
+    # such as "Business-to-Technology Translation" can be compared against
+    # resume wording like "translating business needs ... technical solutions."
+    # Slash/plus/hash/dot remain available for concrete tokens such as AI/ML,
+    # C++, C#, and .NET-style identifiers.
+    raw_tokens = re.findall(
+        r"[A-Za-z0-9]+(?:[./+#][A-Za-z0-9]+)*",
+        str(value or ""),
+    )
+    result = []
+
+    for token in raw_tokens:
+        lowered = token.casefold()
+        if lowered.endswith("-level") and len(lowered) > len("-level"):
+            lowered = lowered[:-len("-level")]
+        if lowered in stop_words:
+            continue
+        normalized = derivational_roots.get(lowered, lowered)
+        if normalized not in derivational_roots.values() and len(normalized) > 4:
+            for suffix in ("ing", "ed", "es", "s"):
+                if normalized.endswith(suffix) and len(normalized) - len(suffix) >= 4:
+                    normalized = normalized[:-len(suffix)]
+                    # Re-apply the semantic root map after plural/tense stemming
+                    # (for example, automations -> automation -> automat).
+                    normalized = derivational_roots.get(normalized, normalized)
+                    break
+        if normalized and normalized not in result:
+            result.append(normalized)
+
+    return result
+
+
+def fred_claim_supported_by_evidence(claim, evidence):
+    """Require a clear majority of substantive claim tokens in cited evidence."""
+    claim_tokens = fred_signal_tokens(claim)
+    evidence_tokens = set(fred_signal_tokens(evidence))
+    if not claim_tokens:
+        return False
+    matched = sum(1 for token in claim_tokens if token in evidence_tokens)
+    if len(claim_tokens) == 1:
+        return matched == 1
+    required = max(1, int((len(claim_tokens) * 0.60) + 0.9999))
+    return matched >= required
+
+
+def fred_explicit_identifiers(value):
+    """Concrete acronyms/products/framework identifiers that should not be invented."""
+    text = str(value or "")
+    identifiers = []
+
+    for token in re.findall(r"\b[A-Z][A-Z0-9./+#-]{1,}\b", text):
+        if token not in identifiers:
+            identifiers.append(token)
+
+    for token in re.findall(r"\b[A-Z][a-z]+[A-Z][A-Za-z0-9]*\b", text):
+        if token not in identifiers:
+            identifiers.append(token)
+
+    return identifiers
+
+
+def fred_explicit_identifiers_supported(value, evidence_text, resume_text):
+    evidence_norm = fred_normalize_quote_match_text(evidence_text)
+    resume_norm = fred_normalize_quote_match_text(resume_text)
+    unsupported = []
+
+    for identifier in fred_explicit_identifiers(value):
+        ident = fred_normalize_quote_match_text(identifier)
+        if ident and ident not in evidence_norm and ident not in resume_norm:
+            unsupported.append(identifier)
+
+    return unsupported
+
+
+def fred_unsupported_high_impact_claims(output_text, evidence_text):
+    """
+    Protect claim strength/authority across Freddie job families.
+
+    A supported noun phrase does not make a stronger modifier true. This is
+    intentionally generic across technical, business, operations, design,
+    finance, legal, HR, and program-management requisitions.
+    """
+    output = str(output_text or "")
+    evidence = str(evidence_text or "")
+
+    rules = [
+        ("independent/independently", r"\bindependent(?:ly)?\b", r"\bindependent(?:ly)?\b"),
+        ("lead/led/leading/leadership", r"\b(?:lead|leads|leading|led|leadership)\b", r"\b(?:lead|leads|leading|led|leadership)\b"),
+        ("ownership/owned", r"\b(?:own|owns|owned|owning|ownership)\b", r"\b(?:own|owns|owned|owning|ownership)\b"),
+        ("manage/managed/managing/manager", r"\b(?:manage|manages|managed|managing|manager)\b", r"\b(?:manage|manages|managed|managing|manager)\b"),
+        ("oversight/oversee", r"\b(?:oversee|oversees|oversaw|overseeing|oversight)\b", r"\b(?:oversee|oversees|oversaw|overseeing|oversight)\b"),
+        ("architect/architected", r"\b(?:architect|architects|architected|architecting)\b", r"\b(?:architect|architects|architected|architecting)\b"),
+        ("expert/expertise", r"\b(?:expert|expertise)\b", r"\b(?:expert|expertise)\b"),
+        ("advanced", r"\badvanced\b", r"\badvanced\b"),
+        ("extensive", r"\bextensive\b", r"\bextensive\b"),
+        ("deep", r"\bdeep\b", r"\bdeep\b"),
+        ("hands-on", r"\bhands?[\s-]+on\b", r"\bhands?[\s-]+on\b"),
+        ("enterprise-wide", r"\benterprise[\s-]+wide\b", r"\benterprise[\s-]+wide\b"),
+        ("organization-wide", r"\b(?:organization|organisation)[\s-]+wide\b", r"\b(?:organization|organisation)[\s-]+wide\b"),
+        ("global/globally", r"\bglobal(?:ly)?\b", r"\bglobal(?:ly)?\b"),
+        ("end-to-end", r"\bend[\s-]+to[\s-]+end\b", r"\bend[\s-]+to[\s-]+end\b"),
+        ("high-volume", r"\bhigh[\s-]+volume\b", r"\bhigh[\s-]+volume\b"),
+        ("large-scale", r"\blarge[\s-]+scale\b", r"\blarge[\s-]+scale\b"),
+        ("production", r"\bproduction\b", r"\bproduction\b"),
+    ]
+
+    unsupported = []
+    for label, output_pattern, evidence_pattern in rules:
+        if re.search(output_pattern, output, flags=re.IGNORECASE) and not re.search(
+            evidence_pattern, evidence, flags=re.IGNORECASE
+        ):
+            unsupported.append(label)
+
+    return unsupported
+
+
+def fred_output_hits_deemphasized_requirement(output_text, structured_req):
+    """Return explicit negated/de-emphasized phrases reused in candidate-facing output."""
+    structured_req = fred_coerce_structured_req(structured_req)
+    negated = structured_req.get("deemphasized_or_negated_requirements", []) or []
+    output_norm = fred_normalize_quote_match_text(output_text)
+    hits = []
+
+    if not output_norm:
+        return hits
+
+    for item in negated:
+        item_text = str(item or "").strip()
+        item_norm = fred_normalize_quote_match_text(item_text)
+        if not item_norm:
+            continue
+
+        # Look for meaningful 1-4 word phrases from the negated statement.
+        tokens = [
+            token for token in fred_signal_tokens(item_text)
+            if len(token) >= 3
+        ]
+        for size in (4, 3, 2):
+            if len(tokens) < size:
+                continue
+            for idx in range(len(tokens) - size + 1):
+                phrase_tokens = tokens[idx:idx + size]
+                phrase = " ".join(phrase_tokens)
+                output_tokens = fred_signal_tokens(output_text)
+                for out_idx in range(len(output_tokens) - size + 1):
+                    if output_tokens[out_idx:out_idx + size] == phrase_tokens:
+                        if phrase not in hits:
+                            hits.append(phrase)
+                if hits and size >= 2:
+                    break
+            if hits and size >= 2:
+                break
+
+    return hits[:8]
+
+
+def fred_split_sentences(text):
+    """Lightweight sentence splitter for Freddie audit checks."""
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not text:
+        return []
+    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", text)
+    return [part.strip() for part in parts if part.strip()]
+
+
+def fred_role_only_phrase_hits(output_text, role_text, resume_text, evidence_text=""):
+    """
+    Find meaningful multi-word phrases copied from the role sources that are not
+    present in the candidate resume and are not independently supported by the
+    cited candidate evidence.
+    """
+    output_words = fred_normalize_quote_match_text(output_text).split()
+    role_norm = fred_normalize_quote_match_text(role_text)
+    resume_norm = fred_normalize_quote_match_text(resume_text)
+    evidence = str(evidence_text or "")
+
+    stop_words = {
+        "a", "an", "and", "as", "at", "be", "by", "for", "from", "in",
+        "is", "of", "on", "or", "the", "to", "with", "this", "that",
+        "their", "his", "her", "candidate", "role", "team", "freddie", "mac",
+    }
+
+    hits = []
+    seen = set()
+
+    for size in (5, 4, 3, 2):
+        if len(output_words) < size:
+            continue
+        for idx in range(len(output_words) - size + 1):
+            words = output_words[idx:idx + size]
+            phrase = " ".join(words)
+            if phrase in seen:
+                continue
+            signals = [w for w in words if w not in stop_words and len(w) >= 4]
+            if len(signals) < 2:
+                continue
+            if words[0] in stop_words or words[-1] in stop_words:
+                continue
+            if phrase in role_norm and phrase not in resume_norm:
+                if evidence and fred_claim_supported_by_evidence(phrase, evidence):
+                    continue
+                if any(phrase in existing for existing in hits):
+                    continue
+                hits.append(phrase)
+                seen.add(phrase)
+
+    return hits[:10]
+
+
+def fred_role_only_signal_tokens(output_text, role_text, resume_text, evidence_text=""):
+    """
+    Return distinctive candidate-facing words that appear in Freddie role sources
+    but not in the resume/evidence. Useful for catching subtle requirement leakage
+    such as adding "executive" to otherwise supported reporting experience.
+    """
+    output_tokens = fred_signal_tokens(output_text)
+    role_tokens = set(fred_signal_tokens(role_text))
+    resume_tokens = set(fred_signal_tokens(resume_text))
+    evidence_tokens = set(fred_signal_tokens(evidence_text))
+
+    generic = {
+        "freddie", "candidate", "team", "role", "current", "manager",
+        "require", "preferred", "priority", "business", "technical",
+        "professional", "experience", "work", "support", "project",
+    }
+
+    hits = []
+    for token in output_tokens:
+        if token in generic or len(token) < 6:
+            continue
+        if token in role_tokens and token not in resume_tokens and token not in evidence_tokens:
+            if token not in hits:
+                hits.append(token)
+
+    return hits[:10]
+
+
 def fred_catalog_lookup(catalog):
     """Build a normalized-name -> exact VNDLY record lookup."""
     lookup = {}
@@ -1525,45 +1909,34 @@ FREDDIE_VNDLY_SKILL_CAP = 8
 def fred_extract_work_history_text(raw_resume_text):
     """
     Return the portion of the resume most likely to contain dated work history.
-    Used only as a conservative evidence-strength check for VNDLY skill ranking.
+
+    Heading detection is line-anchored so a summary sentence such as
+    "20+ years of professional experience" cannot accidentally make the entire
+    resume (including a top-level skills inventory) count as dated work-history
+    evidence.
     """
     text = str(raw_resume_text or "")
-    upper = text.upper()
+    if not text:
+        return ""
 
-    start_markers = [
-        "PROFESSIONAL EXPERIENCE",
-        "WORK EXPERIENCE",
-        "WORK HISTORY",
-        "EMPLOYMENT HISTORY",
-        "EXPERIENCE",
-    ]
+    heading_pattern = re.compile(
+        r"(?im)^\s*(?:PROFESSIONAL EXPERIENCE|WORK EXPERIENCE|WORK HISTORY|EMPLOYMENT HISTORY|EXPERIENCE)\s*:?[ \t]*$"
+    )
+    match = heading_pattern.search(text)
 
-    start = None
-    for marker in start_markers:
-        idx = upper.find(marker)
-        if idx != -1 and (start is None or idx < start):
-            start = idx
+    if not match:
+        # Full-resume fallback remains available separately at evidence strength
+        # 1. Do not inflate a skills-list mention to dated-history strength 2.
+        return ""
 
-    if start is None:
-        return text
+    work = text[match.end():]
 
-    work = text[start:]
-
-    # Education/certification sections usually mark the end of work history.
-    upper_work = work.upper()
-    end_candidates = []
-    for marker in [
-        "\nEDUCATION",
-        "\nACADEMIC",
-        "\nCERTIFICATIONS",
-        "\nCERTIFICATION",
-    ]:
-        idx = upper_work.find(marker)
-        if idx > 0:
-            end_candidates.append(idx)
-
-    if end_candidates:
-        work = work[:min(end_candidates)]
+    end_pattern = re.compile(
+        r"(?im)^\s*(?:EDUCATION|ACADEMIC(?: BACKGROUND)?|CERTIFICATIONS?|TRAINING)\s*:?[ \t]*$"
+    )
+    end_match = end_pattern.search(work)
+    if end_match:
+        work = work[:end_match.start()]
 
     return work
 
@@ -1607,7 +1980,7 @@ def fred_skill_work_history_evidence(skill_name, raw_resume_text):
         ],
         "junit testing": ["junit"],
         "mockito": ["mockito"],
-        "git": ["git", "gitlab", "github"],
+        "git": ["git"],
         "jenkins (software)": ["jenkins"],
         "docker (software)": ["docker"],
         "maven": ["maven"],
@@ -1657,6 +2030,21 @@ def fred_skill_work_history_evidence(skill_name, raw_resume_text):
             "genai"
         ],
         "jira": ["jira"],
+        "sharepoint": ["sharepoint"],
+        "power bi": ["power bi"],
+        "power apps": ["power apps"],
+        "power automate": ["power automate"],
+        "power platform": ["power platform", "power apps", "power automate", "power bi"],
+        "agile delivery": ["agile", "scrum", "sprint planning", "backlog", "pi planning"],
+        "agile": ["agile", "scrum", "sprint planning"],
+        "product management": ["product manager", "product management", "product owner", "product roadmap", "product roadmaps"],
+        "program management": ["program manager", "program management", "program delivery", "program planning"],
+        "project management": ["project manager", "project management", "project delivery", "project planning"],
+        "business analysis": ["business analyst", "business analysis", "business requirements", "requirements elicitation", "requirements analysis", "user requirements", "business needs", "translating complex business needs", "translate business needs"],
+        "requirements analysis": ["requirements analysis", "requirements elicitation", "business requirements", "technical requirements", "requirements session", "requirements sessions"],
+        "stakeholder management": ["stakeholder management", "stakeholders", "business stakeholders"],
+        "executive reporting": ["executive reporting", "executive-level reporting", "executive and program-level reporting", "program-level reporting", "executive dashboard", "executive dashboards", "executive status", "status reports", "leadership reporting", "leadership presentation", "leadership presentations"],
+        "risk management": ["risk management", "risk identification", "risk assessment", "risk register", "issue tracking"],
         "devops": ["devops", "devsecops"],
         "quality assurance": ["quality assurance", "qa engineer", "qa testing"],
         "software testing": [
@@ -1665,23 +2053,23 @@ def fred_skill_work_history_evidence(skill_name, raw_resume_text):
         ],
         "finance": [
             "bank", "banking", "financial", "investment", "portfolio",
-            "securit", "trading", "trade ", "retirement", "securities",
+            "securities", "trading", "trade", "retirement",
             "asset", "capital markets"
         ],
         "financial services": [
             "bank", "banking", "financial", "investment", "portfolio",
-            "securit", "trading", "trade ", "retirement", "securities",
+            "securities", "trading", "trade", "retirement",
             "asset", "capital markets"
         ],
-        "mortgage industry": ["mortgage", "appraisal", "loan", "collateral", "uad"],
+        "mortgage industry": ["mortgage", "appraisal", "loan", "collateral", "uad", "underwriting"],
     }
 
     aliases = alias_map.get(key)
 
     if aliases:
-        if any(alias.casefold() in work_fold for alias in aliases):
+        if fred_text_contains_any(work, aliases):
             return 2
-        if any(alias.casefold() in full_fold for alias in aliases):
+        if fred_text_contains_any(full_resume, aliases):
             # Supported elsewhere in the resume (for example a top-level
             # technical-skills section), but not proven as strongly as dated
             # work-history evidence.
@@ -1693,10 +2081,10 @@ def fred_skill_work_history_evidence(skill_name, raw_resume_text):
     # skills-list mention, but both are valid candidate evidence.
     core = re.sub(r"\([^)]*\)", "", skill).strip().casefold()
 
-    if core and len(core) >= 4 and core in work_fold:
+    if core and len(core) >= 2 and fred_text_contains_term(work, core):
         return 2
 
-    if core and len(core) >= 4 and core in full_fold:
+    if core and len(core) >= 2 and fred_text_contains_term(full_resume, core):
         return 1
 
     # Domain-like catalogue values can be supported semantically even if the
@@ -1709,10 +2097,180 @@ def fred_skill_work_history_evidence(skill_name, raw_resume_text):
     }
 
     for domain_key, terms in domain_terms.items():
-        if domain_key in key and any(term in work_fold for term in terms):
+        if domain_key in key and fred_text_contains_any(work, terms):
             return 1
 
     return 0
+
+
+def fred_find_skill_evidence_excerpt(skill_name, raw_resume_text):
+    """
+    Return a real candidate-resume line that supports a VNDLY catalogue skill.
+
+    This is used for deterministic auditing/ranking; it never fabricates an
+    evidence sentence. Work-history lines are preferred over top-level skills.
+    """
+    full_resume = str(raw_resume_text or "")
+    work = fred_extract_work_history_text(full_resume)
+    aliases = fred_skill_aliases_for_requirement(skill_name)
+
+    for source in (work, full_resume):
+        for line in str(source).splitlines():
+            clean = re.sub(r"\s+", " ", line).strip()
+            if clean and fred_text_contains_any(clean, aliases):
+                return clean
+
+    # Generic whole-label fallback for catalogue values not covered by an alias.
+    core = re.sub(r"\([^)]*\)", "", str(skill_name or "")).strip()
+    if core:
+        for source in (work, full_resume):
+            for line in str(source).splitlines():
+                clean = re.sub(r"\s+", " ", line).strip()
+                if clean and fred_text_contains_term(clean, core):
+                    return clean
+
+    return ""
+
+
+def fred_skill_priority_category(skill_name, structured_req):
+    """Classify a supported VNDLY skill without confusing manager priority with formal Required."""
+    structured_req = fred_coerce_structured_req(structured_req)
+
+    negated_text = " ".join(
+        str(x)
+        for x in (structured_req.get("deemphasized_or_negated_requirements", []) or [])
+    )
+    if negated_text and fred_skill_matches_text(skill_name, negated_text):
+        return ""
+
+    explicit_must_text = " ".join(
+        str(x)
+        for x in (structured_req.get("explicit_must_have_requirements", []) or [])
+    )
+    preferred_text = " ".join(
+        str(x)
+        for x in (structured_req.get("preferred_requirements", []) or [])
+    )
+
+    # Explicit "nice to have / preferred / helpful" language wins over a broad
+    # responsibility-section mention unless the same skill is also explicitly
+    # labeled Must Have.
+    if (
+        fred_skill_matches_text(skill_name, preferred_text)
+        and not fred_skill_matches_text(skill_name, explicit_must_text)
+    ):
+        return "preferred_job_intelligence"
+
+    if fred_skill_matches_text(skill_name, explicit_must_text):
+        return "required_job_intelligence"
+
+    manager_text = " ".join(
+        str(x)
+        for key in [
+            "current_manager_priorities",
+            "selection_feedback",
+            "role_clarifications",
+        ]
+        for x in (structured_req.get(key, []) or [])
+    )
+
+    if fred_skill_matches_text(skill_name, manager_text):
+        return "manager_priority"
+
+    if fred_skill_is_formal_must_have(skill_name, structured_req):
+        return "required_job_intelligence"
+
+    if fred_skill_matches_text(skill_name, preferred_text):
+        return "preferred_job_intelligence"
+
+    return "additional_high_value"
+
+
+def fred_supplement_priority_skills(
+    ranked_skills,
+    structured_req,
+    catalog,
+    raw_resume_text,
+    selected_must_items=None,
+    selected_nice_items=None,
+):
+    """
+    Deterministically supplement Gemini's VNDLY pool with candidate-supported
+    requisition skills it may have omitted.
+
+    This protects exact structured Must/Nice values, formal Required skills,
+    current manager priorities, and explicit Preferred skills from being crowded
+    out by merely interesting candidate strengths.
+    """
+    output = [dict(item) for item in (ranked_skills or [])]
+    seen = {
+        fred_normalize_skill_name(item.get("skill_name", ""))
+        for item in output
+    }
+
+    exact_must = {
+        fred_normalize_skill_name(item.get("skill_name", ""))
+        for item in (selected_must_items or [])
+        if str(item.get("skill_name", "") or "").strip()
+    }
+    exact_nice = {
+        fred_normalize_skill_name(item.get("skill_name", ""))
+        for item in (selected_nice_items or [])
+        if str(item.get("skill_name", "") or "").strip()
+    }
+
+    for cat_item in catalog or []:
+        if not isinstance(cat_item, dict):
+            continue
+
+        name = str(cat_item.get("skill_name", "") or "").strip()
+        if not name:
+            continue
+
+        key = fred_normalize_skill_name(name)
+        if key in seen:
+            continue
+
+        tier = str(cat_item.get("catalog_tier", "canonical_preferred") or "")
+        if tier not in {"canonical_preferred", "compound_review", "legacy_free_text"}:
+            continue
+
+        evidence_strength = fred_skill_work_history_evidence(name, raw_resume_text)
+        if evidence_strength <= 0:
+            continue
+
+        if key in exact_must:
+            category = "exact_structured_must"
+        elif key in exact_nice:
+            category = "exact_structured_nice"
+        else:
+            if tier not in {"canonical_preferred", "compound_review"}:
+                continue
+            category = fred_skill_priority_category(name, structured_req)
+
+        # Additional strengths are intentionally left to Gemini; this deterministic
+        # pass exists to rescue actual requisition signals, not to expand inventory.
+        if category == "additional_high_value":
+            continue
+
+        evidence = fred_find_skill_evidence_excerpt(name, raw_resume_text)
+        if not evidence:
+            continue
+
+        output.append(
+            {
+                "id": cat_item.get("id"),
+                "skill_name": name,
+                "catalog_tier": tier,
+                "source_category": category,
+                "evidence": evidence,
+                "reason": "Deterministically supported current Freddie requirement/priority",
+                "work_history_evidence_strength": evidence_strength,
+            }
+        )
+        seen.add(key)
+
+    return output
 
 
 def fred_vndly_skill_family(skill_name):
@@ -1847,14 +2405,29 @@ def fred_skill_is_explicitly_named_in_job(skill_name, structured_req):
         "data modeling": ["data modeling", "logical data modeling", "logical model", "physical model"],
         "ai/ml": ["ai/ml", "artificial intelligence", "machine learning", "ai enabled", "ai-enabled"],
         "jira": ["jira"],
+        "sharepoint": ["sharepoint"],
+        "power bi": ["power bi"],
+        "power apps": ["power apps"],
+        "power automate": ["power automate"],
+        "power platform": ["power platform", "power apps", "power automate", "power bi"],
+        "agile delivery": ["agile", "scrum", "sprint planning", "backlog", "pi planning"],
+        "agile": ["agile", "scrum", "sprint planning"],
+        "product management": ["product management", "product manager", "product owner", "product roadmap"],
+        "program management": ["program management", "program manager", "program planning"],
+        "project management": ["project management", "project manager", "project planning", "managing specific projects", "multiple projects"],
+        "business analysis": ["business analysis", "business analyst", "business requirements", "requirements elicitation", "user requirements", "requirements sessions", "business needs", "translate business"],
+        "requirements analysis": ["requirements analysis", "requirements elicitation", "business requirements", "technical requirements", "user requirements", "requirements sessions", "business needs", "translate business"],
+        "stakeholder management": ["stakeholder management", "stakeholders", "business stakeholders"],
+        "executive reporting": ["executive reporting", "executive-level reporting", "executive and program-level reporting", "program-level reporting", "executive dashboard", "executive dashboards", "executive status", "status reports", "leadership reporting", "leadership presentation", "leadership presentations"],
+        "risk management": ["risk management", "risk identification", "risk assessment", "risk register", "issue tracking"],
         "devops": ["devops", "devsecops"],
         "quality assurance": ["quality assurance", "qa"],
         "software testing": ["software testing", "functional testing", "regression testing", "system testing"],
-        "mortgage industry": ["mortgage", "appraisal", "collateral", "uad"],
+        "mortgage industry": ["mortgage", "appraisal", "collateral", "uad", "underwriting"],
     }
 
     terms = aliases.get(key, [key])
-    return any(term and term in req_text for term in terms)
+    return fred_text_contains_any(req_text, terms)
 
 
 def fred_coerce_structured_req(value):
@@ -1924,18 +2497,35 @@ def fred_skill_aliases_for_requirement(skill_name):
         "data modeling": ["data modeling", "logical data modeling", "logical model", "physical model"],
         "ai/ml": ["ai/ml", "artificial intelligence", "machine learning", "ai enabled", "ai-enabled"],
         "jira": ["jira"],
+        "sharepoint": ["sharepoint"],
+        "power bi": ["power bi"],
+        "power apps": ["power apps"],
+        "power automate": ["power automate"],
+        "power platform": ["power platform", "power apps", "power automate", "power bi"],
+        "agile delivery": ["agile", "scrum", "sprint planning", "backlog", "pi planning"],
+        "agile": ["agile", "scrum", "sprint planning"],
+        "product management": ["product management", "product manager", "product owner", "product roadmap"],
+        "program management": ["program management", "program manager", "program planning"],
+        "project management": ["project management", "project manager", "project planning", "managing specific projects", "multiple projects"],
+        "business analysis": ["business analysis", "business analyst", "business requirements", "requirements elicitation", "user requirements", "requirements sessions", "business needs", "translate business"],
+        "requirements analysis": ["requirements analysis", "requirements elicitation", "business requirements", "technical requirements", "user requirements", "requirements sessions", "business needs", "translate business"],
+        "stakeholder management": ["stakeholder management", "stakeholders", "business stakeholders"],
+        "executive reporting": ["executive reporting", "executive-level reporting", "executive and program-level reporting", "program-level reporting", "executive dashboard", "executive dashboards", "executive status", "status reports", "leadership reporting", "leadership presentation", "leadership presentations"],
+        "risk management": ["risk management", "risk identification", "risk assessment", "risk register", "issue tracking"],
         "devops": ["devops", "devsecops"],
         "quality assurance": ["quality assurance", "qa"],
         "software testing": ["software testing", "functional testing", "regression testing", "system testing"],
         "finance": ["finance background", "finance", "financial"],
-        "mortgage industry": ["mortgage", "appraisal", "collateral", "uad"],
+        "mortgage industry": ["mortgage", "appraisal", "collateral", "uad", "underwriting"],
     }
     return aliases.get(key, [key])
 
 
 def fred_skill_matches_text(skill_name, text_value):
-    text_fold = str(text_value or "").casefold()
-    return any(alias and alias in text_fold for alias in fred_skill_aliases_for_requirement(skill_name))
+    return fred_text_contains_any(
+        text_value,
+        fred_skill_aliases_for_requirement(skill_name),
+    )
 
 
 def fred_skill_requirement_group(skill_name, structured_req):
@@ -1998,7 +2588,7 @@ def fred_skill_clause_strength(skill_name, structured_req):
     for clause in clauses:
         clause_text = str(clause or "")
         fold = clause_text.casefold()
-        if not any(alias and alias in fold for alias in aliases):
+        if not fred_text_contains_any(clause_text, aliases):
             continue
 
         # Dedicated requirements score higher than long tool bundles.
@@ -2006,7 +2596,10 @@ def fred_skill_clause_strength(skill_name, structured_req):
         strength = max(1, 12 - separators)
 
         # Repeated mention across formal clauses is additional signal.
-        occurrences = sum(fold.count(alias) for alias in aliases if alias)
+        occurrences = sum(
+            1 for alias in aliases
+            if alias and fred_text_contains_term(clause_text, alias)
+        )
         strength += min(3, occurrences)
         best = max(best, strength)
 
@@ -2149,9 +2742,10 @@ def fred_required_skill_sort_key(item, structured_req, original_index=0):
     category_priority = {
         "exact_structured_must": 0,
         "required_job_intelligence": 1,
-        "exact_structured_nice": 2,
-        "preferred_job_intelligence": 3,
-        "additional_high_value": 4,
+        "manager_priority": 2,
+        "exact_structured_nice": 3,
+        "preferred_job_intelligence": 4,
+        "additional_high_value": 5,
     }
     category = str(item.get("source_category", "") or "").strip().lower()
     group_index = fred_skill_requirement_group(item.get("skill_name", ""), structured_req)
@@ -2343,9 +2937,13 @@ def fred_apply_vndly_redundancy_control(
         if can_add(item):
             add_item(item)
 
-    # Reorder the chosen set by requirement priority for a clean recruiter-facing list.
+    # Reorder the chosen set by SOURCE priority first so a current manager
+    # priority cannot be pushed below a generic Preferred item merely because it
+    # is absent from an older formal competency-group ordering. Within the same
+    # category, preserve the requisition term/group ordering.
     selected.sort(
         key=lambda item: (
+            item["_sort_key"],
             fred_skill_requirement_term_position(
                 item.get("skill_name", ""),
                 structured_req,
@@ -2354,7 +2952,6 @@ def fred_apply_vndly_redundancy_control(
                 item.get("skill_name", ""),
                 structured_req,
             )[1],
-            item["_sort_key"],
         )
     )
     for item in selected:
@@ -2366,29 +2963,111 @@ def fred_rerank_vndly_skills_by_evidence(
     ranked_skills,
     raw_resume_text,
     structured_req=None,
+    vndly_context=None,
     cap=FREDDIE_VNDLY_SKILL_CAP,
 ):
-    """Requirement-aware evidence reranking for the VNDLY candidate pool."""
+    """
+    Requirement-aware evidence reranking for the VNDLY candidate pool.
+
+    Every recommended catalogue skill must survive BOTH:
+    1. candidate evidence validation against the ORIGINAL resume; and
+    2. source-category normalization so manager emphasis is not mislabeled as a
+       formal Required skill.
+    """
     rescored = []
+    structured_req = fred_coerce_structured_req(structured_req)
+    vndly_context = vndly_context or {}
+
+    official_jd = str(vndly_context.get("desc", "") or "")
+    msp_notes = str(vndly_context.get("notes", "") or "")
+    spotlight = str(vndly_context.get("transcript", "") or "")
+    authoritative_role_text = "\n".join([official_jd, msp_notes, spotlight])
 
     for original_index, item in enumerate(ranked_skills or []):
+        name = str(item.get("skill_name", "") or "").strip()
+        if not name:
+            continue
+
         evidence_strength = fred_skill_work_history_evidence(
-            item.get("skill_name", ""),
+            name,
             raw_resume_text,
         )
 
-        # Absolute candidate-evidence gate:
-        # A VNDLY/JD/Spotlight requirement does not become a candidate skill.
-        # If the exact/aliased catalogue concept cannot be found anywhere in
-        # the resume, it is not eligible for the recommended Top 8.
+        # Absolute candidate-evidence gate.
         if evidence_strength <= 0:
             continue
 
         copy_item = dict(item)
+
+        # Gemini is asked for a verbatim resume excerpt. If it returns a
+        # paraphrase, replace it with a deterministic real resume line rather
+        # than trusting invented evidence text.
+        candidate_evidence = str(copy_item.get("evidence", "") or "").strip()
+        if (
+            not candidate_evidence
+            or not fred_source_quote_found(raw_resume_text, candidate_evidence)
+            or not fred_claim_supported_by_evidence(name, candidate_evidence)
+        ):
+            candidate_evidence = fred_find_skill_evidence_excerpt(
+                name,
+                raw_resume_text,
+            )
+
+        if not candidate_evidence:
+            continue
+
+        copy_item["evidence"] = candidate_evidence
         copy_item["work_history_evidence_strength"] = evidence_strength
+
+        category = str(copy_item.get("source_category", "") or "").strip().lower()
+
+        # Exact structured categories are already validated against the exact
+        # requisition fields. Every inferred category is reclassified from the
+        # structured requisition so Gemini cannot call a manager priority
+        # "Required" or promote a nice-to-have.
+        if category not in {"exact_structured_must", "exact_structured_nice"}:
+            deterministic_category = fred_skill_priority_category(
+                name,
+                structured_req,
+            )
+            if not deterministic_category:
+                continue
+            category = deterministic_category
+            copy_item["source_category"] = category
+
+        # Validate the role-side citation when one is required. This evidence
+        # proves relevance only; it never proves candidate capability.
+        role_evidence = str(copy_item.get("role_evidence", "") or "").strip()
+
+        if category == "manager_priority":
+            if not (
+                role_evidence
+                and (
+                    fred_source_quote_found(spotlight, role_evidence)
+                    or fred_source_quote_found(msp_notes, role_evidence)
+                )
+            ):
+                # The structured analysis already established the manager signal,
+                # so retain the category but replace untraceable AI prose with a
+                # transparent deterministic reason rather than a fake quote.
+                role_evidence = ""
+
+        elif category in {"required_job_intelligence", "preferred_job_intelligence"}:
+            if role_evidence and not fred_source_quote_found(
+                authoritative_role_text,
+                role_evidence,
+            ):
+                role_evidence = ""
+
+        copy_item["role_evidence"] = role_evidence
+
         rescored.append(
             (
-                fred_required_skill_sort_key(copy_item, structured_req or {}, original_index),
+                fred_required_skill_sort_key(
+                    copy_item,
+                    structured_req,
+                    original_index,
+                ),
                 copy_item,
             )
         )
@@ -2435,6 +3114,7 @@ def fred_build_final_ranked_vndly_skills(
         "exact_structured_must",
         "exact_structured_nice",
         "required_job_intelligence",
+        "manager_priority",
         "preferred_job_intelligence",
         "additional_high_value",
     }
@@ -2505,6 +3185,9 @@ def fred_build_final_ranked_vndly_skills(
                 "evidence": str(
                     raw_item.get("evidence", "") or ""
                 ).strip(),
+                "role_evidence": str(
+                    raw_item.get("role_evidence", "") or ""
+                ).strip(),
                 "reason": str(
                     raw_item.get("reason", "") or ""
                 ).strip(),
@@ -2521,6 +3204,7 @@ def fred_split_ranked_vndly_skills(ranked_skills):
         "exact_must_have_skills": [],
         "exact_nice_to_have_skills": [],
         "required_vndly_skills_from_job_intelligence": [],
+        "manager_priority_vndly_skills": [],
         "preferred_vndly_skills_from_job_intelligence": [],
         "additional_vndly_skills": [],
     }
@@ -2529,6 +3213,7 @@ def fred_split_ranked_vndly_skills(ranked_skills):
         "exact_structured_must": "exact_must_have_skills",
         "exact_structured_nice": "exact_nice_to_have_skills",
         "required_job_intelligence": "required_vndly_skills_from_job_intelligence",
+        "manager_priority": "manager_priority_vndly_skills",
         "preferred_job_intelligence": "preferred_vndly_skills_from_job_intelligence",
         "additional_high_value": "additional_vndly_skills",
     }
@@ -2545,11 +3230,12 @@ def fred_split_ranked_vndly_skills(ranked_skills):
 
 def fred_extract_spotlight_hiring_manager_name(spotlight_transcript):
     """
-    Freddie-only helper that extracts a hiring-manager name only when the
-    Spotlight transcript explicitly labels the speaker as the Hiring Manager.
+    Freddie-only helper that returns a hiring-manager name only when the
+    transcript explicitly labels ONE unique person as Hiring Manager.
 
-    This deliberately does NOT assume the VNDLY Resource Manager is the person
-    who spoke as the hiring manager on the supplier call.
+    When multiple hiring managers are labeled, return blank so recruiter-facing
+    comments refer to "the hiring team" / "supplier call" rather than
+    accidentally attributing another manager's statement to the first speaker.
     """
     transcript = str(spotlight_transcript or "").strip()
     if not transcript:
@@ -2560,12 +3246,14 @@ def fred_extract_spotlight_hiring_manager_name(spotlight_transcript):
         r"(?im)^\s*([A-Z][A-Za-z'’.\-]+(?:\s+[A-Z][A-Za-z'’.\-]+){0,2})\s*[-–—]\s*Hiring\s+Manager\s*:",
     ]
 
+    names = []
     for pattern in patterns:
-        match = re.search(pattern, transcript)
-        if match:
-            return re.sub(r"\s+", " ", match.group(1)).strip()
+        for match in re.finditer(pattern, transcript):
+            name = re.sub(r"\s+", " ", match.group(1)).strip()
+            if name and name.casefold() not in {n.casefold() for n in names}:
+                names.append(name)
 
-    return ""
+    return names[0] if len(names) == 1 else ""
 
 
 def fred_clean_vndly_submission_summary(summary, candidate_name):
@@ -2603,6 +3291,170 @@ def fred_clean_vndly_submission_summary(summary, candidate_name):
     )
 
     return cleaned.strip()
+
+
+def fred_validate_vndly_summary(
+    summary,
+    evidence_list,
+    raw_resume_text,
+    structured_req,
+    vndly_context,
+):
+    """Deterministic safety checks for recruiter-facing Freddie VNDLY comments."""
+    errors = []
+    summary = str(summary or "").strip()
+    evidence_list = fred_string_list(evidence_list)
+    vndly_context = vndly_context or {}
+
+    if not summary:
+        return ["VNDLY summary is blank."]
+
+    if not evidence_list:
+        errors.append("VNDLY summary has no candidate resume evidence.")
+
+    valid_evidence = []
+    for evidence in evidence_list:
+        if fred_source_quote_found(raw_resume_text, evidence):
+            valid_evidence.append(evidence)
+        else:
+            errors.append(
+                "VNDLY summary cites candidate evidence not found in the resume: "
+                + evidence[:120]
+            )
+
+    joined_evidence = " ".join(valid_evidence)
+
+    unsupported_qualifiers = fred_unsupported_high_impact_claims(
+        summary,
+        joined_evidence,
+    )
+    if unsupported_qualifiers:
+        errors.append(
+            "VNDLY summary contains unsupported high-impact claim(s): "
+            + ", ".join(unsupported_qualifiers)
+        )
+
+    unsupported_identifiers = fred_explicit_identifiers_supported(
+        summary,
+        joined_evidence,
+        raw_resume_text,
+    )
+    if unsupported_identifiers:
+        errors.append(
+            "VNDLY summary contains unsupported named identifier(s): "
+            + ", ".join(unsupported_identifiers)
+        )
+
+    negated_hits = fred_output_hits_deemphasized_requirement(
+        summary,
+        structured_req,
+    )
+    if negated_hits:
+        errors.append(
+            "VNDLY summary emphasizes manager-deemphasized/negated concept(s): "
+            + ", ".join(negated_hits)
+        )
+
+    role_text = "\n".join(
+        [
+            str(vndly_context.get("desc", "") or ""),
+            str(vndly_context.get("notes", "") or ""),
+            str(vndly_context.get("transcript", "") or ""),
+        ]
+    )
+
+    # The final sentence may explicitly explain transferability to the target
+    # role. Earlier sentences should not quietly convert Freddie wording into
+    # candidate history.
+    sentences = fred_split_sentences(summary)
+    for sentence in sentences[:-1]:
+        hits = fred_role_only_phrase_hits(
+            sentence,
+            role_text,
+            raw_resume_text,
+            joined_evidence,
+        )
+        token_hits = fred_role_only_signal_tokens(
+            sentence,
+            role_text,
+            raw_resume_text,
+            joined_evidence,
+        )
+        if hits:
+            errors.append(
+                "VNDLY summary contains role-source wording not independently "
+                "supported as candidate history: " + "; ".join(hits)
+            )
+        if token_hits:
+            errors.append(
+                "VNDLY summary contains distinctive role-source term(s) absent "
+                "from candidate evidence: " + ", ".join(token_hits)
+            )
+
+    return errors
+
+
+def fred_repair_vndly_summary(
+    api_key,
+    candidate_name,
+    draft_summary,
+    validator_errors,
+    raw_resume_text,
+    structured_req,
+    vndly_context,
+    calculated_total_experience,
+    candidate_positioning_title,
+):
+    """One evidence-grounded repair pass for Freddie VNDLY Comments."""
+    prompt = f"""
+Return valid JSON ONLY.
+
+You are repairing Freddie Mac VNDLY recruiter Comments after deterministic
+candidate-grounding checks found problems.
+
+CANDIDATE: {candidate_name}
+CANDIDATE POSITIONING TITLE: {candidate_positioning_title or "BLANK"}
+PYTHON-CALCULATED TOTAL EXPERIENCE: {calculated_total_experience or "BLANK"}
+
+VALIDATOR ERRORS:
+- """ + "\n- ".join(validator_errors) + f"""
+
+DRAFT COMMENTS:
+{draft_summary}
+
+RULES:
+- 3-4 compact sentences, one paragraph, about 85-120 words and never over 130.
+- ORIGINAL RESUME is the only source of candidate experience/skills/ownership.
+- Official JD, Spotlight transcript, and MSP notes define role priorities only.
+- Do not turn a role requirement into candidate history.
+- Do not use manager-deemphasized/negated items as selling points.
+- If a claim is not directly supported, remove or soften it rather than inventing
+  evidence.
+- Final sentence may explain truthful transferability to the Freddie need.
+- Return 2-6 short VERBATIM resume excerpts supporting every candidate claim.
+
+STRUCTURED REQUISITION:
+{json.dumps(fred_coerce_structured_req(structured_req), indent=2, ensure_ascii=False)}
+
+OFFICIAL JD:
+{str((vndly_context or {}).get("desc", "") or "")}
+
+MSP/VNDLY NOTES:
+{str((vndly_context or {}).get("notes", "") or "")}
+
+SPOTLIGHT TRANSCRIPT:
+{str((vndly_context or {}).get("transcript", "") or "")}
+
+ORIGINAL RESUME:
+{raw_resume_text}
+
+OUTPUT:
+{{
+  "VNDLY_SUMMARY": "",
+  "VNDLY_SUMMARY_EVIDENCE": [""]
+}}
+"""
+    return fred_generate_json(api_key, prompt)
 
 
 def fred_build_vndly_candidate_package(
@@ -2769,6 +3621,15 @@ DETERMINISTIC EXACT NICE-TO-HAVE SKILLS SELECTED ON THIS REQUISITION:
 SUPPLIER VETTING RESPONSES:
 {vetting_for_ai}
 
+OFFICIAL VNDLY JOB DESCRIPTION — ROLE EVIDENCE SOURCE:
+{vndly_context.get("desc", "")}
+
+VNDLY / MSP NOTES — ROLE EVIDENCE SOURCE:
+{vndly_context.get("notes", "")}
+
+SPOTLIGHT CALL TRANSCRIPT — HIGHEST-PRIORITY CURRENT MANAGER SOURCE:
+{vndly_context.get("transcript", "")}
+
 FULL ORIGINAL CANDIDATE RESUME:
 {raw_resume_text}
 
@@ -2807,6 +3668,10 @@ the shortlist case.
 LENGTH / STRUCTURE:
 - 3-4 compact sentences as ONE paragraph.
 - Target roughly 85-120 words. Do not exceed 130 words.
+- Also return VNDLY_SUMMARY_EVIDENCE containing 2-6 short VERBATIM excerpts
+  copied from the ORIGINAL RESUME that collectively support every candidate
+  experience/skill/ownership claim in the paragraph. Role-source wording may
+  explain transferability, but may not substitute for candidate evidence.
 - Sentence 1: natural candidate positioning title + deterministic total career
   experience + the strongest genuine role anchors.
 - Sentence 2: strongest concrete recent/repeated proof. Name the employer when
@@ -2934,21 +3799,37 @@ CRITICAL:
 PRIORITY HIERARCHY:
 1. Exact structured VNDLY Must-Have skill attached to this requisition,
    when the candidate genuinely satisfies the COMPLETE requirement.
-2. Explicit current MUST-HAVE / REQUIRED skill from the JD or authoritative
-   manager/MSP/Spotlight guidance.
-3. Exact structured VNDLY Nice-To-Have skill attached to this requisition,
+2. Explicit formal MUST-HAVE / REQUIRED skill from the Official JD.
+3. CURRENT MANAGER PRIORITY from Spotlight/MSP selection guidance when it
+   materially affects interview selection, even when it is not formally labeled
+   Required. Keep this category distinct so a manager emphasis is not falsely
+   presented to the recruiter as a formal Must Have.
+4. Exact structured VNDLY Nice-To-Have skill attached to this requisition,
    when genuinely satisfied.
-4. Explicit current PREFERRED / NICE-TO-HAVE skill from the JD or authoritative
-   manager/MSP/Spotlight guidance.
-5. Additional candidate-supported skill only when it adds unusually useful
+5. Explicit PREFERRED / NICE-TO-HAVE skill from the JD or manager guidance.
+6. Additional candidate-supported skill only when it adds unusually useful
    signal for THIS requisition.
+
+CLASSIFICATION FIREWALL:
+- `required_job_intelligence` means FORMALLY required by the JD/current formal
+  Freddie requirement language. Do not use it merely because a manager discussed
+  or emphasized the topic.
+- `manager_priority` means the Spotlight/MSP/hiring team clearly emphasized the
+  competency as important to selection, but it is not established as formally
+  mandatory.
+- If Freddie says a skill is "nice to have", "helpful", "a plus", or "not
+  required", it MUST be Preferred even if the role uses that skill operationally.
+- If a manager explicitly says the team does not use an artifact/process (for
+  example User Stories), do not recommend that artifact simply because it appears
+  in generic JD language or the candidate resume.
 
 SELECTION PRINCIPLES:
 - Optimize for SIGNAL, not coverage.
 - CANDIDATE-EVIDENCE GATE: never recommend a catalogue skill solely because it
   appears in Freddie's JD, structured Must/Nice fields, manager comments, or
-  Spotlight transcript. The candidate's resume/vetting must independently
-  support the skill.
+  Spotlight transcript. The ORIGINAL RESUME must independently support every
+  recommended VNDLY skill. Candidate vetting may clarify depth but does not, by
+  itself, create a manual VNDLY skill recommendation.
 - If the role requires Data Modeling but the resume does not demonstrate data
   modeling concepts/work, do NOT recommend `Data Modeling`.
 - If the role requires SQL but the resume does not show SQL, do NOT recommend
@@ -3007,10 +3888,21 @@ STRUCTURED-SKILL RULE:
 
 SOURCE CATEGORY must be exactly one of:
 - exact_structured_must
-- exact_structured_nice
 - required_job_intelligence
+- manager_priority
+- exact_structured_nice
 - preferred_job_intelligence
 - additional_high_value
+
+EVIDENCE FIELDS — REQUIRED FOR EVERY RECOMMENDATION:
+- `evidence` = ONE short VERBATIM candidate-resume excerpt proving the skill.
+  Do not paraphrase it and do not cite the JD/Spotlight here.
+- `role_evidence` = ONE short VERBATIM excerpt from the Official JD, Spotlight
+  transcript, or MSP/VNDLY notes showing why the skill matters to THIS role.
+  `additional_high_value` may leave role_evidence blank when the value is
+  candidate-specific rather than an explicit requisition requirement.
+- A role requirement is never candidate evidence and candidate evidence is never
+  proof that Freddie requires the skill. Keep those two functions separate.
 
 BEFORE RETURNING:
 Ask yourself: "Which candidate-supported skills deserve to compete for the
@@ -3035,11 +3927,13 @@ Return ONLY:
 
 {{
   "VNDLY_SUMMARY": "",
+  "VNDLY_SUMMARY_EVIDENCE": [""],
   "FINAL_RECOMMENDED_VNDLY_SKILLS": [
     {{
       "skill_name": "",
       "source_category": "",
       "evidence": "",
+      "role_evidence": "",
       "reason": ""
     }}
   ]
@@ -3060,10 +3954,57 @@ Return ONLY:
         raw_package.get("VNDLY_SUMMARY", ""),
         candidate_name,
     )
+    vndly_summary_evidence = fred_string_list(
+        raw_package.get("VNDLY_SUMMARY_EVIDENCE", [])
+    )
 
     if not vndly_summary:
         raise RuntimeError(
             "Gemini returned no VNDLY submission summary."
+        )
+
+    vndly_summary_errors = fred_validate_vndly_summary(
+        vndly_summary,
+        vndly_summary_evidence,
+        raw_resume_text,
+        structured_req,
+        vndly_context,
+    )
+
+    if vndly_summary_errors:
+        repaired_summary = fred_repair_vndly_summary(
+            api_key,
+            candidate_name,
+            vndly_summary,
+            vndly_summary_errors,
+            raw_resume_text,
+            structured_req,
+            vndly_context,
+            calculated_total_experience,
+            candidate_positioning_title,
+        )
+
+        if isinstance(repaired_summary, dict):
+            vndly_summary = fred_clean_vndly_submission_summary(
+                repaired_summary.get("VNDLY_SUMMARY", ""),
+                candidate_name,
+            )
+            vndly_summary_evidence = fred_string_list(
+                repaired_summary.get("VNDLY_SUMMARY_EVIDENCE", [])
+            )
+
+        vndly_summary_errors = fred_validate_vndly_summary(
+            vndly_summary,
+            vndly_summary_evidence,
+            raw_resume_text,
+            structured_req,
+            vndly_context,
+        )
+
+    if vndly_summary_errors:
+        raise RuntimeError(
+            "VNDLY Comments could not be safely grounded after the automatic "
+            "repair pass: " + " | ".join(vndly_summary_errors[:6])
         )
 
     ranked_skill_pool = fred_build_final_ranked_vndly_skills(
@@ -3077,17 +4018,20 @@ Return ONLY:
         cap=16,
     )
 
-    ranked_skill_pool = fred_supplement_explicit_required_skills(
+    ranked_skill_pool = fred_supplement_priority_skills(
         ranked_skill_pool,
         structured_req,
         catalog,
         raw_resume_text,
+        selected_must_items=selected_must_items,
+        selected_nice_items=selected_nice_items,
     )
 
     evidence_ranked_skills = fred_rerank_vndly_skills_by_evidence(
         ranked_skill_pool,
         raw_resume_text,
         structured_req=structured_req,
+        vndly_context=vndly_context,
         cap=32,
     )
 
@@ -3145,6 +4089,7 @@ def fred_build_submission_email_body(
         "exact_structured_must": "Exact Structured Must",
         "exact_structured_nice": "Exact Structured Nice",
         "required_job_intelligence": "Required",
+        "manager_priority": "Manager Priority",
         "preferred_job_intelligence": "Preferred",
         "additional_high_value": "Additional",
     }
@@ -3476,7 +4421,8 @@ def fred_source_has_substantive_selection_intelligence(source_text):
         r"\b(?:must|need|needs|required|requires|requirement|critical|priority)\b.{0,120}\b(?:candidate|experience|background|skill|technical|functional|business|domain|java|python|angular|sql|mortgage|finance|operations|frontend|backend|full[- ]?stack)",
         r"\b(?:candidate|candidates)\b.{0,120}\b(?:lacked|lack|missing|too|weak|stronger|depth|explain|demonstrate|show|not vetted|move forward|advance)",
         r"\b(?:interview|selection|shortlist)\b.{0,120}\b(?:feedback|lacked|missing|need|needs|require|stronger|depth|explain|demonstrate)",
-        r"\b(?:not the focus|no longer required|not required|deemphasized|de-emphasized|instead of|rather than)\b",
+        r"\b(?:not the focus|no longer required|not required|deemphasized|de-emphasized|instead of|rather than|do not use|don't use|does not use|not used|nice to have|helpful|optional|separate role)\b",
+        r"\b(?:requirements?|reporting|stakeholders?|program|project|portfolio|product|operations?|communications?|design|legal|hr|recruiting|facilities|data|security)\b.{0,120}\b(?:priority|important|critical|required|must|need|needs|want|wants|looking|helpful|nice to have|not required|not used)",
         r"\b\d{1,3}\s*%\b.{0,80}\b(?:ui|frontend|front-end|backend|back-end|technical|functional|business)",
     ]
 
@@ -3618,6 +4564,13 @@ FORMAL REQUIREMENTS:
 - Wording such as "preferred", "nice to have", "a plus", "desired", or
   "preferred but not required" belongs under preferred_requirements even if
   physically located inside a Must Have paragraph.
+- EXPLICIT OPTIONALITY OVERRIDES RESPONSIBILITY-SECTION MENTION: if Freddie or
+  the hiring manager explicitly says a competency is "nice to have", "helpful",
+  "not required", or otherwise optional, do NOT later promote that same
+  competency to Required merely because it also appears inside Responsibilities.
+  Example: if the header says Agile experience is nice to have and the body says
+  the worker will support Agile planning, Agile remains Preferred unless a newer
+  authoritative manager statement explicitly makes it mandatory.
 - Only clearly mandatory items may appear in explicit_must_have_requirements.
 - Scan the ENTIRE Official VNDLY Job Description for explicit mandatory language,
   not only the formally labeled Must Have section. Any statement anywhere in the
@@ -3649,8 +4602,21 @@ ACTUAL HIRING-MANAGER / SELECTION EMPHASIS:
   "business operations PM is the critical requirement", or "model building is
   not the focus".
 - If the manager explicitly says a JD item is not needed, outdated, optional,
-  incorrectly stated, or no longer relevant, place it under
+  incorrectly stated, not used by the team, outside this role, or no longer
+  relevant, place the specific competency/artifact under
   deemphasized_or_negated_requirements.
+- Capture negative clarifications even when the JD itself contains the term.
+  Example: if the JD says user stories but the hiring manager says "we don't do
+  user stories," preserve that formal-JD fact separately but put User Stories
+  under deemphasized_or_negated_requirements so candidate-facing output does not
+  waste scarce space emphasizing it.
+- Likewise, if the manager says a prior PMO-setup role is separate and this
+  person does NOT need to build a PMO from scratch, capture PMO setup under
+  deemphasized_or_negated_requirements.
+- A manager statement that something is helpful/nice-to-have belongs under
+  current_manager_priorities or role_clarifications as appropriate, but does NOT
+  become a formal Required requirement unless the manager explicitly says it is
+  mandatory.
 - Do NOT silently erase formal JD requirements. Keep formal requirements and
   current manager priorities as separate concepts.
 
@@ -3989,6 +4955,482 @@ DATED SPOTLIGHT CALL TRANSCRIPT:
     return data
 
 
+def fred_grounding_audit_prompt(
+    resume_text,
+    structured_req,
+    job_description,
+    msp_notes,
+    spotlight_transcript,
+    internal_notes,
+    draft_data,
+    calculated_total_experience,
+    current_date,
+    validator_errors=None,
+):
+    """Independent Freddie fact-check/prioritization pass for Summary + Skills."""
+    error_section = ""
+    if validator_errors:
+        error_section = (
+            "\nDETERMINISTIC VALIDATOR ERRORS FROM THE PREVIOUS PASS:\n- "
+            + "\n- ".join(validator_errors)
+            + "\nFix every listed problem.\n"
+        )
+
+    return f"""
+Return valid JSON ONLY.
+
+You are the FINAL FACT-CHECKER for a Freddie Mac VNDLY resume submission.
+This is separate from the recruiter-writing pass. Accuracy and current hiring-
+manager relevance are more important than preserving draft wording.
+
+CURRENT DATE: {current_date}
+PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE:
+{calculated_total_experience or "BLANK"}
+
+SOURCE ROLES:
+- ORIGINAL RESUME = PRIMARY and mandatory proof for candidate experience,
+  skills, tools, ownership, scope, accomplishments, employers, domains, and
+  technologies used in the Summary/Skills table.
+- OFFICIAL CANDIDATE VETTING may clarify depth in the separate vetting section,
+  but do NOT use it to manufacture a Summary/Skills claim absent from the resume.
+- SPOTLIGHT CALL + substantive MSP/VNDLY notes = highest-priority CURRENT hiring-
+  team guidance for what to emphasize or de-emphasize.
+- OFFICIAL JD + structured VNDLY fields = formal baseline requirements and
+  automated matching terminology.
+- INTERNAL NOTES = recruiter context only; never candidate evidence and never
+  authority to override explicit Freddie guidance.
+
+CRITICAL MANAGER-CLARIFICATION RULE:
+If current manager guidance says a JD artifact/skill is not used, not required,
+helpful only, nice-to-have, outside this role, or otherwise de-emphasized, obey
+that clarification in candidate-facing Summary/Skills. Do not spend scarce space
+on it merely because the candidate has it or the generic JD mentions it.
+
+Examples:
+- JD says User Stories but manager says "we don't do user stories" -> DO NOT
+  feature User Stories in Summary/Skills.
+- Manager says Power Platform familiarity is nice to have -> do not label it a
+  Must Have and do not assign Power Platform to the candidate unless the resume
+  proves it.
+- Role wants executive reporting -> do not say candidate "owned executive
+  reporting" unless the resume itself proves that ownership.
+
+ZERO-TOLERANCE CANDIDATE GROUNDING:
+- Do not copy a tool, platform, methodology, responsibility, domain, or qualifier
+  from the role sources and assign it to the candidate unless the resume proves it.
+- Do not combine separate resume facts into a stronger composite claim.
+- Do not upgrade support/participation into lead/ownership/management.
+- Do not upgrade SharePoint into Power Platform, AWS into Redshift, Agile into
+  PI Planning, or a general leadership interaction into executive reporting.
+- If the candidate lacks a role requirement, omit it rather than fabricate it.
+
+HIGH-IMPACT QUALIFIERS:
+Words that materially change authority/scope/proficiency must be supported by the
+specific cited resume evidence for that claim: independent, lead/led/leadership,
+own/ownership, manage/managed/manager, oversight, architect, expert, advanced,
+extensive, deep, hands-on, enterprise-wide, organization-wide, global,
+end-to-end, high-volume, large-scale, production.
+
+SUMMARY:
+- Exactly 4 sentences, one paragraph after finalization.
+- Natural human recruiter voice, concise and evidence-based.
+- Use the deterministic total-career value exactly if a total-years statement is
+  used; never attach that total to individual skills unless the resume proves it.
+- Sentence 1: identity + strongest supported role anchors.
+- Sentence 2: strongest concrete recent/repeated proof.
+- Sentence 3: supporting execution/depth/impact.
+- Sentence 4: truthful transferability to Freddie's current need; clearly keep
+  target-role application separate from candidate past experience.
+- For EACH sentence return 1-3 short VERBATIM resume excerpts proving the
+  candidate claims in that sentence.
+
+SKILLS TABLE:
+- Return up to 4 rows; use 4 when four distinct defensible role-relevant rows
+  exist. Never force an unsupported fourth row.
+- Treat the four rows as scarce real estate.
+- Spotlight/MSP current selection guidance controls emphasis first, then formal
+  Must Haves, then explicit Preferred/Nice-to-Haves.
+- Each row must be a distinct screening dimension.
+- For each row return:
+  * skill_area: concise high-level competency
+  * area_evidence: 1-3 VERBATIM resume excerpts proving the competency
+  * role_evidence: 1-2 VERBATIM excerpts from the Official JD, Spotlight call,
+    or MSP/VNDLY notes proving why the row matters to this requisition
+  * details: 2-6 atomic items, each with ONE VERBATIM resume excerpt supporting
+    that exact detail
+- Do not use years in Skills rows.
+- Do not use manager-negated/de-emphasized artifacts.
+- Prefer direct operational/repeated evidence over impressive but secondary work.
+
+BULLET ORDER:
+- Preserve the draft BULLET_ORDER unless a change is clearly needed for current
+  Freddie priorities.
+- Reorder only; never rewrite/omit/create work-history bullets.
+
+{error_section}
+
+STRUCTURED REQUISITION:
+{json.dumps(fred_coerce_structured_req(structured_req), indent=2, ensure_ascii=False)}
+
+OFFICIAL JD:
+{job_description}
+
+MSP / VNDLY NOTES:
+{msp_notes}
+
+SPOTLIGHT CALL TRANSCRIPT:
+{spotlight_transcript}
+
+INTERNAL NOTES:
+{internal_notes}
+
+DRAFT FROM RECRUITER-WRITING PASS:
+{json.dumps(draft_data if isinstance(draft_data, dict) else {}, indent=2, ensure_ascii=False)}
+
+ORIGINAL RESUME:
+{resume_text}
+
+OUTPUT SCHEMA:
+{{
+  "CANDIDATE_TITLE": "",
+  "SUMMARY_SENTENCES": [
+    {{"text": "", "evidence": [""]}},
+    {{"text": "", "evidence": [""]}},
+    {{"text": "", "evidence": [""]}},
+    {{"text": "", "evidence": [""]}}
+  ],
+  "SKILLS": [
+    {{
+      "skill_area": "",
+      "area_evidence": [""],
+      "role_evidence": [""],
+      "details": [
+        {{"item": "", "evidence": ""}}
+      ]
+    }}
+  ],
+  "BULLET_ORDER": {{
+    "1": [], "2": [], "3": [], "4": [], "5": [], "6": [], "7": []
+  }}
+}}
+"""
+
+
+def fred_normalize_audited_detail_records(value):
+    if not isinstance(value, list):
+        return []
+    records = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        item = re.sub(r"\s+", " ", str(entry.get("item", "") or "")).strip()
+        evidence = re.sub(r"\s+", " ", str(entry.get("evidence", "") or "")).strip()
+        if item and evidence:
+            records.append({"item": item, "evidence": evidence})
+    return records
+
+
+def fred_role_priority_quote_found(
+    job_description,
+    msp_notes,
+    spotlight_transcript,
+    quote,
+):
+    """
+    Verify role-priority evidence against one authoritative Freddie source.
+
+    Exact normalized quotes are preferred. A conservative fallback tolerates
+    harmless Gemini shortening/ellipsis only when every substantive token in the
+    cited excerpt appears in the SAME source. Candidate evidence remains strict.
+    """
+    quote_text = str(quote or "").strip()
+    if not quote_text:
+        return False
+
+    sources = [job_description, spotlight_transcript, msp_notes]
+
+    for source in sources:
+        if source and fred_source_quote_found(source, quote_text):
+            return True
+
+    quote_tokens = fred_signal_tokens(quote_text)
+    if not quote_tokens:
+        return False
+
+    for source in sources:
+        source_tokens = set(fred_signal_tokens(source))
+        if source_tokens and all(token in source_tokens for token in quote_tokens):
+            return True
+
+    return False
+
+
+def fred_validate_grounded_tailoring(
+    resume_text,
+    structured_req,
+    job_description,
+    msp_notes,
+    spotlight_transcript,
+    data,
+):
+    """Deterministically audit Freddie Summary/Skills evidence after AI fact-check."""
+    errors = []
+    structured_req = fred_coerce_structured_req(structured_req)
+    role_text = "\n".join(
+        [str(job_description or ""), str(msp_notes or ""), str(spotlight_transcript or "")]
+    )
+
+    sentences = data.get("SUMMARY_SENTENCES", []) if isinstance(data, dict) else []
+    if not isinstance(sentences, list) or len(sentences) != 4:
+        errors.append("SUMMARY must contain exactly four audited sentences.")
+        sentences = sentences if isinstance(sentences, list) else []
+
+    for idx, entry in enumerate(sentences[:4], start=1):
+        if not isinstance(entry, dict):
+            errors.append(f"SUMMARY sentence {idx} has invalid structure.")
+            continue
+
+        text = re.sub(r"\s+", " ", str(entry.get("text", "") or "")).strip()
+        evidence = fred_string_list(entry.get("evidence", []))
+
+        if not text:
+            errors.append(f"SUMMARY sentence {idx} is blank.")
+            continue
+        if not evidence:
+            errors.append(f"SUMMARY sentence {idx} has no resume evidence.")
+            continue
+
+        valid_evidence = []
+        for quote in evidence:
+            if fred_source_quote_found(resume_text, quote):
+                valid_evidence.append(quote)
+            else:
+                errors.append(
+                    f"SUMMARY sentence {idx} cites evidence not found in the resume: {quote[:120]}"
+                )
+
+        joined = " ".join(valid_evidence)
+        unsupported_qualifiers = fred_unsupported_high_impact_claims(text, joined)
+        if unsupported_qualifiers:
+            errors.append(
+                f"SUMMARY sentence {idx} contains unsupported high-impact claim(s): "
+                + ", ".join(unsupported_qualifiers)
+            )
+
+        unsupported_identifiers = fred_explicit_identifiers_supported(
+            text, joined, resume_text
+        )
+        if unsupported_identifiers:
+            errors.append(
+                f"SUMMARY sentence {idx} contains unsupported named identifier(s): "
+                + ", ".join(unsupported_identifiers)
+            )
+
+        negated_hits = fred_output_hits_deemphasized_requirement(text, structured_req)
+        if negated_hits:
+            errors.append(
+                f"SUMMARY sentence {idx} emphasizes manager-deemphasized concept(s): "
+                + ", ".join(negated_hits)
+            )
+
+        # Sentence 4 may deliberately describe target-role transferability.
+        if idx < 4:
+            role_hits = fred_role_only_phrase_hits(
+                text, role_text, resume_text, joined
+            )
+            token_hits = fred_role_only_signal_tokens(
+                text, role_text, resume_text, joined
+            )
+            if role_hits:
+                errors.append(
+                    f"SUMMARY sentence {idx} contains role-source wording not "
+                    "independently supported as candidate history: "
+                    + "; ".join(role_hits)
+                )
+            if token_hits:
+                errors.append(
+                    f"SUMMARY sentence {idx} contains distinctive role-source "
+                    "term(s) absent from candidate evidence: "
+                    + ", ".join(token_hits)
+                )
+
+    skills = data.get("SKILLS", []) if isinstance(data, dict) else []
+    if not isinstance(skills, list):
+        skills = []
+        errors.append("SKILLS has invalid structure.")
+
+    if len(skills) > 4:
+        errors.append("SKILLS returned more than four rows.")
+
+    for idx, row in enumerate(skills[:4], start=1):
+        if not isinstance(row, dict):
+            errors.append(f"SKILL row {idx} has invalid structure.")
+            continue
+
+        area = re.sub(r"\s+", " ", str(row.get("skill_area", "") or "")).strip()
+        area_evidence = fred_string_list(row.get("area_evidence", []))
+        role_evidence = fred_string_list(row.get("role_evidence", []))
+        details = fred_normalize_audited_detail_records(row.get("details", []))
+
+        if not area:
+            errors.append(f"SKILL row {idx} has no skill area.")
+            continue
+        if not area_evidence:
+            errors.append(f"SKILL row {idx} has no candidate resume evidence.")
+        else:
+            for quote in area_evidence:
+                if not fred_source_quote_found(resume_text, quote):
+                    errors.append(
+                        f"SKILL row {idx} cites area evidence not found in the resume: {quote[:120]}"
+                    )
+
+        joined_area_evidence = " ".join(
+            q for q in area_evidence if fred_source_quote_found(resume_text, q)
+        )
+
+        if joined_area_evidence and not fred_claim_supported_by_evidence(
+            area, joined_area_evidence
+        ):
+            errors.append(
+                f"SKILL row {idx} area is not sufficiently supported by its cited resume evidence."
+            )
+
+        unsupported_area_qualifiers = fred_unsupported_high_impact_claims(
+            area, joined_area_evidence
+        )
+        if unsupported_area_qualifiers:
+            errors.append(
+                f"SKILL row {idx} contains unsupported high-impact claim(s): "
+                + ", ".join(unsupported_area_qualifiers)
+            )
+
+        unsupported_area_identifiers = fred_explicit_identifiers_supported(
+            area, joined_area_evidence, resume_text
+        )
+        if unsupported_area_identifiers:
+            errors.append(
+                f"SKILL row {idx} contains unsupported named identifier(s): "
+                + ", ".join(unsupported_area_identifiers)
+            )
+
+        negated_hits = fred_output_hits_deemphasized_requirement(area, structured_req)
+        if negated_hits:
+            errors.append(
+                f"SKILL row {idx} emphasizes manager-deemphasized concept(s): "
+                + ", ".join(negated_hits)
+            )
+
+        if not role_evidence:
+            errors.append(f"SKILL row {idx} has no role-priority evidence.")
+        else:
+            for quote in role_evidence:
+                if not fred_role_priority_quote_found(
+                    job_description, msp_notes, spotlight_transcript, quote
+                ):
+                    errors.append(
+                        f"SKILL row {idx} cites role-priority evidence not found in the JD/Spotlight/MSP sources: {quote[:120]}"
+                    )
+
+        if not details:
+            errors.append(f"SKILL row {idx} has no grounded detail items.")
+            continue
+
+        for detail in details[:6]:
+            item = detail["item"]
+            evidence = detail["evidence"]
+
+            if not fred_source_quote_found(resume_text, evidence):
+                errors.append(
+                    f"SKILL row {idx} detail '{item}' cites evidence not found in the resume."
+                )
+                continue
+
+            if not fred_claim_supported_by_evidence(item, evidence):
+                errors.append(
+                    f"SKILL row {idx} detail '{item}' is not sufficiently supported by its cited resume evidence."
+                )
+
+            unsupported_detail_qualifiers = fred_unsupported_high_impact_claims(
+                item, evidence
+            )
+            if unsupported_detail_qualifiers:
+                errors.append(
+                    f"SKILL row {idx} detail '{item}' contains unsupported high-impact claim(s): "
+                    + ", ".join(unsupported_detail_qualifiers)
+                )
+
+            unsupported_detail_identifiers = fred_explicit_identifiers_supported(
+                item, evidence, resume_text
+            )
+            if unsupported_detail_identifiers:
+                errors.append(
+                    f"SKILL row {idx} detail '{item}' contains unsupported identifier(s): "
+                    + ", ".join(unsupported_detail_identifiers)
+                )
+
+            detail_negated = fred_output_hits_deemphasized_requirement(
+                item, structured_req
+            )
+            if detail_negated:
+                errors.append(
+                    f"SKILL row {idx} detail '{item}' uses manager-deemphasized concept(s): "
+                    + ", ".join(detail_negated)
+                )
+
+    return errors
+
+
+def fred_finalize_grounded_tailoring(data):
+    """Convert the audited evidence-rich Freddie payload back to template keys."""
+    output = {
+        "CANDIDATE_TITLE": re.sub(
+            r"\s+", " ", str((data or {}).get("CANDIDATE_TITLE", "") or "")
+        ).strip(),
+        "SUMMARY": "",
+        "BULLET_ORDER": (data or {}).get("BULLET_ORDER", {})
+        if isinstance((data or {}).get("BULLET_ORDER", {}), dict)
+        else {},
+    }
+
+    sentence_texts = []
+    sentences = (data or {}).get("SUMMARY_SENTENCES", [])
+    if isinstance(sentences, list):
+        for entry in sentences[:4]:
+            if isinstance(entry, dict):
+                text = re.sub(r"\s+", " ", str(entry.get("text", "") or "")).strip()
+                if text:
+                    sentence_texts.append(text)
+    output["SUMMARY"] = " ".join(sentence_texts)
+
+    skills = (data or {}).get("SKILLS", [])
+    skills = skills if isinstance(skills, list) else []
+
+    for idx in range(1, 5):
+        if idx <= len(skills) and isinstance(skills[idx - 1], dict):
+            row = skills[idx - 1]
+            output[f"SKILL{idx}"] = re.sub(
+                r"\s+", " ", str(row.get("skill_area", "") or "")
+            ).strip()
+
+            detail_names = []
+            seen = set()
+            for detail in fred_normalize_audited_detail_records(row.get("details", [])):
+                item = re.sub(r"\s+", " ", detail["item"]).strip()
+                key = item.casefold()
+                if not item or key in seen:
+                    continue
+                detail_names.append(item)
+                seen.add(key)
+                if len(detail_names) >= 6:
+                    break
+            output[f"SKILLDETAILS{idx}"] = ", ".join(detail_names)
+        else:
+            output[f"SKILL{idx}"] = ""
+            output[f"SKILLDETAILS{idx}"] = ""
+
+    return output
+
+
 def fred_standardize_dates(date_str):
     """
     Standardize Freddie Mac work-history dates while preserving source precision:
@@ -4116,96 +5558,48 @@ def fred_calculate_total_experience(experience, current_date):
     Calculate total professional experience deterministically from dated roles.
 
     Overlapping employment periods are merged so they are not double-counted.
-    Returns the conservative completed-years format used in the Freddie
-    summary, e.g. "7+ years".
+    Month precision is preserved when supplied. Year-only dates are also usable
+    with conservative calculation bounds (start year -> December, end year ->
+    January) so the formatter does not silently lose legitimate older roles or
+    invent months merely to increase tenure.
     """
-
-    month_lookup = {
-        "JAN": 1,
-        "FEB": 2,
-        "MAR": 3,
-        "APR": 4,
-        "MAY": 5,
-        "JUN": 6,
-        "JUL": 7,
-        "AUG": 8,
-        "SEP": 9,
-        "OCT": 10,
-        "NOV": 11,
-        "DEC": 12,
-    }
-
-    def parse_month_year(value):
-        value = str(value).strip().upper()
-
-        if value in {"CURRENT", "PRESENT"}:
-            return current_date.year, current_date.month
-
-        match = re.fullmatch(
-            r"(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+"
-            r"((?:19|20)\d{2})",
-            value,
-        )
-
-        if not match:
-            return None
-
-        month = month_lookup[match.group(1)]
-        year = int(match.group(2))
-
-        return year, month
-
     intervals = []
 
-    for role in experience:
-        dates = str(role.get("Dates", "") or "").strip()
-
-        if not dates:
+    for role in experience or []:
+        if not isinstance(role, dict):
             continue
 
-        match = re.fullmatch(
-            r"\s*(.+?)\s+-\s+(.+?)\s*",
-            dates,
+        parsed = fred_role_date_interval(
+            role.get("Dates", ""),
+            current_date,
         )
 
-        if not match:
+        if not parsed:
             continue
 
-        start_parsed = parse_month_year(match.group(1))
-        end_parsed = parse_month_year(match.group(2))
+        start_idx, end_idx, _end_is_current, _end_year = parsed
 
-        if not start_parsed or not end_parsed:
+        if end_idx < start_idx:
             continue
 
-        start_year, start_month = start_parsed
-        end_year, end_month = end_parsed
-
-        start_index = (start_year * 12) + (start_month - 1)
-        end_index = (end_year * 12) + (end_month - 1)
-
-        if end_index < start_index:
-            continue
-
-        intervals.append((start_index, end_index))
+        intervals.append((start_idx, end_idx))
 
     if not intervals:
         return ""
 
     intervals.sort()
-
     merged = []
 
     for start, end in intervals:
         if not merged or start > merged[-1][1]:
             merged.append([start, end])
         else:
-            merged[-1][1] = max(
-                merged[-1][1],
-                end,
-            )
+            merged[-1][1] = max(merged[-1][1], end)
 
+    # Elapsed completed months. This intentionally mirrors ordinary date
+    # difference logic rather than counting both endpoint months as full months.
     total_months = sum(
-        end - start
+        max(0, end - start)
         for start, end in merged
     )
 
@@ -4332,7 +5726,7 @@ def fred_role_supports_skill_component(role, component):
         "junit": ["junit"],
         "junit testing": ["junit"],
         "mockito": ["mockito"],
-        "git": ["git", "gitlab", "github"],
+        "git": ["git"],
         "maven": ["maven"],
         "jenkins": ["jenkins"],
         "gradle": ["gradle"],
@@ -4346,10 +5740,10 @@ def fred_role_supports_skill_component(role, component):
 
     terms = aliases.get(key)
     if terms:
-        return any(term in role_text for term in terms)
+        return fred_text_contains_any(role_text, terms)
 
     core = re.sub(r"[^a-z0-9+#./ -]", "", key).strip()
-    return bool(core and len(core) >= 4 and core in role_text)
+    return bool(core and len(core) >= 2 and fred_text_contains_term(role_text, core))
 
 
 def fred_role_supports_skill_core(role, skill_label):
@@ -4380,7 +5774,7 @@ def fred_role_supports_skill_core(role, skill_label):
 
     for label_terms, evidence_terms in family_aliases:
         if any(term in label for term in label_terms):
-            return any(term in role_text for term in evidence_terms)
+            return fred_text_contains_any(role_text, evidence_terms)
 
     # Generic fallback: any explicitly named parenthetical component supports
     # the row as an AREA competency; we do not require every component at once.
@@ -4396,7 +5790,10 @@ def fred_role_supports_skill_core(role, skill_label):
         w for w in re.findall(r"[a-z0-9+#.]+", label)
         if len(w) >= 4 and w not in {"development", "experience", "background", "expertise"}
     ]
-    return bool(core_words and any(word in role_text for word in core_words))
+    return bool(
+        core_words
+        and any(fred_text_contains_term(role_text, word) for word in core_words)
+    )
 
 
 def fred_filter_skill_role_indexes_by_label(
@@ -5570,8 +6967,26 @@ def freddie_mac_app():
                 f"{analysis_error}"
             )
 
-    # Optional transparency for recruiters.
-    if req_analysis.get("explicit_must_have_requirements"):
+    # Optional transparency for recruiters. Show the analysis whenever ANY
+    # substantive requirement intelligence was found; some Freddie roles have
+    # no formally labeled Must-Have block but still contain important manager
+    # priorities, clarifications, selection feedback, or role evolution.
+    has_req_intelligence = any(
+        req_analysis.get(key)
+        for key in [
+            "explicit_must_have_requirements",
+            "required_requirements",
+            "preferred_requirements",
+            "current_manager_priorities",
+            "selection_feedback",
+            "role_clarifications",
+            "role_evolution",
+            "deemphasized_or_negated_requirements",
+            "must_have_competency_groups",
+        ]
+    )
+
+    if has_req_intelligence:
         with st.expander(
             "🎯 Freddie Requirement Analysis",
             expanded=False,
@@ -5598,6 +7013,15 @@ def freddie_mac_app():
             if clarifications:
                 st.markdown("**Latest Role Clarifications:**")
                 for item in clarifications:
+                    st.markdown(f"- {item}")
+
+            deemphasized = req_analysis.get(
+                "deemphasized_or_negated_requirements",
+                [],
+            )
+            if deemphasized:
+                st.markdown("**De-emphasized / Not Required:**")
+                for item in deemphasized:
                     st.markdown(f"- {item}")
 
             selection_feedback = req_analysis.get(
@@ -7100,9 +8524,75 @@ FULL ORIGINAL RESUME
 {raw_text}
 """
 
-                summary_data = fred_generate_json(
+                draft_summary_data = fred_generate_json(
                     API_KEY,
                     tailoring_prompt,
+                )
+
+                # ====================================================
+                # PASS 2B — INDEPENDENT FREDDIE GROUNDING / PRIORITY AUDIT
+                # ====================================================
+                audited_summary_data = fred_generate_json(
+                    API_KEY,
+                    fred_grounding_audit_prompt(
+                        resume_text=raw_text,
+                        structured_req=req_analysis,
+                        job_description=Job_Description,
+                        msp_notes=MSP_Notes,
+                        spotlight_transcript=Call_Transcript,
+                        internal_notes=Internal_Notes,
+                        draft_data=draft_summary_data,
+                        calculated_total_experience=calculated_total_experience,
+                        current_date=current_date,
+                    ),
+                )
+
+                freddie_grounding_errors = fred_validate_grounded_tailoring(
+                    raw_text,
+                    req_analysis,
+                    Job_Description,
+                    MSP_Notes,
+                    Call_Transcript,
+                    audited_summary_data,
+                )
+
+                if freddie_grounding_errors:
+                    audited_summary_data = fred_generate_json(
+                        API_KEY,
+                        fred_grounding_audit_prompt(
+                            resume_text=raw_text,
+                            structured_req=req_analysis,
+                            job_description=Job_Description,
+                            msp_notes=MSP_Notes,
+                            spotlight_transcript=Call_Transcript,
+                            internal_notes=Internal_Notes,
+                            draft_data=audited_summary_data,
+                            calculated_total_experience=calculated_total_experience,
+                            current_date=current_date,
+                            validator_errors=freddie_grounding_errors,
+                        ),
+                    )
+
+                    freddie_grounding_errors = fred_validate_grounded_tailoring(
+                        raw_text,
+                        req_analysis,
+                        Job_Description,
+                        MSP_Notes,
+                        Call_Transcript,
+                        audited_summary_data,
+                    )
+
+                if freddie_grounding_errors:
+                    raise RuntimeError(
+                        "The Freddie Mac grounding safety check could not verify "
+                        "the generated Summary/Skills against the uploaded resume "
+                        "and current requisition intelligence. The formatter already "
+                        "attempted an automatic correction pass. Verification issues: "
+                        + " | ".join(freddie_grounding_errors[:8])
+                    )
+
+                summary_data = fred_finalize_grounded_tailoring(
+                    audited_summary_data
                 )
 
                 # ====================================================
@@ -7222,6 +8712,7 @@ FULL ORIGINAL RESUME
                     "exact_must_have_skills": [],
                     "exact_nice_to_have_skills": [],
                     "required_vndly_skills_from_job_intelligence": [],
+                    "manager_priority_vndly_skills": [],
                     "preferred_vndly_skills_from_job_intelligence": [],
                     "additional_vndly_skills": [],
                 }
@@ -7453,6 +8944,7 @@ FULL ORIGINAL RESUME
                     "exact_structured_must": "Exact Structured Must",
                     "exact_structured_nice": "Exact Structured Nice",
                     "required_job_intelligence": "Required",
+                    "manager_priority": "Manager Priority",
                     "preferred_job_intelligence": "Preferred",
                     "additional_high_value": "Additional",
                 }
