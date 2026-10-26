@@ -10877,14 +10877,69 @@ def navy_jd_evidence_snippet_found(jd_text, snippet):
 
 def navy_role_priority_evidence_snippet_found(jd_text, internal_notes, snippet):
     """
-    Verify that role-priority evidence came from either current Internal Notes
-    or the Official Fieldglass JD. This establishes relevance only; it never
-    proves candidate experience.
+    Verify that role-priority evidence is traceable to either current Internal
+    Notes or the Official Fieldglass JD.
+
+    Role-priority evidence establishes RELEVANCE ONLY; it never proves candidate
+    experience. Because Gemini can occasionally shorten a long source sentence,
+    omit intervening list items, or insert an ellipsis while preserving the
+    source meaning, this check is intentionally a little more tolerant than the
+    candidate-resume evidence check.
+
+    Validation order:
+    1. Prefer an exact normalized source substring.
+    2. Otherwise allow an abridged/reordered excerpt only when EVERY substantive
+       token in the cited evidence is present in the SAME source (Internal Notes
+       or JD). This tolerates harmless quote shortening but does not allow a new
+       tool, requirement, qualifier, framework, or other substantive concept to
+       be invented.
+
+    Candidate claims remain protected separately by the much stricter resume
+    evidence validator.
     """
-    return (
-        navy_jd_evidence_snippet_found(internal_notes, snippet)
-        or navy_jd_evidence_snippet_found(jd_text, snippet)
+    snippet_text = str(snippet or "").strip()
+    if not snippet_text:
+        return False
+
+    sources = [
+        str(internal_notes or "").strip(),
+        str(jd_text or "").strip(),
+    ]
+
+    # Best case: Gemini returned an actual contiguous source excerpt.
+    for source in sources:
+        if source and navy_jd_evidence_snippet_found(source, snippet_text):
+            return True
+
+    # Conservative fallback for harmlessly abbreviated role-priority quotes.
+    # Use the same lexical normalization used elsewhere in Navy validation so
+    # grammatical variants do not create false failures. ALL substantive tokens
+    # must still be traceable to one source; we never merge support across Notes
+    # and JD.
+    snippet_tokens = navy_signal_tokens(
+        navy_normalize_quote_match_text(snippet_text)
     )
+
+    if not snippet_tokens:
+        return False
+
+    for source in sources:
+        if not source:
+            continue
+
+        source_tokens = set(
+            navy_signal_tokens(
+                navy_normalize_quote_match_text(source)
+            )
+        )
+
+        if source_tokens and all(
+            token in source_tokens
+            for token in snippet_tokens
+        ):
+            return True
+
+    return False
 
 
 def navy_explicit_identifiers(value):
@@ -11690,6 +11745,11 @@ FOUR-SLOT PRIORITY RULE — CRITICAL:
 - For EACH row, return SKILL#_ROLE_EVIDENCE with 1-2 short VERBATIM excerpts from
   either Internal Notes or the Official Fieldglass JD showing why that row
   deserves one of the four slots.
+- Each ROLE_EVIDENCE excerpt must be ONE CONTIGUOUS source clause/sentence copied
+  exactly. Do NOT insert "...", omit words from the middle of a source sentence,
+  splice two distant fragments together, or rewrite the source. If the original
+  sentence is long, choose a shorter contiguous clause that still proves the
+  priority.
 - Role-priority evidence proves RELEVANCE ONLY and must never be used as
   candidate evidence.
 
@@ -12584,6 +12644,10 @@ SKILL# — LEFT COLUMN
 - Return SKILL#_ROLE_EVIDENCE with 1-2 short VERBATIM excerpts proving why this
   competency deserves one of the four slots. Each excerpt may come from either
   substantive Internal Notes OR the Official Fieldglass JD.
+- Each ROLE_EVIDENCE excerpt must be ONE CONTIGUOUS source clause/sentence copied
+  exactly. Do NOT use ellipses, delete intervening words, combine separate source
+  fragments, or paraphrase the quote. If a source sentence is long, select a
+  shorter contiguous clause that still proves the priority.
 - Prefer Internal Notes when they directly state a stronger/current must-have,
   screening problem, interview criterion, or day-to-day priority.
 - Role-priority evidence is for prioritization ONLY; it never proves candidate
