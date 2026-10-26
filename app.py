@@ -10875,6 +10875,18 @@ def navy_jd_evidence_snippet_found(jd_text, snippet):
     return normalized_snippet in normalized_jd
 
 
+def navy_role_priority_evidence_snippet_found(jd_text, internal_notes, snippet):
+    """
+    Verify that role-priority evidence came from either current Internal Notes
+    or the Official Fieldglass JD. This establishes relevance only; it never
+    proves candidate experience.
+    """
+    return (
+        navy_jd_evidence_snippet_found(internal_notes, snippet)
+        or navy_jd_evidence_snippet_found(jd_text, snippet)
+    )
+
+
 def navy_explicit_identifiers(value):
     """
     Extract concrete identifiers that should never be invented by an umbrella
@@ -10925,6 +10937,216 @@ def navy_explicit_identifiers_supported(value, evidence_text, resume_text):
             continue
         if ident_norm not in evidence_norm and ident_norm not in resume_norm:
             unsupported.append(identifier)
+
+    return unsupported
+
+
+
+def navy_unsupported_high_impact_claims(output_text, evidence_text):
+    """
+    Return high-impact qualifiers/authority claims used in generated candidate
+    wording that are not themselves supported by the cited resume evidence.
+
+    This is intentionally ROLE-AGNOSTIC. Navy Federal requisitions span technical,
+    operational, HR, legal, facilities, design, finance, risk, data, and many
+    other disciplines, so the validator protects claim strength rather than
+    hard-coding any one job family's terminology.
+
+    The purpose is to stop a JD adjective/verb from hitchhiking onto an otherwise
+    supported noun phrase. Example: evidence may support "vendor risk assessments"
+    but not "independent vendor risk assessments"; the unsupported qualifier
+    "independent" must therefore be removed.
+
+    Only the evidence excerpts cited for the specific Summary/Skill claim are
+    considered. If the resume supports the qualifier elsewhere, Gemini can fix the
+    claim by citing that exact supporting excerpt on its repair pass.
+    """
+    output = str(output_text or "")
+    evidence = str(evidence_text or "")
+
+    # Each tuple:
+    # (human-readable label, generated-output pattern, acceptable evidence pattern)
+    #
+    # Evidence patterns intentionally allow grammatical variants of the SAME
+    # underlying claim (lead/led/leading, own/owned/ownership, etc.) but do not
+    # substitute adjacent concepts (support != lead, participate != own).
+    rules = [
+        (
+            "independent/independently",
+            r"\bindependent(?:ly)?\b",
+            r"\bindependent(?:ly)?\b",
+        ),
+        (
+            "Second Line / 2LOD",
+            r"\b(?:2lod|second[\s-]+line(?:\s+of\s+defen[cs]e)?)\b",
+            r"\b(?:2lod|second[\s-]+line(?:\s+of\s+defen[cs]e)?)\b",
+        ),
+        (
+            "Three Lines model",
+            r"\b(?:three|3)[\s-]+lines?(?:\s+of\s+defen[cs]e|\s+model)?\b",
+            r"\b(?:three|3)[\s-]+lines?(?:\s+of\s+defen[cs]e|\s+model)?\b",
+        ),
+        (
+            "enterprise-wide",
+            r"\benterprise[\s-]+wide\b",
+            r"\benterprise[\s-]+wide\b",
+        ),
+        (
+            "organization-wide",
+            r"\b(?:organization|organisation)[\s-]+wide\b",
+            r"\b(?:organization|organisation)[\s-]+wide\b",
+        ),
+        (
+            "global/globally",
+            r"\bglobal(?:ly)?\b",
+            r"\bglobal(?:ly)?\b",
+        ),
+        (
+            "lead/led/leading/leadership",
+            r"\b(?:lead|leads|leading|led|leadership)\b",
+            r"\b(?:lead|leads|leading|led|leadership)\b",
+        ),
+        (
+            "ownership/owned",
+            r"\b(?:own|owns|owned|owning|ownership)\b",
+            r"\b(?:own|owns|owned|owning|ownership)\b",
+        ),
+        (
+            "manage/managed/manager/management",
+            r"\b(?:manage|manages|managed|managing|manager|management)\b",
+            r"\b(?:manage|manages|managed|managing|manager|management)\b",
+        ),
+        (
+            "oversight/oversee",
+            r"\b(?:oversee|oversees|oversaw|overseeing|oversight)\b",
+            r"\b(?:oversee|oversees|oversaw|overseeing|oversight)\b",
+        ),
+        (
+            "architect/architected/architecture",
+            r"\b(?:architect|architects|architected|architecting|architecture)\b",
+            r"\b(?:architect|architects|architected|architecting|architecture)\b",
+        ),
+        (
+            "expert/expertise",
+            r"\b(?:expert|expertise)\b",
+            r"\b(?:expert|expertise)\b",
+        ),
+        (
+            "advanced",
+            r"\badvanced\b",
+            r"\badvanced\b",
+        ),
+        (
+            "extensive",
+            r"\bextensive\b",
+            r"\bextensive\b",
+        ),
+        (
+            "deep",
+            r"\bdeep\b",
+            r"\bdeep\b",
+        ),
+        (
+            "strong",
+            r"\bstrong\b",
+            r"\bstrong\b",
+        ),
+        (
+            "hands-on",
+            r"\bhands?[\s-]+on\b",
+            r"\bhands?[\s-]+on\b",
+        ),
+        (
+            "cross-functional",
+            r"\bcross[\s-]+functional\b",
+            r"\bcross[\s-]+functional\b",
+        ),
+        (
+            "senior",
+            r"\bsenior\b",
+            r"\bsenior\b",
+        ),
+        (
+            "principal",
+            r"\bprincipal\b",
+            r"\bprincipal\b",
+        ),
+        (
+            "strategic/strategy",
+            r"\b(?:strategic|strategy)\b",
+            r"\b(?:strategic|strategy)\b",
+        ),
+        (
+            "regulatory/regulation",
+            r"\b(?:regulatory|regulation|regulations)\b",
+            r"\b(?:regulatory|regulation|regulations)\b",
+        ),
+        (
+            "enforce/enforcement",
+            r"\b(?:enforce|enforces|enforced|enforcing|enforcement)\b",
+            r"\b(?:enforce|enforces|enforced|enforcing|enforcement)\b",
+        ),
+        (
+            "validate/validation",
+            r"\b(?:validate|validates|validated|validating|validation)\b",
+            r"\b(?:validate|validates|validated|validating|validation)\b",
+        ),
+        (
+            "approve/approval",
+            r"\b(?:approve|approves|approved|approving|approval)\b",
+            r"\b(?:approve|approves|approved|approving|approval)\b",
+        ),
+        (
+            "high-volume",
+            r"\bhigh[\s-]+volume\b",
+            r"\bhigh[\s-]+volume\b",
+        ),
+        (
+            "large-scale",
+            r"\blarge[\s-]+scale\b",
+            r"\blarge[\s-]+scale\b",
+        ),
+        (
+            "mission-critical",
+            r"\bmission[\s-]+critical\b",
+            r"\bmission[\s-]+critical\b",
+        ),
+        (
+            "end-to-end",
+            r"\bend[\s-]+to[\s-]+end\b",
+            r"\bend[\s-]+to[\s-]+end\b",
+        ),
+        (
+            "full lifecycle",
+            r"\bfull[\s-]+life[\s-]*cycle\b",
+            r"\bfull[\s-]+life[\s-]*cycle\b",
+        ),
+        (
+            "production",
+            r"\bproduction\b",
+            r"\bproduction\b",
+        ),
+        (
+            "sole/primary ownership",
+            r"\b(?:sole|primary)\s+(?:owner|ownership|responsibility)\b",
+            r"\b(?:sole|primary)\s+(?:owner|ownership|responsibility)\b",
+        ),
+    ]
+
+    unsupported = []
+    seen = set()
+
+    for label, output_pattern, evidence_pattern in rules:
+        if not re.search(output_pattern, output, flags=re.IGNORECASE):
+            continue
+
+        if re.search(evidence_pattern, evidence, flags=re.IGNORECASE):
+            continue
+
+        key = label.casefold()
+        if key not in seen:
+            unsupported.append(label)
+            seen.add(key)
 
     return unsupported
 
@@ -10995,16 +11217,20 @@ def navy_jd_only_phrase_hits(output_text, jd_text, resume_text):
     return hits[:12]
 
 
-def navy_validate_grounded_output(resume_text, jd_text, data):
+def navy_validate_grounded_output(resume_text, jd_text, internal_notes, data):
     """
     Deterministically validate the audited Navy Federal summary/skills package.
 
     The document is allowed to proceed only when:
     - every Summary bullet cites real resume evidence,
     - every skill row cites real resume evidence,
+    - every skill row cites real role-priority evidence from Internal Notes or
+      the Official Fieldglass JD,
     - every right-column skill detail cites real resume evidence and is
       lexically supported by that evidence,
     - no suspicious JD-only multi-word phrase survives,
+    - high-impact qualifiers/authority claims are independently supported by the
+      cited resume evidence,
     - AI-sounding "progressive experience" wording is absent.
     """
     errors = []
@@ -11046,6 +11272,18 @@ def navy_validate_grounded_output(resume_text, jd_text, data):
                         f"{evidence[:120]}"
                     )
 
+        unsupported_qualifiers = navy_unsupported_high_impact_claims(
+            summary,
+            " ".join(evidence_items),
+        )
+
+        if unsupported_qualifiers:
+            errors.append(
+                f"{summary_key} contains high-impact claim(s) not supported by "
+                "its cited resume evidence: "
+                + ", ".join(unsupported_qualifiers)
+            )
+
         jd_hits = navy_jd_only_phrase_hits(
             summary,
             jd_text,
@@ -11061,7 +11299,7 @@ def navy_validate_grounded_output(resume_text, jd_text, data):
     for i in range(1, 5):
         skill_key = f"SKILL{i}"
         skill_evidence_key = f"SKILL{i}_EVIDENCE"
-        skill_jd_evidence_key = f"SKILL{i}_JD_EVIDENCE"
+        skill_role_evidence_key = f"SKILL{i}_ROLE_EVIDENCE"
         details_key = f"SKILLDETAILS{i}"
 
         skill = re.sub(
@@ -11111,27 +11349,42 @@ def navy_validate_grounded_output(resume_text, jd_text, data):
                     + ", ".join(unsupported_identifiers)
                 )
 
-        # Each of the four limited rows must also prove why it deserves one of
-        # the four slots by citing an exact JD excerpt. This is separate from
-        # candidate evidence: JD evidence establishes PRIORITY/RELEVANCE only.
-        skill_jd_evidence = navy_string_list(
-            data.get(skill_jd_evidence_key, [])
+        # Each scarce Skills row must also prove WHY it deserves one of the
+        # four slots. In v7 this role-priority evidence may come from substantive
+        # Internal Notes (supplier-call / hiring-team context) OR the Official
+        # Fieldglass JD. It establishes relevance only and can never establish
+        # candidate experience.
+        skill_role_evidence = navy_string_list(
+            data.get(skill_role_evidence_key, [])
         )
 
-        if not skill_jd_evidence:
+        if not skill_role_evidence:
             errors.append(
-                f"{skill_key} has no Fieldglass JD relevance evidence."
+                f"{skill_key} has no role-priority evidence from Internal Notes or the Official Fieldglass JD."
             )
         else:
-            for jd_evidence in skill_jd_evidence:
-                if not navy_jd_evidence_snippet_found(
+            for role_evidence in skill_role_evidence:
+                if not navy_role_priority_evidence_snippet_found(
                     jd_text,
-                    jd_evidence,
+                    internal_notes,
+                    role_evidence,
                 ):
                     errors.append(
-                        f"{skill_key} cites JD relevance evidence not found in the "
-                        f"Fieldglass description: {jd_evidence[:120]}"
+                        f"{skill_key} cites role-priority evidence not found in Internal Notes or the Official Fieldglass JD: "
+                        f"{role_evidence[:120]}"
                     )
+
+        unsupported_skill_qualifiers = navy_unsupported_high_impact_claims(
+            skill,
+            " ".join(skill_evidence),
+        )
+
+        if unsupported_skill_qualifiers:
+            errors.append(
+                f"{skill_key} contains high-impact claim(s) not supported by "
+                "its cited resume evidence: "
+                + ", ".join(unsupported_skill_qualifiers)
+            )
 
         skill_jd_hits = navy_jd_only_phrase_hits(
             skill,
@@ -11193,6 +11446,18 @@ def navy_validate_grounded_output(resume_text, jd_text, data):
                 evidence,
             ):
                 reject_reason = "wording was not sufficiently supported by its evidence"
+
+            if not reject_reason:
+                unsupported_detail_qualifiers = navy_unsupported_high_impact_claims(
+                    item,
+                    evidence,
+                )
+                if unsupported_detail_qualifiers:
+                    reject_reason = (
+                        "high-impact claim(s) were not supported by the same "
+                        "resume evidence: "
+                        + ", ".join(unsupported_detail_qualifiers)
+                    )
 
             if not reject_reason and not navy_detail_compound_claim_supported(
                 item,
@@ -11322,8 +11587,9 @@ CURRENT DATE:
 
 YOUR ONLY PURPOSE:
 Make the four Summary bullets and four Skills rows accurate, grounded, and
-useful for the requisition WITHOUT EVER assigning JD-only experience to the
-candidate.
+optimized first for the NAVY FEDERAL HIRING MANAGER'S interview decision, while
+preserving truthful Official-JD overlap for possible Fieldglass ranking/scoring.
+Never assign JD-only or Internal-Notes-only experience to the candidate.
 
 This is a compliance/fact-audit step, NOT a creative-writing step.
 
@@ -11331,10 +11597,13 @@ SOURCE ROLES:
 - ORIGINAL RESUME = the ONLY source of truth for candidate experience, skills,
   tools, frameworks, methodologies, employers, scope, ownership, metrics, and
   domain knowledge.
-- OFFICIAL FIELDGLASS JD = relevance/prioritization only. It tells you which
-  genuine resume evidence matters most.
-- INTERNAL NOTES = relevance/prioritization only. They are NEVER candidate
-  evidence.
+- INTERNAL NOTES = HIGHEST-PRIORITY relevance source when substantive. Use
+  supplier-call/hiring-team context to determine what will actually drive the
+  interview decision, including must-haves, prior-candidate gaps, day-to-day
+  work, and technical/business weighting.
+- OFFICIAL FIELDGLASS JD = baseline relevance source and secondary potential
+  matching/ranking signal.
+- INTERNAL NOTES and the JD are NEVER candidate evidence.
 
 ABSOLUTE RULE:
 If a word/phrase comes from the JD or Internal Notes and describes the
@@ -11342,17 +11611,41 @@ CANDIDATE, it may be used only when the same capability is explicitly
 demonstrated in the Original Resume. Do not infer that a related skill is the
 same skill.
 
-Examples:
-- JD says FFIEC; resume does not -> DO NOT output FFIEC.
-- JD says GLBA; resume does not -> DO NOT output GLBA.
-- JD says "effective challenge"; resume only says "presented gap analysis" ->
-  use the resume-supported wording, NOT "effective challenge".
-- JD says "Issue Owners"; resume says stakeholders/control owners -> use the
-  resume's actual stakeholder/control-owner wording.
-- JD says "root cause analysis"; resume only says gap analysis -> DO NOT output
-  root cause analysis.
-- JD says "remediation validation"; resume says tracked remediation -> use
-  remediation tracking, not remediation validation.
+If Internal Notes say a resume-proven skill is the #1 priority even when the JD
+omits it, KEEP that skill prominent. The Notes prove role priority and the resume
+proves candidate capability.
+
+UNIVERSAL FACT-CHECK EXAMPLES:
+- JD names a tool/framework/module/regulation that the resume does not -> DO NOT
+  output it as candidate experience.
+- JD says "lead" while the resume says "supported" -> keep "supported"; do not
+  upgrade it to "lead".
+- JD says "enterprise-wide" while the resume proves only project/team scope ->
+  omit "enterprise-wide".
+- JD says "advanced" or "expert" for a technology while the resume only lists or
+  uses it -> do not claim an unsupported proficiency level.
+- JD says "end-to-end ownership" while the resume proves participation in only
+  part of the lifecycle -> do not claim end-to-end ownership.
+- JD says "high-volume" or "large-scale" while the resume gives no scale evidence
+  -> omit the scale qualifier.
+- Resume-supported adjacent experience may still be highlighted using the
+  resume's own accurate wording.
+
+HIGH-IMPACT QUALIFIER RULE — UNIVERSAL:
+Qualifiers that change LEVEL, AUTHORITY, SCOPE, PROFICIENCY, SCALE, or FORMAL
+RESPONSIBILITY are candidate facts and need their own support. This includes,
+without limitation: independent/independently, formal line-of-defense language,
+lead/led/leading, own/owned/ownership, manage/managed/manager, oversight,
+architect/architected/architecture, senior, principal, expert/expertise,
+advanced, extensive, deep, strong, hands-on, cross-functional, enterprise-wide,
+organization-wide, global, strategic, regulatory, enforcement, validation,
+approval, high-volume, large-scale, mission-critical, end-to-end, full
+lifecycle, and production.
+
+For every Summary bullet, Skill category, and right-column detail, if one of
+these stronger qualifiers appears, the evidence cited for THAT SAME claim must
+support the qualifier itself. A supported noun phrase does not make an
+unsupported modifier true.
 
 SUMMARY STYLE:
 - Exactly 4 bullets.
@@ -11386,20 +11679,19 @@ SKILL ROWS:
 
 FOUR-SLOT PRIORITY RULE — CRITICAL:
 - Treat the four rows as scarce space. Do NOT merely choose four valid skills.
-- First identify the JD's highest-priority responsibilities/must-haves, then
-  identify every resume-supported competency that maps to those priorities.
-- Rank those resume-supported competencies by DIRECTNESS OF JD OVERLAP and use
-  the top four DISTINCT competencies.
-- Core day-to-day responsibilities and explicit must-haves outrank generic
-  qualifications, adjacent tools, and secondary/nice-to-have experience.
-- A lower-priority valid competency MUST NOT take a row when the resume contains
-  another competency that more directly supports a core JD responsibility.
-- Avoid spending a row on implementation/UAT/project work when the target role is
-  primarily governance, controls, operations, risk, audit, data, etc., unless
-  that implementation work is itself a core JD priority.
-- For EACH row, return SKILL#_JD_EVIDENCE with 1-2 short VERBATIM excerpts from
-  the Official Fieldglass JD showing why that row deserves one of the four slots.
-- JD evidence proves RELEVANCE ONLY and must never be used as candidate evidence.
+- First identify substantive Internal-Notes must-haves, prior-candidate gaps,
+  interview criteria, day-to-day priorities, and technical/business weighting.
+- Then identify the Official JD's core responsibilities and must-haves.
+- Map all resume-supported competencies against those priorities and use the top
+  four DISTINCT competencies, prioritizing Internal Notes first when substantive.
+- A resume-supported manager priority missing from the JD MAY take a row.
+- Core day-to-day requirements outrank generic qualifications, adjacent tools,
+  nice-to-haves, and impressive-but-secondary experience.
+- For EACH row, return SKILL#_ROLE_EVIDENCE with 1-2 short VERBATIM excerpts from
+  either Internal Notes or the Official Fieldglass JD showing why that row
+  deserves one of the four slots.
+- Role-priority evidence proves RELEVANCE ONLY and must never be used as
+  candidate evidence.
 
 SKILL ROW EVIDENCE:
 For EACH left-column Skill, return 1-3 VERBATIM resume excerpts supporting that
@@ -11430,10 +11722,14 @@ RIGHT-COLUMN DETAILS:
   "evidence": one VERBATIM resume excerpt that explicitly supports that item
 - Do not return an item when you cannot quote one resume excerpt that supports
   the item.
+- Do not preserve a stronger qualifier merely because the underlying skill/item
+  is supported. The qualifier itself must be supported by that same evidence.
 
-ATS RULE:
-Exact JD language is helpful ONLY when the same language/capability is genuinely
-supported by the resume. Truth outranks keyword coverage.
+HIRING-MANAGER + FIELDGLASS RULE:
+Hiring-team priorities from substantive Internal Notes drive emphasis first.
+Exact JD language remains useful as secondary Fieldglass matching/ranking
+coverage ONLY when the same language/capability is genuinely supported by the
+resume. Truth outranks both sources.
 
 {error_section}
 
@@ -11450,28 +11746,28 @@ OUTPUT SCHEMA:
 
   "SKILL1": "",
   "SKILL1_EVIDENCE": [""],
-  "SKILL1_JD_EVIDENCE": [""],
+  "SKILL1_ROLE_EVIDENCE": [""],
   "SKILLDETAILS1": [
     {{"item": "", "evidence": ""}}
   ],
 
   "SKILL2": "",
   "SKILL2_EVIDENCE": [""],
-  "SKILL2_JD_EVIDENCE": [""],
+  "SKILL2_ROLE_EVIDENCE": [""],
   "SKILLDETAILS2": [
     {{"item": "", "evidence": ""}}
   ],
 
   "SKILL3": "",
   "SKILL3_EVIDENCE": [""],
-  "SKILL3_JD_EVIDENCE": [""],
+  "SKILL3_ROLE_EVIDENCE": [""],
   "SKILLDETAILS3": [
     {{"item": "", "evidence": ""}}
   ],
 
   "SKILL4": "",
   "SKILL4_EVIDENCE": [""],
-  "SKILL4_JD_EVIDENCE": [""],
+  "SKILL4_ROLE_EVIDENCE": [""],
   "SKILLDETAILS4": [
     {{"item": "", "evidence": ""}}
   ]
@@ -11914,7 +12210,7 @@ def navy_federal_app():
                 st.error(f"❌ {error}")
             return
 
-        with st.spinner("Building optimized Navy Federal submission..."):
+        with st.spinner("Building hiring-manager-focused Navy Federal submission..."):
             resume_path = None
 
             try:
@@ -12103,7 +12399,7 @@ ORIGINAL RESUME:
                 experience = normalized_experience
 
                 # ====================================================
-                # PASS 2 — NAVY FEDERAL SUMMARY + SKILLS OPTIMIZATION
+                # PASS 2 — NAVY FEDERAL HIRING-MANAGER SUMMARY + SKILLS OPTIMIZATION
                 # ====================================================
                 structured_experience = json.dumps(
                     experience,
@@ -12120,27 +12416,44 @@ contingent-worker resume submission through Fieldglass.
 CURRENT DATE:
 {current_date}
 
-There are TWO sequential goals:
+There are TWO optimization goals, but they are NOT equal:
 
-1. FIELDGLASS / MSP SHORTLISTING
-Make the candidate's GENUINE match to the requisition easy to recognize for an
-automated matching system and an MSP recruiter. Preserve important exact JD
-terminology ONLY when the uploaded resume itself supports that terminology or
-capability.
+1. PRIMARY — NAVY FEDERAL HIRING-MANAGER INTERVIEW SELECTION
+The MSP appears to pass submitted candidates through rather than use shortlisting
+as the main gate. Optimize the four Summary bullets and four Skills rows primarily
+to make the hiring manager want to interview the candidate.
 
-2. NAVY FEDERAL HIRING-MANAGER INTERVIEW SELECTION
-If shortlisted, surface the strongest resume-proven evidence of recurring
-ownership, tools/methodologies, business impact, domain experience, controls,
-operations, stakeholder work, or technical execution that matters for the role.
+2. SECONDARY — FIELDGLASS DISCOVERABILITY / POSSIBLE RANKING OR SCORING
+The exact downstream Fieldglass AI behavior is unknown. Preserve useful exact JD
+terminology when the resume genuinely supports it so the candidate remains easy
+to recognize in any automated matching/ranking layer. Never chase JD keywords at
+the expense of current hiring-team priorities.
 
 SOURCE HIERARCHY FOR ROLE PRIORITIES:
-1. Internal Notes, when they provide substantive recruiter/hiring-team context.
-2. Official Fieldglass Job Description.
+1. INTERNAL NOTES — highest priority when substantive. Treat supplier-call,
+   hiring-manager, MSP, recruiter, or account-team notes about must-haves,
+   prior-candidate failures, interview criteria, real day-to-day work,
+   technical/business weighting, preferred backgrounds, or de-emphasized JD
+   items as the most current signal of what will drive an interview decision.
+2. OFFICIAL FIELDGLASS JOB DESCRIPTION — baseline responsibilities,
+   qualifications, technical/domain terminology, and secondary Fieldglass
+   matching/ranking coverage.
+
+If Internal Notes clarify, narrow, reorder, or contradict the JD, use the Notes
+to decide EMPHASIS. Do not erase truthful relevant JD coverage unnecessarily,
+but do not let generic/stale JD language outrank current hiring-team guidance.
 
 SOURCE HIERARCHY FOR CANDIDATE FACTS:
 1. ORIGINAL RESUME ONLY.
 
-THE JD AND INTERNAL NOTES ARE NEVER CANDIDATE EVIDENCE.
+THE JD AND INTERNAL NOTES ARE NEVER CANDIDATE EVIDENCE. They tell you WHAT
+MATTERS, not WHAT THE CANDIDATE HAS DONE.
+
+If Internal Notes identify a priority that is absent from the JD, you MAY still
+feature it prominently in the Summary or Skills when the uploaded resume proves
+it. Example: if Notes say Tableau is the #1 priority and the resume proves
+Tableau, emphasize Tableau even if the JD does not mention it. If the resume does
+not prove Tableau, do not assign Tableau to the candidate.
 
 ======================================================================
 HARD SOURCE FIREWALL — ZERO TOLERANCE
@@ -12171,17 +12484,36 @@ This applies to:
 
 NEVER upgrade a related concept into the JD's more specific concept.
 
-Examples:
-- General financial regulation does NOT prove a named regulation.
-- General risk management does NOT automatically prove formal Issue Management.
-- Stakeholder communication does NOT automatically prove "effective challenge".
-- Corrective action tracking does NOT automatically prove "remediation
-  validation".
-- Working with managers/stakeholders does NOT prove work with formal "Issue
-  Owners".
-- General information security does NOT prove a named NIST/FFIEC/NCUA/GLBA
-  framework unless the resume names or clearly demonstrates it.
-- A broader platform does NOT prove a specific module/tool.
+UNIVERSAL EXAMPLES ACROSS NAVY FEDERAL JOB TYPES:
+- A JD requests a named tool, platform/module, framework, regulation, programming
+  language, design system, equipment type, or methodology that the resume does
+  not show -> DO NOT assign it to the candidate.
+- A JD says "lead", "owned", "managed", "independent", "enterprise-wide",
+  "advanced", "expert", "high-volume", "end-to-end", "production", or another
+  stronger scope/proficiency/authority qualifier -> use that qualifier ONLY when
+  the resume evidence independently supports that level of claim.
+- "Supported", "assisted", "participated", or "worked with" does NOT automatically
+  become "led", "owned", "managed", "architected", or "independently performed".
+- A broad platform does NOT prove a specific module or product feature.
+- A general technical/business capability does NOT prove a formal discipline,
+  certification, regulatory framework, governance model, or specialized method.
+- A candidate can be highly relevant without matching every JD term. Use the
+  strongest truthful resume-native wording instead of upgrading the claim.
+
+HIGH-IMPACT QUALIFIER RULE — ALL JOB FAMILIES:
+Treat qualifiers that change LEVEL, AUTHORITY, SCOPE, PROFICIENCY, SCALE, or
+FORMAL RESPONSIBILITY as candidate facts in their own right. Examples include
+independent/independently, lead/led/leading, own/owned/ownership,
+manage/managed/manager, oversight, architect/architected/architecture, senior, principal,
+expert/expertise, advanced, extensive, deep, strong, hands-on,
+cross-functional, enterprise-wide, organization-wide, global, strategic,
+regulatory, enforcement, validation, approval, high-volume, large-scale,
+mission-critical, end-to-end, full lifecycle, production, and formal
+line-of-defense terminology.
+
+Every such qualifier used in a Summary or Skills claim must be supported by the
+resume evidence cited for THAT SAME claim. Do not let a JD adjective or authority
+verb hitchhike onto an otherwise supported noun phrase.
 
 When the JD contains a term the resume does not support, simply omit that term.
 An honest partial match is better than a fabricated exact match.
@@ -12213,9 +12545,11 @@ BULLET 1 — EXPERIENCE ANCHOR
   identity/expertise for this requisition.
 - If dates are too ambiguous, omit the years rather than guessing.
 
-BULLET 2 — CORE ROLE MATCH
+BULLET 2 — PRIMARY HIRING-TEAM NEED
 - Select the strongest recent/recurring resume responsibility that proves the
-  requisition's primary need.
+  #1 actual hiring-team priority.
+- When substantive Internal Notes identify a must-have, screening failure, or
+  day-to-day priority, use that before a lower-priority generic JD item.
 - Use only the scope and terminology the resume supports.
 
 BULLET 3 — EXECUTION / CONTROLS / TOOLS / IMPACT
@@ -12247,21 +12581,27 @@ SKILL# — LEFT COLUMN
   merely because it is adjacent to the candidate's background.
 - Return SKILL#_EVIDENCE with 1-3 short VERBATIM resume excerpts proving the
   category.
-- Return SKILL#_JD_EVIDENCE with 1-2 short VERBATIM excerpts from the Official
-  Fieldglass JD proving why this competency is a high-priority match for the
-  selected requisition. JD evidence is for prioritization ONLY.
+- Return SKILL#_ROLE_EVIDENCE with 1-2 short VERBATIM excerpts proving why this
+  competency deserves one of the four slots. Each excerpt may come from either
+  substantive Internal Notes OR the Official Fieldglass JD.
+- Prefer Internal Notes when they directly state a stronger/current must-have,
+  screening problem, interview criterion, or day-to-day priority.
+- Role-priority evidence is for prioritization ONLY; it never proves candidate
+  experience.
 
 FOUR-SLOT PRIORITY RULE — CRITICAL:
 - These four rows are scarce real estate. Do NOT return merely four truthful
-  competencies. Return the FOUR MOST RELEVANT resume-supported competencies for
-  this exact Fieldglass requisition.
-- First rank the JD's responsibilities and must-haves by importance, then rank
-  all resume-supported candidate competencies by direct overlap with those
-  priorities. Select the top four DISTINCT rows.
-- Core recurring responsibilities / explicit must-haves outrank generic
-  qualifications, adjacent experience, and nice-to-haves.
-- If the resume supports a competency that maps more directly to a core JD need,
-  it MUST replace a lower-overlap row even when that lower-overlap row is valid.
+  competencies. Return the FOUR MOST INTERVIEW-RELEVANT resume-supported
+  competencies for the actual hiring team's current priorities.
+- First rank substantive Internal-Notes must-haves, prior-candidate failures,
+  interview criteria, day-to-day needs, and technical/business weighting.
+- Then rank the Official JD's core responsibilities and explicit must-haves.
+- Map those priorities against all resume-supported candidate competencies and
+  select the top four DISTINCT intersections.
+- A resume-supported hiring-team priority missing from the JD MAY take a Skills
+  row. Core manager priorities outrank generic JD language and nice-to-haves.
+- Preserve useful JD overlap where truthful so possible Fieldglass ranking or
+  scoring still sees the candidate's genuine baseline match.
 
 SKILLDETAILS# — RIGHT COLUMN
 - Return a JSON ARRAY of 3-6 objects.
@@ -12296,12 +12636,15 @@ FINAL SELF-AUDIT BEFORE OUTPUT:
 4. Would every candidate claim survive a side-by-side resume audit?
 5. Is every evidence excerpt copied verbatim from the resume?
 6. Did I avoid the word "progressive"?
-7. Did I prioritize the best evidence for this JD rather than the flashiest
-   unrelated project?
-8. Are these truly the FOUR HIGHEST-OVERLAP resume-supported competency rows for
-   the selected JD, or did a lower-priority valid skill displace a stronger one?
+7. Did substantive Internal Notes drive emphasis before generic JD language?
+8. Are these truly the FOUR BEST INTERVIEW-DRIVING resume-supported competency
+   rows for the current hiring-team priorities, while retaining truthful JD
+   coverage for possible Fieldglass ranking/scoring?
 9. Does every right-column detail describe exactly what its ONE cited resume
    excerpt proves, without combining separate facts into a stronger claim?
+10. Does every high-impact qualifier (lead/owned/managed/independent/advanced/
+    expert/enterprise-wide/high-volume/end-to-end/production/etc.) have direct
+    support in the evidence cited for that SAME claim?
 
 OUTPUT:
 {{
@@ -12316,28 +12659,28 @@ OUTPUT:
 
   "SKILL1": "",
   "SKILL1_EVIDENCE": [""],
-  "SKILL1_JD_EVIDENCE": [""],
+  "SKILL1_ROLE_EVIDENCE": [""],
   "SKILLDETAILS1": [
     {{"item": "", "evidence": ""}}
   ],
 
   "SKILL2": "",
   "SKILL2_EVIDENCE": [""],
-  "SKILL2_JD_EVIDENCE": [""],
+  "SKILL2_ROLE_EVIDENCE": [""],
   "SKILLDETAILS2": [
     {{"item": "", "evidence": ""}}
   ],
 
   "SKILL3": "",
   "SKILL3_EVIDENCE": [""],
-  "SKILL3_JD_EVIDENCE": [""],
+  "SKILL3_ROLE_EVIDENCE": [""],
   "SKILLDETAILS3": [
     {{"item": "", "evidence": ""}}
   ],
 
   "SKILL4": "",
   "SKILL4_EVIDENCE": [""],
-  "SKILL4_JD_EVIDENCE": [""],
+  "SKILL4_ROLE_EVIDENCE": [""],
   "SKILLDETAILS4": [
     {{"item": "", "evidence": ""}}
   ]
@@ -12379,6 +12722,7 @@ FULL ORIGINAL RESUME:
                 grounding_errors = navy_validate_grounded_output(
                     raw_text,
                     Job_Description,
+                    Internal_Notes,
                     audited_data,
                 )
 
@@ -12401,6 +12745,7 @@ FULL ORIGINAL RESUME:
                     grounding_errors = navy_validate_grounded_output(
                         raw_text,
                         Job_Description,
+                        Internal_Notes,
                         audited_data,
                     )
 
