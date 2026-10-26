@@ -10525,13 +10525,39 @@ def navy_normalize_evidence_text(value):
     return value
 
 
+def navy_normalize_quote_match_text(value):
+    """
+    Normalize text for exact-source quote verification while ignoring harmless
+    punctuation differences introduced by Gemini (for example, adding a final
+    period to an otherwise verbatim JD sentence).
+
+    IMPORTANT: This does NOT perform synonym or semantic matching. The same
+    words/numbers must still appear in the same order; only punctuation,
+    whitespace, dash style, and capitalization are ignored.
+    """
+    value = str(value or "")
+    value = (
+        value.replace("\u00a0", " ")
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+        .replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2013", "-")
+        .replace("\u2014", "-")
+    )
+    value = value.casefold()
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
+
+
 def navy_evidence_snippet_found(resume_text, snippet):
     """
     Return True only when the cited evidence is actually present in the uploaded
-    resume after conservative punctuation/whitespace normalization.
+    resume. Punctuation-only differences are tolerated, but paraphrases are not.
     """
-    normalized_resume = navy_normalize_evidence_text(resume_text)
-    normalized_snippet = navy_normalize_evidence_text(snippet)
+    normalized_resume = navy_normalize_quote_match_text(resume_text)
+    normalized_snippet = navy_normalize_quote_match_text(snippet)
 
     if not normalized_snippet or len(normalized_snippet) < 6:
         return False
@@ -10833,9 +10859,15 @@ def navy_detail_compound_claim_supported(item, evidence):
 
 
 def navy_jd_evidence_snippet_found(jd_text, snippet):
-    """Return True only when a cited JD excerpt is actually present in the JD."""
-    normalized_jd = navy_normalize_evidence_text(jd_text)
-    normalized_snippet = navy_normalize_evidence_text(snippet)
+    """
+    Return True only when a cited JD excerpt is actually present in the JD.
+
+    Gemini may add/remove harmless punctuation around an otherwise verbatim
+    quote, so punctuation and whitespace are ignored here. Word order and the
+    actual wording still have to match the Fieldglass description.
+    """
+    normalized_jd = navy_normalize_quote_match_text(jd_text)
+    normalized_snippet = navy_normalize_quote_match_text(snippet)
 
     if not normalized_snippet or len(normalized_snippet) < 6:
         return False
@@ -10941,7 +10973,14 @@ def navy_jd_only_phrase_hits(output_text, jd_text, resume_text):
                 if word not in stop_words and len(word) >= 4
             ]
 
-            if not signal_words:
+            # Require a genuinely meaningful phrase, not a content word plus a
+            # connector such as "assessments and". This preserves protection for
+            # JD-only phrases such as "effective challenge", "Issue Owners", or
+            # "Second Line of Defense" while avoiding low-information false hits.
+            if len(signal_words) < 2:
+                continue
+
+            if phrase_words[0] in stop_words or phrase_words[-1] in stop_words:
                 continue
 
             if phrase in jd_norm and phrase not in resume_norm:
