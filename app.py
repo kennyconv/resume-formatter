@@ -11067,9 +11067,14 @@ def navy_unsupported_high_impact_claims(output_text, evidence_text):
             r"\b(?:own|owns|owned|owning|ownership)\b",
         ),
         (
-            "manage/managed/manager/management",
-            r"\b(?:manage|manages|managed|managing|manager|management)\b",
-            r"\b(?:manage|manages|managed|managing|manager|management)\b",
+            "manage/managed/managing/manager",
+            # Do NOT treat the noun "management" by itself as an authority
+            # qualifier. Across Navy Federal roles, legitimate disciplines such
+            # as Data Management, Project Management, Risk Management, Change
+            # Management, Content Management, and Metadata Management use the
+            # word without implying people-management or ownership authority.
+            r"\b(?:manage|manages|managed|managing|manager)\b",
+            r"\b(?:manage|manages|managed|managing|manager)\b",
         ),
         (
             "oversight/oversee",
@@ -11206,13 +11211,19 @@ def navy_unsupported_high_impact_claims(output_text, evidence_text):
     return unsupported
 
 
-def navy_jd_only_phrase_hits(output_text, jd_text, resume_text):
+def navy_jd_only_phrase_hits(output_text, jd_text, resume_text, evidence_text=""):
     """
     Detect suspicious multi-word phrases copied from the JD into candidate-owned
-    output when that same phrase does not appear in the resume.
+    output when that wording is not grounded in the resume.
 
     This is a deterministic backstop against phrases such as "effective challenge"
     or "Issue Owners" leaking from the requisition into the candidate profile.
+
+    Natural resume-grounded paraphrases are allowed when the SPECIFIC evidence
+    cited for the same claim contains all substantive concepts. Concrete named
+    identifiers and high-impact qualifiers remain protected by separate stricter
+    validators, so this evidence-aware allowance does not permit unsupported
+    tools, frameworks, authority, scale, or proficiency claims.
     """
     output_norm = navy_normalize_evidence_text(output_text)
     jd_norm = navy_normalize_evidence_text(jd_text)
@@ -11261,6 +11272,58 @@ def navy_jd_only_phrase_hits(output_text, jd_text, resume_text):
                 continue
 
             if phrase in jd_norm and phrase not in resume_norm:
+                # List punctuation/connectors can make the same resume-backed
+                # technology sequence look different after normalization. For
+                # example, a resume may say "Advanced SQL, Python, PySpark"
+                # while the JD/output says "SQL, Python and PySpark". That is
+                # not a JD-only candidate claim. Before flagging the phrase,
+                # remove low-information connector words from BOTH the phrase
+                # and resume and require the remaining substantive sequence to
+                # appear contiguously in the resume. This is intentionally a
+                # sequence check, not a bag-of-words check, so unrelated words
+                # scattered elsewhere in the resume cannot manufacture support.
+                phrase_core = [
+                    word for word in phrase_words
+                    if word not in stop_words
+                ]
+                resume_core = [
+                    word for word in resume_norm.split()
+                    if word not in stop_words
+                ]
+
+                core_is_resume_backed = False
+                if phrase_core:
+                    core_len = len(phrase_core)
+                    for core_idx in range(0, len(resume_core) - core_len + 1):
+                        if resume_core[core_idx:core_idx + core_len] == phrase_core:
+                            core_is_resume_backed = True
+                            break
+
+                if core_is_resume_backed:
+                    continue
+
+                # Also allow a natural paraphrase when the exact resume evidence
+                # cited for THIS claim contains every substantive concept in the
+                # phrase. Example: "data deletion controls" is fairly supported
+                # by evidence saying "data deletion requirements, control
+                # procedures" even though the exact JD phrase is absent. This is
+                # scoped to the claim's cited evidence rather than the whole resume
+                # so unrelated concepts elsewhere cannot manufacture support.
+                phrase_signal_tokens = navy_signal_tokens(phrase)
+                evidence_signal_tokens = set(
+                    navy_signal_tokens(evidence_text)
+                )
+
+                if (
+                    phrase_signal_tokens
+                    and evidence_signal_tokens
+                    and all(
+                        token in evidence_signal_tokens
+                        for token in phrase_signal_tokens
+                    )
+                ):
+                    continue
+
                 # Do not add shorter phrases that are fully contained in an
                 # already-reported longer phrase.
                 if any(phrase in existing for existing in hits):
@@ -11343,6 +11406,7 @@ def navy_validate_grounded_output(resume_text, jd_text, internal_notes, data):
             summary,
             jd_text,
             resume_text,
+            " ".join(evidence_items),
         )
 
         if jd_hits:
@@ -11445,6 +11509,7 @@ def navy_validate_grounded_output(resume_text, jd_text, internal_notes, data):
             skill,
             jd_text,
             resume_text,
+            " ".join(skill_evidence),
         )
 
         # High-level competency labels may legitimately paraphrase resume wording.
@@ -11701,6 +11766,14 @@ For every Summary bullet, Skill category, and right-column detail, if one of
 these stronger qualifiers appears, the evidence cited for THAT SAME claim must
 support the qualifier itself. A supported noun phrase does not make an
 unsupported modifier true.
+
+IMPORTANT MANAGEMENT DISTINCTION:
+- Treat verbs/titles that assert authority (managed, managing, manager) as claims
+  that need direct resume support.
+- Do NOT treat the standalone discipline noun "management" as an authority
+  claim. Phrases such as Data Management, Project Management, Risk Management,
+  Change Management, Content Management, Metadata Management, Vendor Management,
+  and similar domain labels may be used when the resume supports that discipline.
 
 SUMMARY STYLE:
 - Exactly 4 bullets.
@@ -12574,6 +12647,15 @@ line-of-defense terminology.
 Every such qualifier used in a Summary or Skills claim must be supported by the
 resume evidence cited for THAT SAME claim. Do not let a JD adjective or authority
 verb hitchhike onto an otherwise supported noun phrase.
+
+IMPORTANT MANAGEMENT DISTINCTION:
+- Verbs/titles that assert authority (managed, managing, manager) require direct
+  resume support.
+- The standalone noun "management" is often the name of a legitimate discipline,
+  not an authority claim. Do NOT treat Data Management, Project Management, Risk
+  Management, Change Management, Content Management, Metadata Management, Vendor
+  Management, or similar domain labels as people-management/ownership claims.
+  They may be used when the resume supports that discipline.
 
 When the JD contains a term the resume does not support, simply omit that term.
 An honest partial match is better than a fabricated exact match.
