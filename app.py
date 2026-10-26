@@ -10762,6 +10762,87 @@ def navy_skill_item_supported_by_evidence(item, evidence):
     return matched >= required
 
 
+def navy_detail_compound_claim_supported(item, evidence):
+    """
+    Protect against combining individually supported words into a stronger
+    compound claim that the cited resume sentence does not actually make.
+
+    Right-column details are supposed to be atomic. When Gemini joins concepts
+    with &, /, "and", or a comma, require the combined wording to be supported
+    as one coherent concept by the SAME cited resume excerpt. Otherwise the
+    detail is rejected and the repair pass must split it into resume-native
+    atomic items.
+
+    Examples:
+    - "SOC 1 & SOC 2 Audits" is NOT supported by one sentence that says
+      "SOC 2 and SOX audits" plus another sentence elsewhere about SOC 1 reports.
+    - "Defect Tracking & Remediation" is NOT supported when defect tracking and
+      remediation plans come from different resume bullets.
+    - A literal combined phrase already present in the cited resume excerpt is
+      allowed.
+    """
+    item_text = re.sub(r"\s+", " ", str(item or "")).strip()
+    evidence_text = re.sub(r"\s+", " ", str(evidence or "")).strip()
+
+    if not item_text or not evidence_text:
+        return False
+
+    # Only invoke the stricter compound rule when the generated detail visibly
+    # joins multiple concepts. Hyphens inside one term are not treated as joins.
+    has_compound_connector = bool(
+        re.search(r"\s(?:&|/|and)\s|,", item_text, flags=re.IGNORECASE)
+        or re.search(r"\b[A-Za-z0-9]+/[A-Za-z0-9]+\b", item_text)
+    )
+
+    if not has_compound_connector:
+        return True
+
+    item_tokens = navy_signal_tokens(item_text)
+    evidence_tokens = navy_signal_tokens(evidence_text)
+
+    if not item_tokens:
+        return False
+
+    # Every substantive token in a compound detail must be supported by the
+    # SAME evidence excerpt. This is intentionally stricter than the general
+    # 60% conceptual threshold used for simple atomic details.
+    if not all(token in set(evidence_tokens) for token in item_tokens):
+        return False
+
+    # Named/versioned phrases such as SOC 1, SOC 2, NIST 800-53, ISO 27001,
+    # PCI DSS, etc. must each be visible in the same evidence excerpt. This
+    # prevents a generic acronym match from turning SOC 1 report review into
+    # SOC 1 audit experience.
+    named_phrases = []
+    for pattern in [
+        r"\b[A-Z]{2,}(?:\s+[A-Z]{1,4})?\s+\d+(?:[-./]\d+)?\b",
+        r"\b[A-Z]{2,}(?:\s+[A-Z]{2,})+\b",
+    ]:
+        for match in re.findall(pattern, item_text):
+            cleaned = re.sub(r"\s+", " ", match).strip()
+            if cleaned and cleaned not in named_phrases:
+                named_phrases.append(cleaned)
+
+    evidence_norm = navy_normalize_evidence_text(evidence_text)
+    for phrase in named_phrases:
+        phrase_norm = navy_normalize_evidence_text(phrase)
+        if phrase_norm and phrase_norm not in evidence_norm:
+            return False
+
+    return True
+
+
+def navy_jd_evidence_snippet_found(jd_text, snippet):
+    """Return True only when a cited JD excerpt is actually present in the JD."""
+    normalized_jd = navy_normalize_evidence_text(jd_text)
+    normalized_snippet = navy_normalize_evidence_text(snippet)
+
+    if not normalized_snippet or len(normalized_snippet) < 6:
+        return False
+
+    return normalized_snippet in normalized_jd
+
+
 def navy_explicit_identifiers(value):
     """
     Extract concrete identifiers that should never be invented by an umbrella
@@ -10941,6 +11022,7 @@ def navy_validate_grounded_output(resume_text, jd_text, data):
     for i in range(1, 5):
         skill_key = f"SKILL{i}"
         skill_evidence_key = f"SKILL{i}_EVIDENCE"
+        skill_jd_evidence_key = f"SKILL{i}_JD_EVIDENCE"
         details_key = f"SKILLDETAILS{i}"
 
         skill = re.sub(
@@ -10989,6 +11071,28 @@ def navy_validate_grounded_output(resume_text, jd_text, data):
                     f"{skill_key} contains unsupported named identifier(s): "
                     + ", ".join(unsupported_identifiers)
                 )
+
+        # Each of the four limited rows must also prove why it deserves one of
+        # the four slots by citing an exact JD excerpt. This is separate from
+        # candidate evidence: JD evidence establishes PRIORITY/RELEVANCE only.
+        skill_jd_evidence = navy_string_list(
+            data.get(skill_jd_evidence_key, [])
+        )
+
+        if not skill_jd_evidence:
+            errors.append(
+                f"{skill_key} has no Fieldglass JD relevance evidence."
+            )
+        else:
+            for jd_evidence in skill_jd_evidence:
+                if not navy_jd_evidence_snippet_found(
+                    jd_text,
+                    jd_evidence,
+                ):
+                    errors.append(
+                        f"{skill_key} cites JD relevance evidence not found in the "
+                        f"Fieldglass description: {jd_evidence[:120]}"
+                    )
 
         skill_jd_hits = navy_jd_only_phrase_hits(
             skill,
@@ -11050,6 +11154,15 @@ def navy_validate_grounded_output(resume_text, jd_text, data):
                 evidence,
             ):
                 reject_reason = "wording was not sufficiently supported by its evidence"
+
+            if not reject_reason and not navy_detail_compound_claim_supported(
+                item,
+                evidence,
+            ):
+                reject_reason = (
+                    "compound wording joined concepts that were not all supported "
+                    "by the same resume evidence"
+                )
 
             # At this point the detail has real resume evidence, no unsupported
             # named identifiers, and sufficient lexical/conceptual support from
@@ -11232,6 +11345,23 @@ SKILL ROWS:
 - Do not use a formal discipline/title from the JD merely because it sounds
   adjacent to the candidate's experience.
 
+FOUR-SLOT PRIORITY RULE — CRITICAL:
+- Treat the four rows as scarce space. Do NOT merely choose four valid skills.
+- First identify the JD's highest-priority responsibilities/must-haves, then
+  identify every resume-supported competency that maps to those priorities.
+- Rank those resume-supported competencies by DIRECTNESS OF JD OVERLAP and use
+  the top four DISTINCT competencies.
+- Core day-to-day responsibilities and explicit must-haves outrank generic
+  qualifications, adjacent tools, and secondary/nice-to-have experience.
+- A lower-priority valid competency MUST NOT take a row when the resume contains
+  another competency that more directly supports a core JD responsibility.
+- Avoid spending a row on implementation/UAT/project work when the target role is
+  primarily governance, controls, operations, risk, audit, data, etc., unless
+  that implementation work is itself a core JD priority.
+- For EACH row, return SKILL#_JD_EVIDENCE with 1-2 short VERBATIM excerpts from
+  the Official Fieldglass JD showing why that row deserves one of the four slots.
+- JD evidence proves RELEVANCE ONLY and must never be used as candidate evidence.
+
 SKILL ROW EVIDENCE:
 For EACH left-column Skill, return 1-3 VERBATIM resume excerpts supporting that
 category. The left-column label is an umbrella category, so it may reasonably
@@ -11246,11 +11376,16 @@ RIGHT-COLUMN DETAILS:
 - USE RESUME-NATIVE WORDING whenever possible. If the resume says "defects",
   prefer "Defect Tracking" rather than renaming it "Issue Tracking" just because
   the JD uses the word issue.
-- KEEP EACH DETAIL ATOMIC. Do not combine two concepts with "&", "/", or "and"
-  when they require different resume excerpts. Example: if one resume bullet
-  supports defect tracking and another supports remediation plans, output
-  "Defect Tracking" and "Risk Treatment Plans" as separate details rather than
-  "Issue Tracking & Remediation".
+- KEEP EACH DETAIL ATOMIC. Do not combine two concepts with "&", "/", "and",
+  or a comma unless ONE cited resume excerpt supports the FULL combined claim.
+- Never combine individually supported words into a stronger relationship the
+  resume does not make. Example: a resume that says "SOC 2 and SOX audits" and
+  elsewhere says "SOC 1 and 2 reports" does NOT support "SOC 1 & SOC 2 Audits".
+  Use truthful atomic items such as "SOC 2 Audits" and "SOC 1/2 Evidence Review"
+  only when the cited resume wording supports each item.
+- If one resume bullet supports defect tracking and another supports remediation
+  plans, output "Defect Tracking" and "Risk Treatment Plans" separately rather
+  than "Issue Tracking & Remediation".
 - Return each detail as an object containing:
   "item": the concise resume skill/detail
   "evidence": one VERBATIM resume excerpt that explicitly supports that item
@@ -11276,24 +11411,28 @@ OUTPUT SCHEMA:
 
   "SKILL1": "",
   "SKILL1_EVIDENCE": [""],
+  "SKILL1_JD_EVIDENCE": [""],
   "SKILLDETAILS1": [
     {{"item": "", "evidence": ""}}
   ],
 
   "SKILL2": "",
   "SKILL2_EVIDENCE": [""],
+  "SKILL2_JD_EVIDENCE": [""],
   "SKILLDETAILS2": [
     {{"item": "", "evidence": ""}}
   ],
 
   "SKILL3": "",
   "SKILL3_EVIDENCE": [""],
+  "SKILL3_JD_EVIDENCE": [""],
   "SKILLDETAILS3": [
     {{"item": "", "evidence": ""}}
   ],
 
   "SKILL4": "",
   "SKILL4_EVIDENCE": [""],
+  "SKILL4_JD_EVIDENCE": [""],
   "SKILLDETAILS4": [
     {{"item": "", "evidence": ""}}
   ]
@@ -12069,6 +12208,21 @@ SKILL# — LEFT COLUMN
   merely because it is adjacent to the candidate's background.
 - Return SKILL#_EVIDENCE with 1-3 short VERBATIM resume excerpts proving the
   category.
+- Return SKILL#_JD_EVIDENCE with 1-2 short VERBATIM excerpts from the Official
+  Fieldglass JD proving why this competency is a high-priority match for the
+  selected requisition. JD evidence is for prioritization ONLY.
+
+FOUR-SLOT PRIORITY RULE — CRITICAL:
+- These four rows are scarce real estate. Do NOT return merely four truthful
+  competencies. Return the FOUR MOST RELEVANT resume-supported competencies for
+  this exact Fieldglass requisition.
+- First rank the JD's responsibilities and must-haves by importance, then rank
+  all resume-supported candidate competencies by direct overlap with those
+  priorities. Select the top four DISTINCT rows.
+- Core recurring responsibilities / explicit must-haves outrank generic
+  qualifications, adjacent experience, and nice-to-haves.
+- If the resume supports a competency that maps more directly to a core JD need,
+  it MUST replace a lower-overlap row even when that lower-overlap row is valid.
 
 SKILLDETAILS# — RIGHT COLUMN
 - Return a JSON ARRAY of 3-6 objects.
@@ -12080,6 +12234,10 @@ SKILLDETAILS# — RIGHT COLUMN
   JD term unless the resume itself supports that JD term.
 - KEEP EACH DETAIL ATOMIC: one evidence excerpt must support the full item. Split
   combined concepts into separate items when different bullets are needed.
+- Do NOT combine concepts with "&", "/", "and", or commas unless ONE cited
+  resume excerpt supports the entire combined claim. Individually supported words
+  may not be fused into a stronger claim. Example: "SOC 2 and SOX audits" plus
+  "SOC 1 and 2 reports" does NOT equal "SOC 1 & SOC 2 Audits".
 - Do not use a JD-only skill.
 - Do not use years used / last used.
 - Do not repeat the left-column category wording in the right column.
@@ -12101,6 +12259,10 @@ FINAL SELF-AUDIT BEFORE OUTPUT:
 6. Did I avoid the word "progressive"?
 7. Did I prioritize the best evidence for this JD rather than the flashiest
    unrelated project?
+8. Are these truly the FOUR HIGHEST-OVERLAP resume-supported competency rows for
+   the selected JD, or did a lower-priority valid skill displace a stronger one?
+9. Does every right-column detail describe exactly what its ONE cited resume
+   excerpt proves, without combining separate facts into a stronger claim?
 
 OUTPUT:
 {{
@@ -12115,24 +12277,28 @@ OUTPUT:
 
   "SKILL1": "",
   "SKILL1_EVIDENCE": [""],
+  "SKILL1_JD_EVIDENCE": [""],
   "SKILLDETAILS1": [
     {{"item": "", "evidence": ""}}
   ],
 
   "SKILL2": "",
   "SKILL2_EVIDENCE": [""],
+  "SKILL2_JD_EVIDENCE": [""],
   "SKILLDETAILS2": [
     {{"item": "", "evidence": ""}}
   ],
 
   "SKILL3": "",
   "SKILL3_EVIDENCE": [""],
+  "SKILL3_JD_EVIDENCE": [""],
   "SKILLDETAILS3": [
     {{"item": "", "evidence": ""}}
   ],
 
   "SKILL4": "",
   "SKILL4_EVIDENCE": [""],
+  "SKILL4_JD_EVIDENCE": [""],
   "SKILLDETAILS4": [
     {{"item": "", "evidence": ""}}
   ]
