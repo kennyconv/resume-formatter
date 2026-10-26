@@ -1393,6 +1393,47 @@ def fred_string_list(value):
     return [cleaned] if cleaned else []
 
 
+def fred_clean_candidate_clarifications(value):
+    """
+    Keep candidate-confirmed facts while removing obvious recruiter question text.
+
+    The optional Freddie clarification box is a candidate-evidence source. Users may
+    paste a Q&A exchange, so question wording must never become evidence merely
+    because it names a tool, responsibility, or scope the candidate was asked about.
+    """
+    raw = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not raw.strip():
+        return ""
+
+    cleaned_lines = []
+    question_start = re.compile(
+        r"^\s*(?:q(?:uestion)?\s*\d*\s*[:.)-]?\s*|\d+\s*[.)-]\s*)?"
+        r"(?:have|has|do|does|did|can|could|are|is|was|were|will|would|what|when|where|why|how)\b",
+        flags=re.IGNORECASE,
+    )
+
+    for raw_line in raw.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            if cleaned_lines and cleaned_lines[-1] != "":
+                cleaned_lines.append("")
+            continue
+
+        # Drop obvious interviewer/recruiter questions. Candidate answers such as
+        # "Yes. I shared ownership..." remain untouched.
+        if "?" in line and question_start.search(line):
+            continue
+        if re.match(r"^\s*(?:q(?:uestion)?\s*\d*\s*[:.)-])", line, flags=re.IGNORECASE):
+            continue
+
+        cleaned_lines.append(line)
+
+    # Collapse excessive blank lines while preserving readable item separation.
+    result = "\n".join(cleaned_lines).strip()
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result
+
+
 def fred_candidate_evidence_text(resume_text, candidate_clarifications=""):
     """
     Build the Freddie candidate-truth surface used by grounding checks.
@@ -1402,7 +1443,7 @@ def fred_candidate_evidence_text(resume_text, candidate_clarifications=""):
     become candidate evidence.
     """
     resume = str(resume_text or "").strip()
-    clarifications = str(candidate_clarifications or "").strip()
+    clarifications = fred_clean_candidate_clarifications(candidate_clarifications)
     if not clarifications:
         return resume
     return (
@@ -1428,6 +1469,8 @@ def fred_signal_tokens(value):
         "of", "on", "or", "the", "to", "using", "with", "within", "via",
         "support", "supports", "supported", "experience", "experienced",
         "skill", "skills", "work", "working", "professional", "professionals",
+        "provide", "provides", "provided", "providing", "function", "functions",
+        "ability", "able", "help", "helps", "helping",
     }
 
     derivational_roots = {
@@ -1499,13 +1542,17 @@ def fred_signal_tokens(value):
             continue
         normalized = derivational_roots.get(lowered, lowered)
         if normalized not in derivational_roots.values() and len(normalized) > 4:
-            for suffix in ("ing", "ed", "es", "s"):
-                if normalized.endswith(suffix) and len(normalized) - len(suffix) >= 4:
-                    normalized = normalized[:-len(suffix)]
-                    # Re-apply the semantic root map after plural/tense stemming
-                    # (for example, automations -> automation -> automat).
-                    normalized = derivational_roots.get(normalized, normalized)
-                    break
+            if normalized.endswith("ies") and len(normalized) > 5:
+                normalized = normalized[:-3] + "y"
+                normalized = derivational_roots.get(normalized, normalized)
+            else:
+                for suffix in ("ing", "ed", "es", "s"):
+                    if normalized.endswith(suffix) and len(normalized) - len(suffix) >= 4:
+                        normalized = normalized[:-len(suffix)]
+                        # Re-apply the semantic root map after plural/tense stemming
+                        # (for example, automations -> automation -> automat).
+                        normalized = derivational_roots.get(normalized, normalized)
+                        break
         if normalized and normalized not in result:
             result.append(normalized)
 
@@ -1523,6 +1570,46 @@ def fred_claim_supported_by_evidence(claim, evidence):
         return matched == 1
     required = max(1, int((len(claim_tokens) * 0.60) + 0.9999))
     return matched >= required
+
+
+def fred_claim_supported_by_candidate_context(
+    claim,
+    cited_evidence,
+    full_candidate_evidence,
+):
+    """
+    Validate natural skill labels/details without demanding every umbrella word
+    appear inside one short citation.
+
+    The cited excerpt must still anchor the claim. The broader candidate evidence
+    may then supply closely related context from another verified resume/clarification
+    excerpt. This is intentionally used for generic competency labels/details only;
+    concrete identifiers and high-impact authority claims remain separately strict.
+    """
+    if fred_claim_supported_by_evidence(claim, cited_evidence):
+        return True
+
+    claim_tokens = fred_signal_tokens(claim)
+    cited_tokens = set(fred_signal_tokens(cited_evidence))
+    full_tokens = set(fred_signal_tokens(full_candidate_evidence))
+
+    if not claim_tokens or not cited_tokens or not full_tokens:
+        return False
+
+    # At least one substantive claim concept must be present in the exact cited
+    # evidence so an unrelated quote cannot validate a row/detail.
+    anchored = [token for token in claim_tokens if token in cited_tokens]
+    if not anchored:
+        return False
+
+    matched_full = sum(1 for token in claim_tokens if token in full_tokens)
+    if len(claim_tokens) == 1:
+        return matched_full == 1
+
+    # Umbrella labels may synthesize closely related verified facts across the
+    # candidate record, but still require a strong majority of their concepts.
+    required = max(1, int((len(claim_tokens) * 0.67) + 0.9999))
+    return matched_full >= required
 
 
 def fred_explicit_identifiers(value):
@@ -1567,15 +1654,13 @@ def fred_unsupported_high_impact_claims(output_text, evidence_text):
 
     rules = [
         ("independent/independently", r"\bindependent(?:ly)?\b", r"\bindependent(?:ly)?\b"),
-        ("lead/led/leading/leadership", r"\b(?:lead|leads|leading|led|leadership)\b", r"\b(?:lead|leads|leading|led|leadership)\b"),
+        ("lead/led/leading", r"\b(?:lead|leads|leading|led)\b", r"\b(?:lead|leads|leading|led)\b"),
         ("ownership/owned", r"\b(?:own|owns|owned|owning|ownership)\b", r"\b(?:own|owns|owned|owning|ownership)\b"),
         ("manage/managed/managing/manager", r"\b(?:manage|manages|managed|managing|manager)\b", r"\b(?:manage|manages|managed|managing|manager)\b"),
         ("oversight/oversee", r"\b(?:oversee|oversees|oversaw|overseeing|oversight)\b", r"\b(?:oversee|oversees|oversaw|overseeing|oversight)\b"),
         ("architect/architected", r"\b(?:architect|architects|architected|architecting)\b", r"\b(?:architect|architects|architected|architecting)\b"),
         ("expert/expertise", r"\b(?:expert|expertise)\b", r"\b(?:expert|expertise)\b"),
         ("advanced", r"\badvanced\b", r"\badvanced\b"),
-        ("extensive", r"\bextensive\b", r"\bextensive\b"),
-        ("deep", r"\bdeep\b", r"\bdeep\b"),
         ("hands-on", r"\bhands?[\s-]+on\b", r"\bhands?[\s-]+on\b"),
         ("enterprise-wide", r"\benterprise[\s-]+wide\b", r"\benterprise[\s-]+wide\b"),
         ("organization-wide", r"\b(?:organization|organisation)[\s-]+wide\b", r"\b(?:organization|organisation)[\s-]+wide\b"),
@@ -1673,10 +1758,10 @@ def fred_role_only_phrase_hits(output_text, role_text, resume_text, evidence_tex
 
     stop_words = {
         "a", "an", "and", "as", "at", "be", "by", "for", "from", "in",
-        "is", "of", "on", "or", "the", "to", "with", "this", "that",
+        "is", "of", "on", "or", "the", "to", "into", "with", "this", "that",
         "their", "his", "her", "candidate", "role", "team", "freddie", "mac",
         "supplier", "call", "hiring", "manager", "emphasized", "highlighted",
-        "discussed", "noted",
+        "discussed", "noted", "across", "multiple",
     }
 
     hits = []
@@ -1696,7 +1781,9 @@ def fred_role_only_phrase_hits(output_text, role_text, resume_text, evidence_tex
             if words[0] in stop_words or words[-1] in stop_words:
                 continue
             if phrase in role_norm and phrase not in resume_norm:
-                if evidence and fred_claim_supported_by_evidence(phrase, evidence):
+                if evidence and fred_claim_supported_by_candidate_context(
+                    phrase, evidence, resume_text
+                ):
                     continue
                 if any(phrase in existing for existing in hits):
                     continue
@@ -5152,14 +5239,15 @@ ZERO-TOLERANCE CANDIDATE GROUNDING:
 
 HIGH-IMPACT QUALIFIERS:
 Words that materially change authority/scope/proficiency must be supported by the
-specific cited candidate evidence for that claim: independent, lead/led/leadership,
+specific cited candidate evidence for that claim: independent, lead/led/leading,
 own/ownership, manage/managed/manager, oversight, architect, expert, advanced,
-extensive, deep, hands-on, enterprise-wide, organization-wide, global,
+hands-on, enterprise-wide, organization-wide, global,
 end-to-end, high-volume, large-scale, production.
 
 SUMMARY:
 - Exactly 4 sentences, one paragraph after finalization.
 - Natural human recruiter voice, concise and evidence-based.
+- Prefer factual scope over subjective intensifiers such as "extensive" or "deep".
 - Use the deterministic total-career value exactly if a total-years statement is
   used; never attach that total to individual skills unless the resume proves it.
 - Sentence 1: identity + strongest supported role anchors.
@@ -5169,6 +5257,8 @@ SUMMARY:
   target-role application separate from candidate past experience.
 - For EACH sentence return 1-3 short VERBATIM candidate-evidence excerpts
   proving the candidate claims in that sentence.
+- Avoid harmless recruiter-language leakage from role text. Generic glue words such
+  as "provides", "functions", or "supports" are not meaningful candidate claims.
 
 SKILLS TABLE:
 - Return up to 4 rows; use 4 when four distinct defensible role-relevant rows
@@ -5183,7 +5273,18 @@ SKILLS TABLE:
   * role_evidence: 1-2 VERBATIM excerpts from the Official JD, Spotlight call,
     or MSP/VNDLY notes proving why the row matters to this requisition
   * details: 2-6 atomic items, each with ONE VERBATIM candidate-evidence excerpt
-    supporting that exact detail
+    supporting that detail
+- Skill areas may be natural umbrella competency labels synthesized from multiple
+  verified candidate facts. Details may use a concise natural label when the cited
+  evidence clearly anchors the concept and the broader candidate record supplies
+  the remaining context. Do not change the underlying scope, tool, domain, or
+  authority level merely to mirror Freddie wording.
+- Prefer the candidate's own terminology when a role synonym could imply a different
+  scope. Example: keep "Product Roadmaps" when that is what the evidence proves; do
+  not silently rewrite it as "Program Roadmaps" solely because the target is a
+  program role.
+- "Leadership Presentations" may describe presentations delivered to senior leaders;
+  the noun "leadership" does not by itself claim that the candidate led a team.
 - Do not use years in Skills rows.
 - Do not use manager-explicitly-excluded artifacts.
 - A merely de-emphasized JD skill may remain as a secondary detail for MSP/JD
@@ -5285,13 +5386,30 @@ def fred_role_priority_quote_found(
         if source and fred_source_quote_found(source, quote_text):
             return True
 
-    quote_tokens = fred_signal_tokens(quote_text)
+    # Role evidence establishes WHY a row matters, not candidate history. Allow
+    # harmless shortening or tense changes while still requiring the substantive
+    # concepts to occur together in one authoritative source.
+    low_value = {
+        "all", "team", "role", "candidate", "person", "people", "current",
+        "need", "needs", "needed", "want", "wants", "wanted", "level",
+        "function", "functions", "provide", "provid", "support",
+    }
+    quote_tokens = [
+        token for token in fred_signal_tokens(quote_text)
+        if token not in low_value and len(token) >= 3
+    ]
     if not quote_tokens:
         return False
 
     for source in sources:
         source_tokens = set(fred_signal_tokens(source))
-        if source_tokens and all(token in source_tokens for token in quote_tokens):
+        if not source_tokens:
+            continue
+        matched = sum(1 for token in quote_tokens if token in source_tokens)
+        # For short evidence phrases require all substantive concepts. For longer
+        # phrases tolerate one harmless omitted/reworded token.
+        required = len(quote_tokens) if len(quote_tokens) <= 3 else max(3, len(quote_tokens) - 1)
+        if matched >= required:
             return True
 
     return False
@@ -5425,7 +5543,7 @@ def fred_validate_grounded_tailoring(
         )
 
         if joined_area_evidence and not fred_claim_supported_by_evidence(
-            area, joined_area_evidence
+            area, candidate_evidence_source
         ):
             errors.append(
                 f"SKILL row {idx} area is not sufficiently supported by its cited candidate evidence."
@@ -5481,7 +5599,9 @@ def fred_validate_grounded_tailoring(
                 )
                 continue
 
-            if not fred_claim_supported_by_evidence(item, evidence):
+            if not fred_claim_supported_by_candidate_context(
+                item, evidence, candidate_evidence_source
+            ):
                 errors.append(
                     f"SKILL row {idx} detail '{item}' is not sufficiently supported by its cited candidate evidence."
                 )
@@ -7303,11 +7423,14 @@ def freddie_mac_app():
         "portfolio size, older tool experience, leadership audience, or other factual "
         "clarifications. These are treated as secondary candidate evidence, never as role/JD evidence."
     )
-    Candidate_Clarifications = st.text_area(
+    Candidate_Clarifications_Raw = st.text_area(
         "Candidate-Confirmed Follow-Up Answers / Clarifications:",
         height=140,
         key="fred_candidate_clarifications",
         placeholder="Optional. Paste direct candidate responses or verified screening notes here...",
+    )
+    Candidate_Clarifications = fred_clean_candidate_clarifications(
+        Candidate_Clarifications_Raw
     )
 
     # ================================================================
