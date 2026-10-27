@@ -1380,104 +1380,6 @@ def fred_source_quote_found(source_text, quote):
     return quote_norm in source
 
 
-def fred_vndly_summary_evidence_found(candidate_source_text, evidence):
-    """
-    Validate VNDLY-comment evidence against candidate truth sources.
-
-    Resume/clarification excerpts remain exact-normalized quotes. UI-entered
-    submission facts are different: Gemini may harmlessly render snake_case
-    keys as natural labels or combine location components that are separately
-    present in the same structured-facts block. Allow token-complete matching
-    ONLY inside the CANDIDATE SUBMISSION FACTS block so this flexibility cannot
-    be used to stitch together substantive resume experience claims.
-    """
-    if fred_source_quote_found(candidate_source_text, evidence):
-        return True
-
-    marker = "CANDIDATE SUBMISSION FACTS:"
-    source_text = str(candidate_source_text or "")
-    if marker not in source_text:
-        return False
-
-    facts_text = source_text.split(marker, 1)[1]
-    evidence_tokens = fred_signal_tokens(evidence)
-    fact_tokens = set(fred_signal_tokens(facts_text))
-
-    if not evidence_tokens or not fact_tokens:
-        return False
-
-    # Require every substantive evidence token to be present somewhere in the
-    # structured logistics facts. This safely handles examples such as
-    # "rehire-eligibility check completed: Yes" versus the stored
-    # "rehire_eligibility_check_completed: Yes", and "onsite_locations:
-    # McLean, VA" when McLean + VA are both present across the location facts.
-    return all(token in fact_tokens for token in evidence_tokens)
-
-
-def fred_numeric_years(value):
-    match = re.search(r"(\d+(?:\.\d+)?)", str(value or ""))
-    if not match:
-        return None
-    try:
-        return float(match.group(1))
-    except Exception:
-        return None
-
-
-def fred_should_suppress_total_years(calculated_total_experience, vndly_context):
-    """
-    Avoid unnecessarily advertising a very large total-career number when the
-    structured Freddie requisition targets a materially lower experience band.
-    This affects presentation only; it never changes the candidate's history.
-    """
-    vndly_context = vndly_context or {}
-    total_years = fred_numeric_years(calculated_total_experience)
-    max_years = fred_numeric_years(vndly_context.get("max_experience", ""))
-
-    if total_years is None or max_years is None or max_years <= 0:
-        return False
-
-    return (
-        total_years >= max_years + 8
-        or (max_years <= 10 and total_years >= max_years * 2)
-    )
-
-
-def fred_suppress_overqualification_years_text(
-    value,
-    calculated_total_experience,
-    vndly_context,
-):
-    """Replace only the deterministic TOTAL-career number when it is strategically
-    counterproductive versus Freddie's structured experience range.
-
-    Specific skill/domain tenures are not touched.
-    """
-    text = str(value or "")
-    if not text or not fred_should_suppress_total_years(
-        calculated_total_experience, vndly_context
-    ):
-        return text
-
-    total_years = fred_numeric_years(calculated_total_experience)
-    if total_years is None:
-        return text
-
-    if float(total_years).is_integer():
-        year_token = str(int(total_years))
-    else:
-        year_token = str(total_years).rstrip("0").rstrip(".")
-
-    # "30+ years of professional experience" -> "extensive professional experience"
-    # "30 years of Freddie Mac experience" -> "extensive Freddie Mac experience"
-    pattern = re.compile(
-        rf"\b{re.escape(year_token)}\s*\+?\s*years?\s+of\s+",
-        flags=re.IGNORECASE,
-    )
-    text = pattern.sub("extensive ", text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
 def fred_string_list(value):
     if isinstance(value, list):
         return [
@@ -1491,75 +1393,6 @@ def fred_string_list(value):
     return [cleaned] if cleaned else []
 
 
-def fred_clean_candidate_clarifications(value):
-    """
-    Keep candidate-confirmed facts while removing obvious recruiter question text.
-
-    The optional Freddie clarification box is a candidate-evidence source. Users may
-    paste a Q&A exchange, so question wording must never become evidence merely
-    because it names a tool, responsibility, or scope the candidate was asked about.
-    """
-    raw = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
-    if not raw.strip():
-        return ""
-
-    cleaned_lines = []
-    question_start = re.compile(
-        r"^\s*(?:q(?:uestion)?\s*\d*\s*[:.)-]?\s*|\d+\s*[.)-]\s*)?"
-        r"(?:have|has|do|does|did|can|could|are|is|was|were|will|would|what|when|where|why|how)\b",
-        flags=re.IGNORECASE,
-    )
-
-    for raw_line in raw.split("\n"):
-        line = raw_line.strip()
-        if not line:
-            if cleaned_lines and cleaned_lines[-1] != "":
-                cleaned_lines.append("")
-            continue
-
-        # Drop obvious interviewer/recruiter questions. Candidate answers such as
-        # "Yes. I shared ownership..." remain untouched.
-        if "?" in line and question_start.search(line):
-            continue
-        if re.match(r"^\s*(?:q(?:uestion)?\s*\d*\s*[:.)-])", line, flags=re.IGNORECASE):
-            continue
-
-        cleaned_lines.append(line)
-
-    # Collapse excessive blank lines while preserving readable item separation.
-    result = "\n".join(cleaned_lines).strip()
-    result = re.sub(r"\n{3,}", "\n\n", result)
-    return result
-
-
-def fred_candidate_evidence_text(resume_text, candidate_clarifications=""):
-    """
-    Build the Freddie candidate-truth surface used by grounding checks.
-
-    Resume remains the primary source. Optional candidate-confirmed follow-up
-    answers may add facts the original resume omitted, but role/JD sources never
-    become candidate evidence.
-    """
-    resume = str(resume_text or "").strip()
-    clarifications = fred_clean_candidate_clarifications(candidate_clarifications)
-    if not clarifications:
-        return resume
-    return (
-        resume
-        + "\n\nCANDIDATE-CONFIRMED CLARIFICATIONS / FOLLOW-UP ANSWERS:\n"
-        + clarifications
-    ).strip()
-
-
-def fred_clean_generated_text(value):
-    """Freddie output style cleanup, including the user's no-em-dash preference."""
-    cleaned = re.sub(r"\s+", " ", str(value or "")).strip()
-    # Never emit em dashes in generated recruiter-facing writing.
-    cleaned = cleaned.replace("\u2014", ", ")
-    cleaned = re.sub(r"\s+,\s+", ", ", cleaned)
-    return cleaned.strip()
-
-
 def fred_signal_tokens(value):
     """Conservative lexical tokens for Freddie candidate-evidence checks."""
     stop_words = {
@@ -1567,13 +1400,6 @@ def fred_signal_tokens(value):
         "of", "on", "or", "the", "to", "using", "with", "within", "via",
         "support", "supports", "supported", "experience", "experienced",
         "skill", "skills", "work", "working", "professional", "professionals",
-        "provide", "provides", "provided", "providing", "function", "functions",
-        "ability", "able", "help", "helps", "helping",
-        # Generic framing nouns should not require literal resume wording when the
-        # substantive domain/competency itself is proven. For example,
-        # "Multifamily Business Context" is grounded by Multifamily + business
-        # experience; the word "context" is only a label wrapper.
-        "context", "industry", "domain",
     }
 
     derivational_roots = {
@@ -1611,23 +1437,8 @@ def fred_signal_tokens(value):
         "prioritize": "priorit",
         "prioritized": "priorit",
         "stakeholders": "stakeholder",
-        # Normalize adjective/adverb and noun/verb forms used in natural
-        # competency labels. Example: "Independent Risk Identification" must
-        # match candidate evidence such as "independently identified program
-        # and project risks" without weakening the separate authority check.
-        "independent": "independ",
-        "independently": "independ",
-        "identification": "identif",
-        "identify": "identif",
-        "identifies": "identif",
-        "identified": "identif",
-        "identifying": "identif",
         "strategic": "strateg",
         "strategy": "strateg",
-        "alignment": "align",
-        "align": "align",
-        "aligned": "align",
-        "aligning": "align",
         "technical": "tech",
         "technology": "tech",
         "technologies": "tech",
@@ -1639,58 +1450,6 @@ def fred_signal_tokens(value):
         "transform": "transform",
         "transformed": "transform",
         "transforming": "transform",
-        # Common competency-label noun/verb pairs. These normalize natural
-        # recruiter labels to the same concept as resume action verbs without
-        # granting support for a different skill or named technology.
-        "facilitation": "facilitat",
-        "facilitate": "facilitat",
-        "facilitated": "facilitat",
-        "facilitating": "facilitat",
-        "integration": "integrat",
-        "integrations": "integrat",
-        "integrate": "integrat",
-        "integrated": "integrat",
-        "integrating": "integrat",
-        # Coordination, collaboration, and partnership are equivalent umbrella
-        # concepts for competency-label grounding. Concrete role nouns/tools still
-        # require their own evidence, and authority claims remain separately strict.
-        "coordination": "collab",
-        "coordinator": "collab",
-        "coordinate": "collab",
-        "coordinated": "collab",
-        "coordinating": "collab",
-        "collaboration": "collab",
-        "collaborate": "collab",
-        "collaborated": "collab",
-        "collaborating": "collab",
-        "partnership": "collab",
-        "partnerships": "collab",
-        "partner": "collab",
-        "partners": "collab",
-        "partnered": "collab",
-        "partnering": "collab",
-        "implementation": "implement",
-        "implement": "implement",
-        "implemented": "implement",
-        "implementing": "implement",
-        "delivery": "deliver",
-        "deliver": "deliver",
-        "delivered": "deliver",
-        "delivering": "deliver",
-        "documentation": "document",
-        "document": "document",
-        "documented": "document",
-        "documenting": "document",
-        "recommendation": "recommend",
-        "recommendations": "recommend",
-        "recommend": "recommend",
-        "recommended": "recommend",
-        "recommending": "recommend",
-        "escalation": "escalat",
-        "escalations": "escalat",
-        "escalate": "escalat",
-        "escalated": "escalat",
-        "escalating": "escalat",
     }
 
     # Hyphens are treated as word separators here so natural umbrella labels
@@ -1712,17 +1471,13 @@ def fred_signal_tokens(value):
             continue
         normalized = derivational_roots.get(lowered, lowered)
         if normalized not in derivational_roots.values() and len(normalized) > 4:
-            if normalized.endswith("ies") and len(normalized) > 5:
-                normalized = normalized[:-3] + "y"
-                normalized = derivational_roots.get(normalized, normalized)
-            else:
-                for suffix in ("ing", "ed", "es", "s"):
-                    if normalized.endswith(suffix) and len(normalized) - len(suffix) >= 4:
-                        normalized = normalized[:-len(suffix)]
-                        # Re-apply the semantic root map after plural/tense stemming
-                        # (for example, automations -> automation -> automat).
-                        normalized = derivational_roots.get(normalized, normalized)
-                        break
+            for suffix in ("ing", "ed", "es", "s"):
+                if normalized.endswith(suffix) and len(normalized) - len(suffix) >= 4:
+                    normalized = normalized[:-len(suffix)]
+                    # Re-apply the semantic root map after plural/tense stemming
+                    # (for example, automations -> automation -> automat).
+                    normalized = derivational_roots.get(normalized, normalized)
+                    break
         if normalized and normalized not in result:
             result.append(normalized)
 
@@ -1740,46 +1495,6 @@ def fred_claim_supported_by_evidence(claim, evidence):
         return matched == 1
     required = max(1, int((len(claim_tokens) * 0.60) + 0.9999))
     return matched >= required
-
-
-def fred_claim_supported_by_candidate_context(
-    claim,
-    cited_evidence,
-    full_candidate_evidence,
-):
-    """
-    Validate natural skill labels/details without demanding every umbrella word
-    appear inside one short citation.
-
-    The cited excerpt must still anchor the claim. The broader candidate evidence
-    may then supply closely related context from another verified resume/clarification
-    excerpt. This is intentionally used for generic competency labels/details only;
-    concrete identifiers and high-impact authority claims remain separately strict.
-    """
-    if fred_claim_supported_by_evidence(claim, cited_evidence):
-        return True
-
-    claim_tokens = fred_signal_tokens(claim)
-    cited_tokens = set(fred_signal_tokens(cited_evidence))
-    full_tokens = set(fred_signal_tokens(full_candidate_evidence))
-
-    if not claim_tokens or not cited_tokens or not full_tokens:
-        return False
-
-    # At least one substantive claim concept must be present in the exact cited
-    # evidence so an unrelated quote cannot validate a row/detail.
-    anchored = [token for token in claim_tokens if token in cited_tokens]
-    if not anchored:
-        return False
-
-    matched_full = sum(1 for token in claim_tokens if token in full_tokens)
-    if len(claim_tokens) == 1:
-        return matched_full == 1
-
-    # Umbrella labels may synthesize closely related verified facts across the
-    # candidate record, but still require a strong majority of their concepts.
-    required = max(1, int((len(claim_tokens) * 0.67) + 0.9999))
-    return matched_full >= required
 
 
 def fred_explicit_identifiers(value):
@@ -1824,13 +1539,15 @@ def fred_unsupported_high_impact_claims(output_text, evidence_text):
 
     rules = [
         ("independent/independently", r"\bindependent(?:ly)?\b", r"\bindependent(?:ly)?\b"),
-        ("lead/led/leading", r"\b(?:lead|leads|leading|led)\b", r"\b(?:lead|leads|leading|led)\b"),
+        ("lead/led/leading/leadership", r"\b(?:lead|leads|leading|led|leadership)\b", r"\b(?:lead|leads|leading|led|leadership)\b"),
         ("ownership/owned", r"\b(?:own|owns|owned|owning|ownership)\b", r"\b(?:own|owns|owned|owning|ownership)\b"),
         ("manage/managed/managing/manager", r"\b(?:manage|manages|managed|managing|manager)\b", r"\b(?:manage|manages|managed|managing|manager)\b"),
         ("oversight/oversee", r"\b(?:oversee|oversees|oversaw|overseeing|oversight)\b", r"\b(?:oversee|oversees|oversaw|overseeing|oversight)\b"),
         ("architect/architected", r"\b(?:architect|architects|architected|architecting)\b", r"\b(?:architect|architects|architected|architecting)\b"),
         ("expert/expertise", r"\b(?:expert|expertise)\b", r"\b(?:expert|expertise)\b"),
         ("advanced", r"\badvanced\b", r"\badvanced\b"),
+        ("extensive", r"\bextensive\b", r"\bextensive\b"),
+        ("deep", r"\bdeep\b", r"\bdeep\b"),
         ("hands-on", r"\bhands?[\s-]+on\b", r"\bhands?[\s-]+on\b"),
         ("enterprise-wide", r"\benterprise[\s-]+wide\b", r"\benterprise[\s-]+wide\b"),
         ("organization-wide", r"\b(?:organization|organisation)[\s-]+wide\b", r"\b(?:organization|organisation)[\s-]+wide\b"),
@@ -1851,59 +1568,44 @@ def fred_unsupported_high_impact_claims(output_text, evidence_text):
     return unsupported
 
 
-def fred_requirement_phrase_hits(output_text, requirement_items):
-    """Return meaningful requirement phrases reused in an output string."""
+def fred_output_hits_deemphasized_requirement(output_text, structured_req):
+    """Return explicit negated/de-emphasized phrases reused in candidate-facing output."""
+    structured_req = fred_coerce_structured_req(structured_req)
+    negated = structured_req.get("deemphasized_or_negated_requirements", []) or []
     output_norm = fred_normalize_quote_match_text(output_text)
     hits = []
+
     if not output_norm:
         return hits
 
-    output_tokens = fred_signal_tokens(output_text)
-    for item in requirement_items or []:
+    for item in negated:
         item_text = str(item or "").strip()
-        if not fred_normalize_quote_match_text(item_text):
+        item_norm = fred_normalize_quote_match_text(item_text)
+        if not item_norm:
             continue
-        tokens = [token for token in fred_signal_tokens(item_text) if len(token) >= 3]
+
+        # Look for meaningful 1-4 word phrases from the negated statement.
+        tokens = [
+            token for token in fred_signal_tokens(item_text)
+            if len(token) >= 3
+        ]
         for size in (4, 3, 2):
             if len(tokens) < size:
                 continue
-            found = False
             for idx in range(len(tokens) - size + 1):
                 phrase_tokens = tokens[idx:idx + size]
                 phrase = " ".join(phrase_tokens)
+                output_tokens = fred_signal_tokens(output_text)
                 for out_idx in range(len(output_tokens) - size + 1):
                     if output_tokens[out_idx:out_idx + size] == phrase_tokens:
                         if phrase not in hits:
                             hits.append(phrase)
-                        found = True
-                        break
-                if found:
+                if hits and size >= 2:
                     break
-            if found:
+            if hits and size >= 2:
                 break
+
     return hits[:8]
-
-
-def fred_output_hits_excluded_requirement(output_text, structured_req):
-    """Block only true negative/disqualifying manager guidance."""
-    structured_req = fred_coerce_structured_req(structured_req)
-    excluded = structured_req.get("explicitly_excluded_requirements", []) or []
-    return fred_requirement_phrase_hits(output_text, excluded)
-
-
-def fred_output_hits_deemphasized_requirement(output_text, structured_req):
-    """
-    Identify lower-priority concepts without treating them as prohibited.
-
-    v11 intentionally separates 'the team does not use X / X is not central'
-    from 'do not submit candidates with X / X is disqualifying'.
-    """
-    structured_req = fred_coerce_structured_req(structured_req)
-    items = structured_req.get("deemphasized_requirements", []) or []
-    # Backward compatibility for cached v10 analysis objects.
-    if not items:
-        items = structured_req.get("deemphasized_or_negated_requirements", []) or []
-    return fred_requirement_phrase_hits(output_text, items)
 
 
 def fred_split_sentences(text):
@@ -1928,10 +1630,8 @@ def fred_role_only_phrase_hits(output_text, role_text, resume_text, evidence_tex
 
     stop_words = {
         "a", "an", "and", "as", "at", "be", "by", "for", "from", "in",
-        "is", "of", "on", "or", "the", "to", "into", "with", "this", "that",
+        "is", "of", "on", "or", "the", "to", "with", "this", "that",
         "their", "his", "her", "candidate", "role", "team", "freddie", "mac",
-        "supplier", "call", "hiring", "manager", "emphasized", "highlighted",
-        "discussed", "noted", "across", "multiple",
     }
 
     hits = []
@@ -1951,9 +1651,7 @@ def fred_role_only_phrase_hits(output_text, role_text, resume_text, evidence_tex
             if words[0] in stop_words or words[-1] in stop_words:
                 continue
             if phrase in role_norm and phrase not in resume_norm:
-                if evidence and fred_claim_supported_by_candidate_context(
-                    phrase, evidence, resume_text
-                ):
+                if evidence and fred_claim_supported_by_evidence(phrase, evidence):
                     continue
                 if any(phrase in existing for existing in hits):
                     continue
@@ -1978,7 +1676,6 @@ def fred_role_only_signal_tokens(output_text, role_text, resume_text, evidence_t
         "freddie", "candidate", "team", "role", "current", "manager",
         "require", "preferred", "priority", "business", "technical",
         "professional", "experience", "work", "support", "project",
-        "supplier", "hiring", "emphasized", "highlighted", "discussed", "noted",
     }
 
     hits = []
@@ -2206,9 +1903,7 @@ def fred_filter_exact_req_recommendations(raw_items, allowed_items, catalog):
     ]
 
 
-FREDDIE_VNDLY_SKILL_POOL_LIMIT = 40
-# Freddie/VNDLY permits selecting more than eight manual skills.
-# v11 therefore has NO final hard cap; the pool limit only prevents runaway AI output.
+FREDDIE_VNDLY_SKILL_CAP = 8
 
 
 def fred_extract_work_history_text(raw_resume_text):
@@ -2343,17 +2038,13 @@ def fred_skill_work_history_evidence(skill_name, raw_resume_text):
         "agile delivery": ["agile", "scrum", "sprint planning", "backlog", "pi planning"],
         "agile": ["agile", "scrum", "sprint planning"],
         "product management": ["product manager", "product management", "product owner", "product roadmap", "product roadmaps"],
-        "program management": ["program manager", "program management", "program delivery", "program planning", "portfolio management", "program portfolio"],
-        "enterprise program management": ["program manager", "program management", "program delivery", "program planning", "portfolio management", "program portfolio", "multiple projects", "concurrent projects", "concurrent initiatives"],
-        "project management": ["project manager", "project management", "project delivery", "project planning", "managing specific projects", "multiple projects"],
+        "program management": ["program manager", "program management", "program delivery", "program planning"],
+        "project management": ["project manager", "project management", "project delivery", "project planning"],
         "business analysis": ["business analyst", "business analysis", "business requirements", "requirements elicitation", "requirements analysis", "user requirements", "business needs", "translating complex business needs", "translate business needs"],
         "requirements analysis": ["requirements analysis", "requirements elicitation", "business requirements", "technical requirements", "requirements session", "requirements sessions"],
         "stakeholder management": ["stakeholder management", "stakeholders", "business stakeholders"],
         "executive reporting": ["executive reporting", "executive-level reporting", "executive and program-level reporting", "program-level reporting", "executive dashboard", "executive dashboards", "executive status", "status reports", "leadership reporting", "leadership presentation", "leadership presentations"],
-        "risk management": ["risk management", "risk identification", "risk assessment", "risk register", "issue tracking", "program risks", "project risks"],
-        "business risk management": ["risk management", "risk identification", "risk assessment", "risk register", "issue tracking", "program risks", "project risks", "risks and issues"],
-        "user story": ["user story", "user stories", "epics", "story writing"],
-        "user stories": ["user story", "user stories", "epics", "story writing"],
+        "risk management": ["risk management", "risk identification", "risk assessment", "risk register", "issue tracking"],
         "devops": ["devops", "devsecops"],
         "quality assurance": ["quality assurance", "qa engineer", "qa testing"],
         "software testing": [
@@ -2442,22 +2133,15 @@ def fred_find_skill_evidence_excerpt(skill_name, raw_resume_text):
 
 
 def fred_skill_priority_category(skill_name, structured_req):
-    """Classify a supported VNDLY skill without confusing priority with prohibition."""
+    """Classify a supported VNDLY skill without confusing manager priority with formal Required."""
     structured_req = fred_coerce_structured_req(structured_req)
 
-    excluded_text = " ".join(
+    negated_text = " ".join(
         str(x)
-        for x in (structured_req.get("explicitly_excluded_requirements", []) or [])
+        for x in (structured_req.get("deemphasized_or_negated_requirements", []) or [])
     )
-    if excluded_text and fred_skill_matches_text(skill_name, excluded_text):
+    if negated_text and fred_skill_matches_text(skill_name, negated_text):
         return ""
-
-    deemphasized_text = " ".join(
-        str(x)
-        for x in (structured_req.get("deemphasized_requirements", []) or [])
-    )
-    if deemphasized_text and fred_skill_matches_text(skill_name, deemphasized_text):
-        return "jd_supported_coverage"
 
     explicit_must_text = " ".join(
         str(x)
@@ -2480,18 +2164,6 @@ def fred_skill_priority_category(skill_name, structured_req):
     if fred_skill_matches_text(skill_name, explicit_must_text):
         return "required_job_intelligence"
 
-    manager_optional_lines = [
-        str(x)
-        for x in (structured_req.get("role_clarifications", []) or [])
-        if fred_skill_matches_text(skill_name, str(x))
-        and re.search(
-            r"(?i)\b(?:nice to have|helpful|a plus|preferred|optional|not required|helps?)\b",
-            str(x),
-        )
-    ]
-    if manager_optional_lines:
-        return "preferred_job_intelligence"
-
     manager_text = " ".join(
         str(x)
         for key in [
@@ -2510,13 +2182,6 @@ def fred_skill_priority_category(skill_name, structured_req):
 
     if fred_skill_matches_text(skill_name, preferred_text):
         return "preferred_job_intelligence"
-
-    required_text = " ".join(
-        str(x)
-        for x in (structured_req.get("required_requirements", []) or [])
-    )
-    if required_text and fred_skill_matches_text(skill_name, required_text):
-        return "required_job_intelligence"
 
     return "additional_high_value"
 
@@ -2609,7 +2274,7 @@ def fred_supplement_priority_skills(
 
 
 def fred_vndly_skill_family(skill_name):
-    """High-confidence skill families used for Freddie redundancy control."""
+    """High-confidence skill families used only for Top-8 redundancy control."""
     key = fred_normalize_skill_name(skill_name)
 
     families = {
@@ -2748,17 +2413,13 @@ def fred_skill_is_explicitly_named_in_job(skill_name, structured_req):
         "agile delivery": ["agile", "scrum", "sprint planning", "backlog", "pi planning"],
         "agile": ["agile", "scrum", "sprint planning"],
         "product management": ["product management", "product manager", "product owner", "product roadmap"],
-        "program management": ["program management", "program manager", "program planning", "program delivery", "portfolio management"],
-        "enterprise program management": ["program management", "program manager", "program planning", "program delivery", "portfolio management", "multiple projects", "concurrent projects", "concurrent initiatives"],
+        "program management": ["program management", "program manager", "program planning"],
         "project management": ["project management", "project manager", "project planning", "managing specific projects", "multiple projects"],
         "business analysis": ["business analysis", "business analyst", "business requirements", "requirements elicitation", "user requirements", "requirements sessions", "business needs", "translate business"],
         "requirements analysis": ["requirements analysis", "requirements elicitation", "business requirements", "technical requirements", "user requirements", "requirements sessions", "business needs", "translate business"],
         "stakeholder management": ["stakeholder management", "stakeholders", "business stakeholders"],
         "executive reporting": ["executive reporting", "executive-level reporting", "executive and program-level reporting", "program-level reporting", "executive dashboard", "executive dashboards", "executive status", "status reports", "leadership reporting", "leadership presentation", "leadership presentations"],
-        "risk management": ["risk management", "risk identification", "risk assessment", "risk register", "issue tracking", "program risks", "project risks"],
-        "business risk management": ["risk management", "risk identification", "risk assessment", "risk register", "issue tracking", "program risks", "project risks", "risks and issues"],
-        "user story": ["user story", "user stories", "epics", "story writing"],
-        "user stories": ["user story", "user stories", "epics", "story writing"],
+        "risk management": ["risk management", "risk identification", "risk assessment", "risk register", "issue tracking"],
         "devops": ["devops", "devsecops"],
         "quality assurance": ["quality assurance", "qa"],
         "software testing": ["software testing", "functional testing", "regression testing", "system testing"],
@@ -2843,18 +2504,14 @@ def fred_skill_aliases_for_requirement(skill_name):
         "power platform": ["power platform", "power apps", "power automate", "power bi"],
         "agile delivery": ["agile", "scrum", "sprint planning", "backlog", "pi planning"],
         "agile": ["agile", "scrum", "sprint planning"],
-        "product management": ["product management", "product manager", "product owner", "product roadmap", "product analyst", "product team"],
-        "program management": ["program management", "program manager", "program planning", "program delivery", "portfolio management"],
-        "enterprise program management": ["program management", "program manager", "program planning", "program delivery", "portfolio management", "multiple projects", "concurrent projects", "concurrent initiatives"],
+        "product management": ["product management", "product manager", "product owner", "product roadmap"],
+        "program management": ["program management", "program manager", "program planning"],
         "project management": ["project management", "project manager", "project planning", "managing specific projects", "multiple projects"],
         "business analysis": ["business analysis", "business analyst", "business requirements", "requirements elicitation", "user requirements", "requirements sessions", "business needs", "translate business"],
         "requirements analysis": ["requirements analysis", "requirements elicitation", "business requirements", "technical requirements", "user requirements", "requirements sessions", "business needs", "translate business"],
         "stakeholder management": ["stakeholder management", "stakeholders", "business stakeholders"],
         "executive reporting": ["executive reporting", "executive-level reporting", "executive and program-level reporting", "program-level reporting", "executive dashboard", "executive dashboards", "executive status", "status reports", "leadership reporting", "leadership presentation", "leadership presentations"],
-        "risk management": ["risk management", "risk identification", "risk assessment", "risk register", "issue tracking", "program risks", "project risks"],
-        "business risk management": ["risk management", "risk identification", "risk assessment", "risk register", "issue tracking", "program risks", "project risks", "risks and issues"],
-        "user story": ["user story", "user stories", "epics", "story writing"],
-        "user stories": ["user story", "user stories", "epics", "story writing"],
+        "risk management": ["risk management", "risk identification", "risk assessment", "risk register", "issue tracking"],
         "devops": ["devops", "devsecops"],
         "quality assurance": ["quality assurance", "qa"],
         "software testing": ["software testing", "functional testing", "regression testing", "system testing"],
@@ -3005,8 +2662,8 @@ def fred_skill_is_formal_must_have(skill_name, structured_req):
     """
     True only when the catalogue skill is explicitly named in Freddie's formal
     mandatory requirement text. Manager/Spotlight weighting is intentionally
-    unchanged; this helper protects concrete Must-Have technologies from being
-    diluted by broad generic labels.
+    unchanged; this helper is only a final Top-8 protection against broad skills
+    crowding out concrete Must-Have technologies.
     """
     structured_req = fred_coerce_structured_req(structured_req)
 
@@ -3028,8 +2685,9 @@ def fred_skill_is_formal_must_have(skill_name, structured_req):
 
 def fred_vndly_is_broad_generic_skill(skill_name):
     """
-    Broad concepts remain useful, but they should not outrank a candidate-supported
-    concrete technology explicitly required by Freddie.
+    Broad concepts remain useful, but with only eight slots they should not
+    displace a candidate-supported concrete technology explicitly required by
+    Freddie.
     """
     key = fred_normalize_skill_name(skill_name)
 
@@ -3060,15 +2718,11 @@ def fred_vndly_redundancy_preference(skill_name):
     preferences = {
         # "Financial Services" is more useful/specific than generic "Finance"
         # when only one of those redundant domain labels should consume a slot.
-        "enterprise program management": 0,
-        "program management": 1,
-        "business risk management": 0,
-        "risk management": 1,
         "financial services": 0,
         "finance": 1,
 
         # "Data Quality" is the cleaner umbrella when "data validation" would
-        # otherwise duplicate the same screening dimension.
+        # otherwise duplicate the same limited Top-8 screening dimension.
         "data quality": 0,
         "data validation": 1,
 
@@ -3091,8 +2745,7 @@ def fred_required_skill_sort_key(item, structured_req, original_index=0):
         "manager_priority": 2,
         "exact_structured_nice": 3,
         "preferred_job_intelligence": 4,
-        "jd_supported_coverage": 5,
-        "additional_high_value": 6,
+        "additional_high_value": 5,
     }
     category = str(item.get("source_category", "") or "").strip().lower()
     group_index = fred_skill_requirement_group(item.get("skill_name", ""), structured_req)
@@ -3113,19 +2766,14 @@ def fred_required_skill_sort_key(item, structured_req, original_index=0):
 def fred_apply_vndly_redundancy_control(
     ranked_skills,
     structured_req,
-    cap=None,
+    cap=FREDDIE_VNDLY_SKILL_CAP,
 ):
     """
-    Final Freddie VNDLY selection with NO artificial hard cap.
-
-    Keep every materially relevant, candidate-supported skill while removing
-    duplicates and obvious synonym/family noise. This mirrors the real VNDLY
-    workflow, where recruiters may select more than eight skills when they all
-    add useful screening signal.
+    Final Top-8 selection that balances requirement priority, distinct coverage,
+    dated evidence, and redundancy control.
     """
     candidates = []
     seen = set()
-    structured_req = fred_coerce_structured_req(structured_req)
 
     for idx, item in enumerate(ranked_skills or []):
         name = str(item.get("skill_name", "") or "").strip()
@@ -3140,9 +2788,12 @@ def fred_apply_vndly_redundancy_control(
     if not candidates:
         return []
 
+    # First reserve one strong candidate-supported skill for each must-have
+    # competency group so later generic tools cannot crowd out a whole requirement area.
     selected = []
     selected_keys = set()
     family_counts = {}
+    groups = (structured_req or {}).get("must_have_competency_groups", []) or []
 
     def can_add(item):
         name = str(item.get("skill_name", "") or "").strip()
@@ -3151,83 +2802,161 @@ def fred_apply_vndly_redundancy_control(
             return False
 
         family = fred_vndly_skill_family(name)
+
         selected_names = {
             fred_normalize_skill_name(existing.get("skill_name", ""))
             for existing in selected
         }
 
-        # Remove only true duplicate/synonym noise. Distinct business screening
-        # dimensions are allowed to coexist because VNDLY has no eight-skill cap.
+        # J2EE already communicates the enterprise-Java umbrella. With only
+        # eight slots, Servlets/JSP are normally redundant once J2EE is selected;
+        # JDBC remains eligible because it adds a distinct database-connectivity
+        # screening signal.
         if "j2ee" in selected_names and key in {
             "java servlets",
             "javaserver pages (jsp)",
         }:
             return False
 
+        if key == "j2ee" and (
+            "java servlets" in selected_names
+            or "javaserver pages (jsp)" in selected_names
+        ):
+            # Prefer the umbrella J2EE requirement over its narrower UI/server
+            # components when both are candidate-supported.
+            pass
+
         family_caps = {
             "spring": 1,
             "relational_database": 1,
             "source_control": 1,
+            "testing": 2,
             "test_automation": 1,
             "finance_generic": 1,
             "data_quality_validation": 1,
         }
-        if family and family_counts.get(family, 0) >= family_caps.get(family, 99):
-            return False
+
+        if family:
+            cap_for_family = family_caps.get(family, 1)
+            if family_counts.get(family, 0) >= cap_for_family:
+                return False
+
         return True
 
-    for item in sorted(candidates, key=lambda x: x["_sort_key"]):
-        if can_add(item):
-            selected.append(item)
-            key = fred_normalize_skill_name(item.get("skill_name", ""))
-            selected_keys.add(key)
-            family = fred_vndly_skill_family(item.get("skill_name", ""))
-            if family:
-                family_counts[family] = family_counts.get(family, 0) + 1
+    def add_item(item):
+        name = str(item.get("skill_name", "") or "").strip()
+        key = fred_normalize_skill_name(name)
+        selected.append(item)
+        selected_keys.add(key)
+        family = fred_vndly_skill_family(name)
+        if family:
+            family_counts[family] = family_counts.get(family, 0) + 1
 
+    # PASS 1: Cover the highest-priority requirement groups, but do not let
+    # broad/generic labels win a group when a more precise candidate-supported
+    # screening skill communicates the same requirement better.
+    #
+    # Reserve at most half the final slots here. This prevents a requisition
+    # analyzer that produces many competency groups from consuming all eight
+    # slots before concrete Must-Have technologies (Python, SQL, JDBC, etc.)
+    # receive a chance to compete.
+    group_reservation_limit = min(len(groups), max(1, cap // 2))
+
+    for group_index in range(group_reservation_limit):
+        group_candidates = [
+            item for item in candidates
+            if fred_skill_requirement_group(item.get("skill_name", ""), structured_req) == group_index
+            and can_add(item)
+        ]
+        if group_candidates:
+            group_candidates.sort(
+                key=lambda item: (
+                    fred_vndly_is_broad_generic_skill(
+                        item.get("skill_name", "")
+                    ),
+                    fred_vndly_redundancy_preference(
+                        item.get("skill_name", "")
+                    ),
+                    item["_sort_key"],
+                )
+            )
+            add_item(group_candidates[0])
+
+    # PASS 2: Protect candidate-supported CONCRETE technologies explicitly named
+    # as formal Must Haves. This is the guardrail that keeps skills such as
+    # Python, SQL, JDBC, Snowflake, JSON, J2EE, JUnit, and Mockito from being
+    # crowded out by broad labels such as Automation, Data Engineering, Finance,
+    # or Data Validation.
+    protected_required = [
+        item
+        for item in candidates
+        if fred_skill_is_formal_must_have(
+            item.get("skill_name", ""),
+            structured_req,
+        )
+        and not fred_vndly_is_broad_generic_skill(
+            item.get("skill_name", "")
+        )
+    ]
+
+    for item in sorted(protected_required, key=lambda x: x["_sort_key"]):
+        if len(selected) >= cap:
+            break
+        if can_add(item):
+            add_item(item)
+
+    # PASS 3: Return to any remaining requirement groups so distinct required
+    # dimensions are still represented after concrete Must-Haves are protected.
+    for group_index in range(group_reservation_limit, min(len(groups), cap)):
+        if len(selected) >= cap:
+            break
+        group_candidates = [
+            item for item in candidates
+            if fred_skill_requirement_group(item.get("skill_name", ""), structured_req) == group_index
+            and can_add(item)
+        ]
+        if group_candidates:
+            group_candidates.sort(
+                key=lambda item: (
+                    fred_vndly_is_broad_generic_skill(
+                        item.get("skill_name", "")
+                    ),
+                    fred_vndly_redundancy_preference(
+                        item.get("skill_name", "")
+                    ),
+                    item["_sort_key"],
+                )
+            )
+            add_item(group_candidates[0])
+
+    # Fill any remaining slots with the strongest uncovered requirements and
+    # supporting skills under the existing ranking/weighting logic.
+    for item in sorted(candidates, key=lambda x: x["_sort_key"]):
+        if len(selected) >= cap:
+            break
+        if can_add(item):
+            add_item(item)
+
+    # Reorder the chosen set by SOURCE priority first so a current manager
+    # priority cannot be pushed below a generic Preferred item merely because it
+    # is absent from an older formal competency-group ordering. Within the same
+    # category, preserve the requisition term/group ordering.
+    selected.sort(
+        key=lambda item: (
+            item["_sort_key"],
+            fred_skill_requirement_term_position(
+                item.get("skill_name", ""),
+                structured_req,
+            )[0],
+            fred_skill_requirement_term_position(
+                item.get("skill_name", ""),
+                structured_req,
+            )[1],
+        )
+    )
     for item in selected:
         item.pop("_sort_key", None)
-
-    # Optional internal safety only; normal callers pass cap=None.
-    if isinstance(cap, int) and cap > 0:
-        return selected[:cap]
-    return selected
-
-
-def fred_additional_skill_role_relevance(skill_name, structured_req, vndly_context):
-    """
-    Conservative relevance gate for `additional_high_value` manual skills.
-
-    No-cap does not mean no discipline. Candidate strengths that are materially
-    unrelated to the current role should not appear just because they exist.
-    """
-    structured_req = fred_coerce_structured_req(structured_req)
-    vndly_context = vndly_context or {}
-    role_text = "\n".join(
-        [
-            str(vndly_context.get("desc", "") or ""),
-            str(vndly_context.get("notes", "") or ""),
-            str(vndly_context.get("transcript", "") or ""),
-            json.dumps(structured_req, ensure_ascii=False, default=str),
-        ]
-    )
-
-    # Direct requirement/role-language match is always enough.
-    if fred_skill_matches_text(skill_name, role_text):
-        return True
-
-    key = fred_normalize_skill_name(skill_name)
-    adjacency = {
-        "jira": ["agile", "scrum", "sprint", "backlog", "project management", "product management"],
-        "confluence": ["agile", "scrum", "requirements", "documentation", "project management"],
-        "product management": ["product analyst", "product owner", "product team", "roadmap", "product"],
-        "enterprise program management": ["program management", "program specialist", "portfolio", "multiple projects", "concurrent projects"],
-        "business risk management": ["risk", "issue tracking", "escalation", "program health"],
-        "snowflake": ["snowflake", "data warehouse", "data engineering", "data platform", "sql database"],
-        "git": ["source control", "version control", "software development", "developer", "engineering"],
-    }
-    terms = adjacency.get(key, [])
-    return fred_text_contains_any(role_text, terms) if terms else False
+    return selected[:cap]
 
 
 def fred_rerank_vndly_skills_by_evidence(
@@ -3235,7 +2964,7 @@ def fred_rerank_vndly_skills_by_evidence(
     raw_resume_text,
     structured_req=None,
     vndly_context=None,
-    cap=None,
+    cap=FREDDIE_VNDLY_SKILL_CAP,
 ):
     """
     Requirement-aware evidence reranking for the VNDLY candidate pool.
@@ -3306,11 +3035,6 @@ def fred_rerank_vndly_skills_by_evidence(
             category = deterministic_category
             copy_item["source_category"] = category
 
-        if category == "additional_high_value" and not fred_additional_skill_role_relevance(
-            name, structured_req, vndly_context
-        ):
-            continue
-
         # Validate the role-side citation when one is required. This evidence
         # proves relevance only; it never proves candidate capability.
         role_evidence = str(copy_item.get("role_evidence", "") or "").strip()
@@ -3349,10 +3073,7 @@ def fred_rerank_vndly_skills_by_evidence(
         )
 
     rescored.sort(key=lambda row: row[0])
-    results = [row[1] for row in rescored]
-    if isinstance(cap, int) and cap > 0:
-        return results[:cap]
-    return results
+    return [row[1] for row in rescored[:cap]]
 
 
 def fred_build_final_ranked_vndly_skills(
@@ -3360,18 +3081,18 @@ def fred_build_final_ranked_vndly_skills(
     selected_must_items,
     selected_nice_items,
     catalog,
-    cap=None,
+    cap=FREDDIE_VNDLY_SKILL_CAP,
 ):
     """
-    Validate Gemini's ranked recommendation list before evidence reranking.
+    Validate Gemini's single ranked recommendation list and enforce a hard
+    GLOBAL cap across every VNDLY skill source.
 
     Priority is decided in the AI ranking prompt, then this function enforces:
     - exact catalogue values only;
     - structured Must/Nice claims must truly be attached to this requisition;
     - legacy/free-text values are allowed only for exact structured req skills;
-    - no duplicates.
-
-    `cap` is an optional internal pool-safety limit, not a VNDLY business cap.
+    - no duplicates;
+    - maximum `cap` skills total.
     """
     if not isinstance(raw_ranked_items, list):
         return []
@@ -3395,7 +3116,6 @@ def fred_build_final_ranked_vndly_skills(
         "required_job_intelligence",
         "manager_priority",
         "preferred_job_intelligence",
-        "jd_supported_coverage",
         "additional_high_value",
     }
 
@@ -3403,8 +3123,8 @@ def fred_build_final_ranked_vndly_skills(
     seen = set()
 
     for raw_item in raw_ranked_items:
-        # Validate the candidate pool here. Final selection later removes
-        # redundancy but does not impose an artificial eight-skill cap.
+        # Validate the complete candidate pool here. The final hard cap is
+        # applied after deterministic work-history evidence reranking.
 
         if not isinstance(raw_item, dict):
             continue
@@ -3486,7 +3206,6 @@ def fred_split_ranked_vndly_skills(ranked_skills):
         "required_vndly_skills_from_job_intelligence": [],
         "manager_priority_vndly_skills": [],
         "preferred_vndly_skills_from_job_intelligence": [],
-        "jd_coverage_vndly_skills": [],
         "additional_vndly_skills": [],
     }
 
@@ -3496,7 +3215,6 @@ def fred_split_ranked_vndly_skills(ranked_skills):
         "required_job_intelligence": "required_vndly_skills_from_job_intelligence",
         "manager_priority": "manager_priority_vndly_skills",
         "preferred_job_intelligence": "preferred_vndly_skills_from_job_intelligence",
-        "jd_supported_coverage": "jd_coverage_vndly_skills",
         "additional_high_value": "additional_vndly_skills",
     }
 
@@ -3523,13 +3241,9 @@ def fred_extract_spotlight_hiring_manager_name(spotlight_transcript):
     if not transcript:
         return ""
 
-    # Supplier-call transcripts are often Markdown-bolded (for example
-    # **Bruce (Hiring Manager):**). Strip formatting before parsing names.
-    transcript = transcript.replace("**", "")
-
     patterns = [
         r"(?im)^\s*([A-Z][A-Za-z'’.\-]+(?:\s+[A-Z][A-Za-z'’.\-]+){0,2})\s*\(\s*Hiring\s+Manager\s*\)\s*:",
-        r"(?im)^\s*([A-Z][A-Za-z'’.\-]+(?:\s+[A-Z][A-Za-z'’.\-]+){0,2})\s*[-–\u2014]\s*Hiring\s+Manager\s*:",
+        r"(?im)^\s*([A-Z][A-Za-z'’.\-]+(?:\s+[A-Z][A-Za-z'’.\-]+){0,2})\s*[-–—]\s*Hiring\s+Manager\s*:",
     ]
 
     names = []
@@ -3539,14 +3253,7 @@ def fred_extract_spotlight_hiring_manager_name(spotlight_transcript):
             if name and name.casefold() not in {n.casefold() for n in names}:
                 names.append(name)
 
-    if not names:
-        return ""
-    first_names = [name.split()[0] for name in names]
-    if len(first_names) == 1:
-        return first_names[0]
-    if len(first_names) == 2:
-        return f"{first_names[0]} and {first_names[1]}"
-    return ", ".join(first_names[:-1]) + f", and {first_names[-1]}"
+    return names[0] if len(names) == 1 else ""
 
 
 def fred_clean_vndly_submission_summary(summary, candidate_name):
@@ -3554,7 +3261,7 @@ def fred_clean_vndly_submission_summary(summary, candidate_name):
     if not summary:
         return ""
 
-    cleaned = fred_clean_generated_text(summary)
+    cleaned = re.sub(r"\s+", " ", str(summary)).strip()
     first_name = str(candidate_name or "").strip().split()[0] if candidate_name else ""
     last_name = str(candidate_name or "").strip().split()[-1] if candidate_name else ""
 
@@ -3603,15 +3310,15 @@ def fred_validate_vndly_summary(
         return ["VNDLY summary is blank."]
 
     if not evidence_list:
-        errors.append("VNDLY summary has no candidate evidence.")
+        errors.append("VNDLY summary has no candidate resume evidence.")
 
     valid_evidence = []
     for evidence in evidence_list:
-        if fred_vndly_summary_evidence_found(raw_resume_text, evidence):
+        if fred_source_quote_found(raw_resume_text, evidence):
             valid_evidence.append(evidence)
         else:
             errors.append(
-                "VNDLY summary cites candidate evidence not found in the supplied candidate sources: "
+                "VNDLY summary cites candidate evidence not found in the resume: "
                 + evidence[:120]
             )
 
@@ -3638,14 +3345,14 @@ def fred_validate_vndly_summary(
             + ", ".join(unsupported_identifiers)
         )
 
-    excluded_hits = fred_output_hits_excluded_requirement(
+    negated_hits = fred_output_hits_deemphasized_requirement(
         summary,
         structured_req,
     )
-    if excluded_hits:
+    if negated_hits:
         errors.append(
-            "VNDLY summary uses a manager-explicitly-excluded concept: "
-            + ", ".join(excluded_hits)
+            "VNDLY summary emphasizes manager-deemphasized/negated concept(s): "
+            + ", ".join(negated_hits)
         )
 
     role_text = "\n".join(
@@ -3716,22 +3423,15 @@ DRAFT COMMENTS:
 {draft_summary}
 
 RULES:
-- 3-5 compact sentences, one paragraph, about 105-155 words and never over 175.
-- The candidate evidence source below contains the original resume and may also
-  contain candidate-confirmed follow-up facts. Use only facts supported there.
+- 3-4 compact sentences, one paragraph, about 85-120 words and never over 130.
+- ORIGINAL RESUME is the only source of candidate experience/skills/ownership.
 - Official JD, Spotlight transcript, and MSP notes define role priorities only.
 - Do not turn a role requirement into candidate history.
-- Do not use manager-explicitly-excluded items.
-- Merely de-emphasized JD skills may remain as secondary MSP/JD coverage when
-  candidate evidence supports them and they do not displace current priorities.
+- Do not use manager-deemphasized/negated items as selling points.
 - If a claim is not directly supported, remove or soften it rather than inventing
   evidence.
 - Final sentence may explain truthful transferability to the Freddie need.
-- NEVER use an em dash.
-- Never mention "VNDLY requirements" or similar process-oriented matching language.
-- Return 2-8 short candidate-evidence excerpts supporting every claim. Resume
-  and candidate-clarification evidence must be VERBATIM. For UI-entered logistics
-  facts, a concise natural rendering of the structured fact is allowed.
+- Return 2-6 short VERBATIM resume excerpts supporting every candidate claim.
 
 STRUCTURED REQUISITION:
 {json.dumps(fred_coerce_structured_req(structured_req), indent=2, ensure_ascii=False)}
@@ -3745,7 +3445,7 @@ MSP/VNDLY NOTES:
 SPOTLIGHT TRANSCRIPT:
 {str((vndly_context or {}).get("transcript", "") or "")}
 
-CANDIDATE EVIDENCE SOURCE:
+ORIGINAL RESUME:
 {raw_resume_text}
 
 OUTPUT:
@@ -3755,60 +3455,6 @@ OUTPUT:
 }}
 """
     return fred_generate_json(api_key, prompt)
-
-
-
-def fred_build_vndly_summary_fallback(
-    candidate_name,
-    resume_summary,
-    candidate_submission_facts=None,
-):
-    """
-    Non-blocking Freddie VNDLY-comments fallback.
-
-    The resume Summary has already passed the Freddie candidate-truth pipeline.
-    If the separate VNDLY-comment AI cannot produce validator-friendly evidence
-    metadata, preserve that grounded content and add only deterministic UI-entered
-    logistics that materially help MSP review.
-    """
-    facts = candidate_submission_facts or {}
-    name = str(candidate_name or "Candidate").strip() or "Candidate"
-    clauses = []
-
-    former = str(facts.get("former_freddie_cw_or_employee", "") or "").strip().casefold()
-    rehire = str(facts.get("rehire_eligibility_check_completed", "") or "").strip().casefold()
-    onsite = str(facts.get("available_onsite", "") or "").strip().casefold()
-    current_location = str(facts.get("current_location", "") or "").strip()
-    onsite_locations = str(facts.get("onsite_locations", "") or "").strip()
-
-    if former in {"yes", "y", "true"}:
-        clause = f"{name} is a former Freddie Mac employee"
-        if rehire in {"yes", "y", "true"}:
-            clause += " with rehire eligibility completed"
-        clauses.append(clause)
-
-    if onsite in {"yes", "y", "true"}:
-        location = onsite_locations or current_location
-        if location:
-            clauses.append(f"is available onsite in {location}")
-        else:
-            clauses.append("is available for the required onsite schedule")
-
-    opening = ""
-    if clauses:
-        if len(clauses) == 1:
-            opening = clauses[0] + "."
-        else:
-            opening = clauses[0] + " and " + clauses[1] + "."
-
-    body = fred_clean_vndly_submission_summary(resume_summary, candidate_name)
-    combined = fred_clean_generated_text((opening + " " + body).strip())
-
-    # Keep recruiter comments compact. Preserve complete sentences where possible.
-    words = combined.split()
-    if len(words) > 175:
-        combined = " ".join(words[:175]).rstrip(" ,;:") + "."
-    return combined
 
 
 def fred_build_vndly_candidate_package(
@@ -3821,27 +3467,11 @@ def fred_build_vndly_candidate_package(
     resume_summary,
     calculated_total_experience,
     candidate_positioning_title,
-    candidate_submission_facts=None,
-    candidate_clarifications="",
 ):
     """
     Create the Freddie-only VNDLY Comments text and skill selections.
     """
     structured_req = fred_coerce_structured_req(structured_req)
-    candidate_submission_facts = candidate_submission_facts or {}
-    candidate_evidence_text = fred_candidate_evidence_text(
-        raw_resume_text, candidate_clarifications
-    )
-    submission_fact_lines = [
-        f"{key}: {value}"
-        for key, value in candidate_submission_facts.items()
-        if str(value or "").strip()
-    ]
-    vndly_summary_candidate_evidence = candidate_evidence_text
-    if submission_fact_lines:
-        vndly_summary_candidate_evidence += (
-            "\n\nCANDIDATE SUBMISSION FACTS:\n" + "\n".join(submission_fact_lines)
-        )
 
     catalog = fred_load_vndly_skill_catalog()
 
@@ -3928,20 +3558,13 @@ worker candidate. This is SEPARATE from the resume Summary.
 CANDIDATE:
 {candidate_name}
 
-CANDIDATE SUBMISSION FACTS (UI-entered logistics; use only when they materially
-help the MSP shortlist decision):
-{json.dumps(candidate_submission_facts, indent=2, ensure_ascii=False)}
-
-CANDIDATE-CONFIRMED CLARIFICATIONS / FOLLOW-UP ANSWERS:
-{candidate_clarifications or "NONE PROVIDED"}
-
 ALREADY-APPROVED RESUME SUMMARY:
 {resume_summary}
 
 RECOMMENDED CANDIDATE POSITIONING TITLE:
 {candidate_positioning_title or "BLANK"}
 
-SPOTLIGHT HIRING MANAGER NAME - EXPLICIT TRANSCRIPT LABEL ONLY:
+SPOTLIGHT HIRING MANAGER NAME — EXPLICIT TRANSCRIPT LABEL ONLY:
 {spotlight_hiring_manager_name or "BLANK"}
 
 CANDIDATE TITLE RULE:
@@ -3983,13 +3606,13 @@ IMPORTANT JOB-INTELLIGENCE RULE:
 - A requirement that is explicitly preferred/nice-to-have in the JD or authoritative
   manager guidance belongs under PREFERRED_VNDLY_SKILLS_FROM_JOB_INTELLIGENCE when supported.
 
-STRUCTURED VNDLY MUST HAVE SKILLS FIELD - RAW TEXT:
+STRUCTURED VNDLY MUST HAVE SKILLS FIELD — RAW TEXT:
 {raw_must or "BLANK"}
 
 DETERMINISTIC EXACT MUST-HAVE SKILLS SELECTED ON THIS REQUISITION:
 {selected_must_json}
 
-STRUCTURED VNDLY NICE TO HAVE SKILLS FIELD - RAW TEXT:
+STRUCTURED VNDLY NICE TO HAVE SKILLS FIELD — RAW TEXT:
 {raw_nice or "BLANK"}
 
 DETERMINISTIC EXACT NICE-TO-HAVE SKILLS SELECTED ON THIS REQUISITION:
@@ -3998,13 +3621,13 @@ DETERMINISTIC EXACT NICE-TO-HAVE SKILLS SELECTED ON THIS REQUISITION:
 SUPPLIER VETTING RESPONSES:
 {vetting_for_ai}
 
-OFFICIAL VNDLY JOB DESCRIPTION - ROLE EVIDENCE SOURCE:
+OFFICIAL VNDLY JOB DESCRIPTION — ROLE EVIDENCE SOURCE:
 {vndly_context.get("desc", "")}
 
-VNDLY / MSP NOTES - ROLE EVIDENCE SOURCE:
+VNDLY / MSP NOTES — ROLE EVIDENCE SOURCE:
 {vndly_context.get("notes", "")}
 
-SPOTLIGHT CALL TRANSCRIPT - HIGHEST-PRIORITY CURRENT MANAGER SOURCE:
+SPOTLIGHT CALL TRANSCRIPT — HIGHEST-PRIORITY CURRENT MANAGER SOURCE:
 {vndly_context.get("transcript", "")}
 
 FULL ORIGINAL CANDIDATE RESUME:
@@ -4014,7 +3637,7 @@ EXACT VNDLY SKILL CATALOGUE:
 {catalog_json}
 
 ======================================================================
-TASK 1 - VNDLY COMMENTS / MSP SHORTLIST JUSTIFICATION
+TASK 1 — VNDLY COMMENTS / MSP SHORTLIST JUSTIFICATION
 ======================================================================
 
 Write the recruiter Comments that will be pasted into VNDLY. This is NOT merely
@@ -4025,7 +3648,7 @@ PRIMARY AUDIENCE:
 An MSP recruiter who knows the requisition and attended/reviewed the supplier
 call, but may not be deeply technical.
 
-PRIMARY GOALS - IN THIS ORDER:
+PRIMARY GOALS — IN THIS ORDER:
 1. Make the shortlist decision easy.
 2. Show that the supplier searched against the hiring manager's actual current
    priorities, not just generic JD keywords.
@@ -4043,28 +3666,14 @@ Use plain business language first and technical detail only where it strengthens
 the shortlist case.
 
 LENGTH / STRUCTURE:
-- 3-5 compact sentences as ONE paragraph.
-- Target roughly 105-155 words. Do not exceed 175 words.
-- The comments are allowed to be more explicit than the resume Summary because
-  their first job is to help the MSP make a fast shortlist decision.
-- When candidate submission facts contain a materially helpful logistics signal,
-  such as former Freddie/rehire eligibility or confirmed availability for a
-  required onsite schedule, a short opening clause may state it. Do not mention
-  compensation or unnecessary immigration details.
-- Do NOT lead with a very large total-years number when it could create an
-  unnecessary overqualification concern. Use a natural authority phrase instead.
-- Also return VNDLY_SUMMARY_EVIDENCE containing 2-8 short evidence excerpts
-  that collectively support every candidate claim in the paragraph. For
-  experience/skill/ownership claims, copy VERBATIM excerpts from the original
-  resume or candidate-confirmed clarifications. For UI-entered logistics claims
-  such as former-Freddie status, rehire eligibility, current location, or onsite
-  availability, you may cite a concise natural rendering of the corresponding
-  CANDIDATE SUBMISSION FACTS. Never add a logistics value that is absent from
-  those structured facts. Role-source wording may explain transferability, but
-  may not substitute for candidate evidence.
-- Sentence 1: natural candidate positioning title + the strongest genuine role
-  anchors. Use the deterministic total-career figure only when it strengthens
-  the shortlist case and does not unnecessarily advertise overqualification.
+- 3-4 compact sentences as ONE paragraph.
+- Target roughly 85-120 words. Do not exceed 130 words.
+- Also return VNDLY_SUMMARY_EVIDENCE containing 2-6 short VERBATIM excerpts
+  copied from the ORIGINAL RESUME that collectively support every candidate
+  experience/skill/ownership claim in the paragraph. Role-source wording may
+  explain transferability, but may not substitute for candidate evidence.
+- Sentence 1: natural candidate positioning title + deterministic total career
+  experience + the strongest genuine role anchors.
 - Sentence 2: strongest concrete recent/repeated proof. Name the employer when
   it improves credibility.
 - Sentence 3: the next most important supported proof cluster, ideally including
@@ -4073,9 +3682,8 @@ LENGTH / STRUCTURE:
   the candidate worth manager review.
 
 HIRING-MANAGER NAME RULE:
-- If SPOTLIGHT HIRING MANAGER NAME above is populated, it may contain one or
-  multiple first names (for example "Bruce and Colton"). Use that name string
-  ONCE when it makes the comments more useful to the MSP.
+- If SPOTLIGHT HIRING MANAGER NAME above is populated, you MAY and SHOULD use
+  that name ONCE when it makes the comments more useful to the MSP.
 - Best use: connect proven candidate evidence to a priority the hiring manager
   explicitly emphasized on the supplier/Spotlight call.
 - Natural pattern:
@@ -4102,9 +3710,8 @@ REQUIREMENT PRIORITY:
 - Prefer recurring responsibilities and direct hands-on execution over oversight,
   strategy, or one-time projects unless the role specifically asks for those.
 
-EVIDENCE / TRANSFERABILITY BOUNDARY - ABSOLUTE:
-- Candidate facts must come from the resume, official candidate vetting, or
-  candidate-confirmed clarifications supplied above.
+EVIDENCE / TRANSFERABILITY BOUNDARY — ABSOLUTE:
+- Candidate facts must come from the resume or official candidate vetting.
 - Freddie's JD, manager comments, MSP notes, and target environment define WHY
   an experience matters; they do NOT become candidate history.
 - Do not write that the candidate tested data-modeling workflows, built an AI
@@ -4115,7 +3722,7 @@ EVIDENCE / TRANSFERABILITY BOUNDARY - ABSOLUTE:
 - When evidence is adjacent rather than direct, explain the transfer honestly
   instead of upgrading it into direct experience.
 
-STYLE - VERY IMPORTANT:
+STYLE — VERY IMPORTANT:
 - Write like an experienced recruiter sending a concise internal candidate note.
 - Use the candidate's FIRST NAME naturally after the first sentence.
 - NEVER use honorifics or formal references such as "Mr.", "Ms.", "Mrs.",
@@ -4130,7 +3737,7 @@ STYLE - VERY IMPORTANT:
   candidate should advance, as long as it is phrased as evidence-based
   transferability rather than unsupported praise.
 
-GOOD MODEL - communications example:
+GOOD MODEL — communications example:
 "Kristin is a senior communications specialist with 18+ years of experience
  developing business communications, change communications, and audience-focused
  content across technology and government environments. At CGI, she managed
@@ -4161,33 +3768,26 @@ OTHER RULES:
 - Never invent or infer candidate experience.
 - Do not merge evidence from separate employers into one sentence in a way that
   falsely implies all tools/responsibilities occurred together.
-- Do not discuss weaknesses, missing skills, compensation, citizenship,
-  sponsorship, submission mechanics, shortlisting strategy, or AI matching
-  strategy. A concise former-Freddie/rehire or required-onsite availability fact
-  may be used when it materially reduces MSP uncertainty.
-- Never write phrases such as "aligns with VNDLY requirements", "matches the
-  VNDLY requirements", or otherwise tell the reader that the candidate was
-  optimized against VNDLY/JD requirements. Demonstrate the match through facts.
-- NEVER use an em dash in the comments.
+- Do not discuss weaknesses, missing skills, compensation, work authorization,
+  citizenship, sponsorship, onsite status, interview availability, submission
+  process, VNDLY, MSP, shortlisting strategy, or AI matching strategy.
 - AI/GenAI may be mentioned only when it is genuinely a job technology and the
   candidate has supported experience.
 
 ======================================================================
 ======================================================================
-TASK 2 - FINAL VNDLY MANUAL SKILLS (NO FIXED HARD CAP)
+TASK 2 — FINAL VNDLY SKILL SHORTLIST (GLOBAL HARD CAP = 8)
 ======================================================================
 
 Produce ONE ranked shortlist of the BEST VNDLY skills to select for this
 candidate submission.
 
 CRITICAL:
-- There is NO fixed manual-skill cap in VNDLY for this workflow.
-- Build a HIGH-SIGNAL list, not a comprehensive inventory.
-- Return every candidate-supported skill that materially improves requirement
-  coverage, MSP search/review value, or hiring-manager relevance.
-- Stop when additional skills would be redundant, weak, or tangential.
-- It is completely acceptable to return a short list for a narrow role or a
-  longer list for a broad role.
+- Build a ranked CANDIDATE POOL of up to 16 skills. Python will apply the final
+  hard cap of 8 after deterministic evidence-strength validation.
+- This is still a HIGH-SIGNAL candidate pool, NOT a comprehensive inventory.
+- It is completely acceptable to return fewer than 8 when fewer skills deserve
+  a selection.
 - Rank every item from highest to lowest submission value.
 - IMPORTANT: A technical skill appearing only in the candidate's Professional
   Summary or top-level skills inventory MUST NOT outrank a current Required skill
@@ -4214,29 +3814,22 @@ CLASSIFICATION FIREWALL:
 - `required_job_intelligence` means FORMALLY required by the JD/current formal
   Freddie requirement language. Do not use it merely because a manager discussed
   or emphasized the topic.
-- `jd_supported_coverage` means the candidate genuinely has a skill/concept that
-  appears in the official JD but current manager guidance has made it secondary
-  rather than central. Keep it for MSP/JD coverage when useful, but rank it
-  below current manager priorities and explicit preferred items.
 - `manager_priority` means the Spotlight/MSP/hiring team clearly emphasized the
   competency as important to selection, but it is not established as formally
   mandatory.
 - If Freddie says a skill is "nice to have", "helpful", "a plus", or "not
   required", it MUST be Preferred even if the role uses that skill operationally.
-- If a manager says the team does not use an artifact/process (for example User
-  Stories), DE-EMPHASIZE it rather than automatically deleting it. When the
-  candidate genuinely has that experience and the official JD still contains it,
-  it may be retained as `jd_supported_coverage` for MSP/JD recognition.
-- Only an item in `explicitly_excluded_requirements` is automatically prohibited.
+- If a manager explicitly says the team does not use an artifact/process (for
+  example User Stories), do not recommend that artifact simply because it appears
+  in generic JD language or the candidate resume.
 
 SELECTION PRINCIPLES:
 - Optimize for SIGNAL, not coverage.
 - CANDIDATE-EVIDENCE GATE: never recommend a catalogue skill solely because it
   appears in Freddie's JD, structured Must/Nice fields, manager comments, or
-  Spotlight transcript. The ORIGINAL RESUME or supplied candidate-confirmed
-  clarification must independently support every recommended VNDLY skill.
-  Candidate vetting may also clarify factual depth when it describes performed
-  experience rather than a theoretical answer.
+  Spotlight transcript. The ORIGINAL RESUME must independently support every
+  recommended VNDLY skill. Candidate vetting may clarify depth but does not, by
+  itself, create a manual VNDLY skill recommendation.
 - If the role requires Data Modeling but the resume does not demonstrate data
   modeling concepts/work, do NOT recommend `Data Modeling`.
 - If the role requires SQL but the resume does not show SQL, do NOT recommend
@@ -4252,15 +3845,15 @@ SELECTION PRINCIPLES:
 - Prefer "Spring Framework" over also consuming another slot with "Spring Boot"
   when the formal requirement is Spring Framework, unless Spring Boot itself is
   separately important to the role.
-- Do not spend limited attention on generic soft skills (Problem Solving, Analytical
+- Do not spend scarce slots on generic soft skills (Problem Solving, Analytical
   Thinking, Critical Thinking, Writing, Communication, etc.) unless the role or
   manager makes that specific competency unusually central AND it is more
   valuable than a technical/domain requirement.
-- Do not spend limited attention on adjacent candidate strengths that are not central
+- Do not spend scarce slots on adjacent candidate strengths that are not central
   to the requisition.
 - Do not use one skill as a substitute for a different required skill
   (for example Maven is not proof of Gradle).
-- Avoid redundant parent/child/synonym selections. Because every selected skill should add distinct value,
+- Avoid redundant parent/child/synonym selections. With only 8 final slots,
   coverage of distinct explicit requirements is usually more valuable than a
   second closely related variant.
 - TEST-AUTOMATION REDUNDANCY RULE: never recommend more than ONE of these when
@@ -4299,12 +3892,10 @@ SOURCE CATEGORY must be exactly one of:
 - manager_priority
 - exact_structured_nice
 - preferred_job_intelligence
-- jd_supported_coverage
 - additional_high_value
 
-EVIDENCE FIELDS - REQUIRED FOR EVERY RECOMMENDATION:
-- `evidence` = ONE short VERBATIM candidate-evidence excerpt proving the skill.
-  This may come from the original resume or candidate-confirmed clarification.
+EVIDENCE FIELDS — REQUIRED FOR EVERY RECOMMENDATION:
+- `evidence` = ONE short VERBATIM candidate-resume excerpt proving the skill.
   Do not paraphrase it and do not cite the JD/Spotlight here.
 - `role_evidence` = ONE short VERBATIM excerpt from the Official JD, Spotlight
   transcript, or MSP/VNDLY notes showing why the skill matters to THIS role.
@@ -4314,12 +3905,8 @@ EVIDENCE FIELDS - REQUIRED FOR EVERY RECOMMENDATION:
   proof that Freddie requires the skill. Keep those two functions separate.
 
 BEFORE RETURNING:
-Ask yourself: "Which candidate-supported skills materially improve this
-submission and are worth selecting manually in VNDLY?"
-
-There is NO fixed maximum. Return every genuinely supported, role-relevant skill
-that adds meaningful shortlist/search value, then stop before the list becomes
-noise. Do not add weak or tangential skills merely because the candidate has them.
+Ask yourself: "Which candidate-supported skills deserve to compete for the
+final 8 VNDLY selections?"
 
 Then perform this audit:
 1. Remove every skill that is supported only by the JOB and not by the candidate.
@@ -4367,27 +3954,19 @@ Return ONLY:
         raw_package.get("VNDLY_SUMMARY", ""),
         candidate_name,
     )
-    vndly_summary = fred_suppress_overqualification_years_text(
-        vndly_summary,
-        calculated_total_experience,
-        vndly_context,
-    )
     vndly_summary_evidence = fred_string_list(
         raw_package.get("VNDLY_SUMMARY_EVIDENCE", [])
     )
 
     if not vndly_summary:
-        vndly_summary = fred_build_vndly_summary_fallback(
-            candidate_name,
-            resume_summary,
-            candidate_submission_facts,
+        raise RuntimeError(
+            "Gemini returned no VNDLY submission summary."
         )
-        vndly_summary_evidence = []
 
     vndly_summary_errors = fred_validate_vndly_summary(
         vndly_summary,
         vndly_summary_evidence,
-        vndly_summary_candidate_evidence,
+        raw_resume_text,
         structured_req,
         vndly_context,
     )
@@ -4398,7 +3977,7 @@ Return ONLY:
             candidate_name,
             vndly_summary,
             vndly_summary_errors,
-            vndly_summary_candidate_evidence,
+            raw_resume_text,
             structured_req,
             vndly_context,
             calculated_total_experience,
@@ -4410,11 +3989,6 @@ Return ONLY:
                 repaired_summary.get("VNDLY_SUMMARY", ""),
                 candidate_name,
             )
-            vndly_summary = fred_suppress_overqualification_years_text(
-                vndly_summary,
-                calculated_total_experience,
-                vndly_context,
-            )
             vndly_summary_evidence = fred_string_list(
                 repaired_summary.get("VNDLY_SUMMARY_EVIDENCE", [])
             )
@@ -4422,28 +3996,15 @@ Return ONLY:
         vndly_summary_errors = fred_validate_vndly_summary(
             vndly_summary,
             vndly_summary_evidence,
-            vndly_summary_candidate_evidence,
+            raw_resume_text,
             structured_req,
             vndly_context,
         )
 
     if vndly_summary_errors:
-        # Do not withhold the entire VNDLY package because Gemini returned imperfect
-        # evidence citations. Fall back to the already-grounded resume Summary plus
-        # deterministic UI-entered shortlist logistics. Skill ranking continues below.
-        print(
-            "Freddie VNDLY summary safety fallback applied: "
-            + " | ".join(vndly_summary_errors[:6])
-        )
-        vndly_summary = fred_build_vndly_summary_fallback(
-            candidate_name,
-            resume_summary,
-            candidate_submission_facts,
-        )
-        vndly_summary = fred_suppress_overqualification_years_text(
-            vndly_summary,
-            calculated_total_experience,
-            vndly_context,
+        raise RuntimeError(
+            "VNDLY Comments could not be safely grounded after the automatic "
+            "repair pass: " + " | ".join(vndly_summary_errors[:6])
         )
 
     ranked_skill_pool = fred_build_final_ranked_vndly_skills(
@@ -4454,30 +4015,30 @@ Return ONLY:
         selected_must_items,
         selected_nice_items,
         catalog,
-        cap=FREDDIE_VNDLY_SKILL_POOL_LIMIT,
+        cap=16,
     )
 
     ranked_skill_pool = fred_supplement_priority_skills(
         ranked_skill_pool,
         structured_req,
         catalog,
-        candidate_evidence_text,
+        raw_resume_text,
         selected_must_items=selected_must_items,
         selected_nice_items=selected_nice_items,
     )
 
     evidence_ranked_skills = fred_rerank_vndly_skills_by_evidence(
         ranked_skill_pool,
-        candidate_evidence_text,
+        raw_resume_text,
         structured_req=structured_req,
         vndly_context=vndly_context,
-        cap=FREDDIE_VNDLY_SKILL_POOL_LIMIT,
+        cap=32,
     )
 
     ranked_skills = fred_apply_vndly_redundancy_control(
         evidence_ranked_skills,
         structured_req,
-        cap=None,
+        cap=FREDDIE_VNDLY_SKILL_CAP,
     )
 
     grouped_skills = fred_split_ranked_vndly_skills(
@@ -4530,7 +4091,6 @@ def fred_build_submission_email_body(
         "required_job_intelligence": "Required",
         "manager_priority": "Manager Priority",
         "preferred_job_intelligence": "Preferred",
-        "jd_supported_coverage": "JD Coverage",
         "additional_high_value": "Additional",
     }
 
@@ -4558,7 +4118,7 @@ def fred_build_submission_email_body(
         "VNDLY COMMENTS",
         str(package.get("vndly_summary", "") or "").strip(),
         "",
-        "RECOMMENDED VNDLY SKILLS",
+        f"RECOMMENDED VNDLY SKILLS - TOP {FREDDIE_VNDLY_SKILL_CAP} MAX",
         skills_text,
     ]
 
@@ -4656,42 +4216,6 @@ def fred_generation_email_key(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def fred_repair_and_load_json(raw_text):
-    """Freddie-only JSON repair without global Streamlit warning side effects."""
-    text = str(raw_text or "").strip()
-    text = re.sub(r'^```[a-zA-Z]*\n|\n```$', '', text, flags=re.MULTILINE).strip()
-    match = re.search(r'\{.*\}', text, re.DOTALL)
-    if match:
-        text = match.group()
-
-    candidates = [text]
-
-    repaired = text
-    repaired = re.sub(r'"\s*\n\s*"', '",\n"', repaired)
-    repaired = re.sub(r'\}\s*\n\s*\{', '},\n{', repaired)
-    repaired = re.sub(r'\]\s*\n\s*"', '],\n"', repaired)
-    repaired = re.sub(r',\s*([}\]])', r'\1', repaired)
-    # Gemini occasionally emits an otherwise-valid object with an unquoted
-    # structural key. Quote only key-shaped tokens immediately after { or ,.
-    repaired = re.sub(
-        r'([\{,]\s*)([A-Za-z_][A-Za-z0-9_ ]*?)(\s*:)',
-        lambda m: m.group(1) + json.dumps(m.group(2).strip()) + m.group(3),
-        repaired,
-    )
-    if repaired != text:
-        candidates.append(repaired)
-
-    for candidate in candidates:
-        try:
-            data = json.loads(candidate, strict=False)
-            if isinstance(data, dict):
-                return data
-        except Exception:
-            continue
-
-    return {}
-
-
 def fred_generate_json(api_key, prompt, max_attempts=6):
     """
     Freddie-specific Gemini JSON helper with the same retry philosophy
@@ -4727,14 +4251,10 @@ def fred_generate_json(api_key, prompt, max_attempts=6):
                 ),
             )
 
-            data = fred_repair_and_load_json(response.text)
+            data = repair_and_load_json(response.text)
 
             if data:
                 return data
-
-            last_error = ValueError(
-                "Gemini returned malformed or unusable Freddie Mac JSON."
-            )
 
         except Exception as e:
             last_error = e
@@ -4768,7 +4288,7 @@ def fred_extract_vetting_block(job_description):
         r"(?im)^[ \t]*"
         r"(?:required[ \t]+)?"
         r"supplier[ \t]+vetting[ \t]+questions?"
-        r"[ \t]*(?:[:\-–\u2014])[ \t]*(.*)?$"
+        r"[ \t]*(?:[:\-–—])[ \t]*(.*)?$"
     )
 
     match = heading_pattern.search(text)
@@ -4971,8 +4491,6 @@ def fred_analyze_requisition(
             "selection_feedback": [],
             "role_clarifications": [],
             "role_evolution": [],
-            "deemphasized_requirements": [],
-            "explicitly_excluded_requirements": [],
             "deemphasized_or_negated_requirements": [],
             "supplier_vetting_questions": [],
         }
@@ -5083,23 +4601,18 @@ ACTUAL HIRING-MANAGER / SELECTION EMPHASIS:
   "must be able to explain technologies on the resume", "mortgage required",
   "business operations PM is the critical requirement", or "model building is
   not the focus".
-- Separate LOWER PRIORITY from TRUE EXCLUSION.
-- If the manager says a JD item is not used by this team, not central, optional,
-  not required, outside the day-to-day role, or belongs to a separate role, put
-  it under `deemphasized_requirements`. This lowers hiring-manager emphasis but
-  does NOT erase a genuine candidate/JD match that may still help MSP review.
-- Example: JD says user stories but the manager says "we don't do user stories".
-  Preserve User Stories as a formal JD artifact and put it under
-  `deemphasized_requirements`. A candidate who genuinely has User Stories may
-  still show it as secondary JD/MSP coverage, but it must not displace the
-  manager's actual priorities.
-- If the manager explicitly says candidates SHOULD NOT have/emphasize something,
-  that it is disqualifying, unacceptable, or a negative profile signal, put it
-  under `explicitly_excluded_requirements`. Only this field is treated as a true
-  candidate-facing prohibition.
-- If the manager says a prior PMO-setup role is separate and this person does not
-  need to build a PMO from scratch, treat PMO setup as de-emphasized, not as a
-  candidate disqualifier.
+- If the manager explicitly says a JD item is not needed, outdated, optional,
+  incorrectly stated, not used by the team, outside this role, or no longer
+  relevant, place the specific competency/artifact under
+  deemphasized_or_negated_requirements.
+- Capture negative clarifications even when the JD itself contains the term.
+  Example: if the JD says user stories but the hiring manager says "we don't do
+  user stories," preserve that formal-JD fact separately but put User Stories
+  under deemphasized_or_negated_requirements so candidate-facing output does not
+  waste scarce space emphasizing it.
+- Likewise, if the manager says a prior PMO-setup role is separate and this
+  person does NOT need to build a PMO from scratch, capture PMO setup under
+  deemphasized_or_negated_requirements.
 - A manager statement that something is helpful/nice-to-have belongs under
   current_manager_priorities or role_clarifications as appropriate, but does NOT
   become a formal Required requirement unless the manager explicitly says it is
@@ -5108,7 +4621,7 @@ ACTUAL HIRING-MANAGER / SELECTION EMPHASIS:
   current manager priorities as separate concepts.
 
 ======================================================================
-RECENCY / ROLE-EVOLUTION RULE - CRITICAL
+RECENCY / ROLE-EVOLUTION RULE — CRITICAL
 ======================================================================
 
 The MSP/VNDLY Notes and Spotlight Call Transcript may contain multiple dated
@@ -5148,7 +4661,7 @@ entries over the lifecycle of one requisition.
   interviewees did or did not advance.
 
 ======================================================================
-OPERATIONAL-NOISE FILTER - CRITICAL
+OPERATIONAL-NOISE FILTER — CRITICAL
 ======================================================================
 
 MSP/VNDLY notes mix job-selection intelligence with staffing-process updates.
@@ -5252,7 +4765,7 @@ Each role_evolution item must be:
 Do NOT add routine operational updates to role_evolution.
 
 ======================================================================
-SUPPLIER VETTING QUESTIONS - ZERO INVENTION
+SUPPLIER VETTING QUESTIONS — ZERO INVENTION
 ======================================================================
 
 Extract ONLY supplier vetting questions/instructions actually supplied by
@@ -5307,8 +4820,6 @@ Return ONLY:
       "change": ""
     }}
   ],
-  "deemphasized_requirements": [""],
-  "explicitly_excluded_requirements": [""],
   "deemphasized_or_negated_requirements": [""],
   "supplier_vetting_questions": [""]
 }}
@@ -5343,8 +4854,6 @@ DATED SPOTLIGHT CALL TRANSCRIPT:
         "selection_feedback",
         "role_clarifications",
         "role_evolution",
-        "deemphasized_requirements",
-        "explicitly_excluded_requirements",
         "deemphasized_or_negated_requirements",
         "supplier_vetting_questions",
     }
@@ -5443,16 +4952,6 @@ DATED SPOTLIGHT CALL TRANSCRIPT:
 
     data["must_have_competency_groups"] = normalized_groups
 
-    # Backward-compatible mirror for any older downstream code/cache. v11 logic
-    # uses the separated fields above.
-    if not data.get("deemphasized_requirements") and data.get("deemphasized_or_negated_requirements"):
-        data["deemphasized_requirements"] = list(
-            data.get("deemphasized_or_negated_requirements", []) or []
-        )
-    data["deemphasized_or_negated_requirements"] = list(
-        data.get("deemphasized_requirements", []) or []
-    )
-
     return data
 
 
@@ -5467,7 +4966,6 @@ def fred_grounding_audit_prompt(
     calculated_total_experience,
     current_date,
     validator_errors=None,
-    candidate_clarifications="",
 ):
     """Independent Freddie fact-check/prioritization pass for Summary + Skills."""
     error_section = ""
@@ -5490,14 +4988,11 @@ PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE:
 {calculated_total_experience or "BLANK"}
 
 SOURCE ROLES:
-- ORIGINAL RESUME = PRIMARY proof for candidate experience, skills, tools,
-  ownership, scope, accomplishments, employers, domains, and technologies.
-- CANDIDATE-CONFIRMED CLARIFICATIONS may add factual experience/details that the
-  resume omitted (for example reporting scope, older tool usage, portfolio scope,
-  or leadership audience). Treat them as secondary candidate evidence, not as
-  role evidence. Never use them to contradict dated resume facts.
-- OFFICIAL CANDIDATE VETTING may also clarify depth, but theoretical answers do
-  not become performed experience.
+- ORIGINAL RESUME = PRIMARY and mandatory proof for candidate experience,
+  skills, tools, ownership, scope, accomplishments, employers, domains, and
+  technologies used in the Summary/Skills table.
+- OFFICIAL CANDIDATE VETTING may clarify depth in the separate vetting section,
+  but do NOT use it to manufacture a Summary/Skills claim absent from the resume.
 - SPOTLIGHT CALL + substantive MSP/VNDLY notes = highest-priority CURRENT hiring-
   team guidance for what to emphasize or de-emphasize.
 - OFFICIAL JD + structured VNDLY fields = formal baseline requirements and
@@ -5506,23 +5001,19 @@ SOURCE ROLES:
   authority to override explicit Freddie guidance.
 
 CRITICAL MANAGER-CLARIFICATION RULE:
-Separate PRIORITY from PROHIBITION.
-- Manager says a JD skill is not used / not central / not required: DE-EMPHASIZE
-  it for hiring-manager persuasion, but do not automatically erase a truthful JD
-  match that can help MSP shortlisting. It may remain as a secondary detail when
-  space permits and it does not displace a higher-priority competency.
-- Manager explicitly says candidates should NOT have/emphasize something or that
-  it is a negative/disqualifier: OMIT it.
+If current manager guidance says a JD artifact/skill is not used, not required,
+helpful only, nice-to-have, outside this role, or otherwise de-emphasized, obey
+that clarification in candidate-facing Summary/Skills. Do not spend scarce space
+on it merely because the candidate has it or the generic JD mentions it.
 
 Examples:
-- JD says User Stories but manager says "we don't do user stories" -> User
-  Stories may remain as a secondary detail when the candidate genuinely has it,
-  but it should not become one of the four primary competency rows unless other
-  evidence makes it independently important.
+- JD says User Stories but manager says "we don't do user stories" -> DO NOT
+  feature User Stories in Summary/Skills.
 - Manager says Power Platform familiarity is nice to have -> do not label it a
-  Must Have and do not assign Power Platform unless candidate evidence proves it.
-- Role wants executive reporting -> do not say candidate owned executive
-  reporting unless the resume or candidate-confirmed clarification proves it.
+  Must Have and do not assign Power Platform to the candidate unless the resume
+  proves it.
+- Role wants executive reporting -> do not say candidate "owned executive
+  reporting" unless the resume itself proves that ownership.
 
 ZERO-TOLERANCE CANDIDATE GROUNDING:
 - Do not copy a tool, platform, methodology, responsibility, domain, or qualifier
@@ -5535,15 +5026,14 @@ ZERO-TOLERANCE CANDIDATE GROUNDING:
 
 HIGH-IMPACT QUALIFIERS:
 Words that materially change authority/scope/proficiency must be supported by the
-specific cited candidate evidence for that claim: independent, lead/led/leading,
+specific cited resume evidence for that claim: independent, lead/led/leadership,
 own/ownership, manage/managed/manager, oversight, architect, expert, advanced,
-hands-on, enterprise-wide, organization-wide, global,
+extensive, deep, hands-on, enterprise-wide, organization-wide, global,
 end-to-end, high-volume, large-scale, production.
 
 SUMMARY:
 - Exactly 4 sentences, one paragraph after finalization.
 - Natural human recruiter voice, concise and evidence-based.
-- Prefer factual scope over subjective intensifiers such as "extensive" or "deep".
 - Use the deterministic total-career value exactly if a total-years statement is
   used; never attach that total to individual skills unless the resume proves it.
 - Sentence 1: identity + strongest supported role anchors.
@@ -5551,10 +5041,8 @@ SUMMARY:
 - Sentence 3: supporting execution/depth/impact.
 - Sentence 4: truthful transferability to Freddie's current need; clearly keep
   target-role application separate from candidate past experience.
-- For EACH sentence return 1-3 short VERBATIM candidate-evidence excerpts
-  proving the candidate claims in that sentence.
-- Avoid harmless recruiter-language leakage from role text. Generic glue words such
-  as "provides", "functions", or "supports" are not meaningful candidate claims.
+- For EACH sentence return 1-3 short VERBATIM resume excerpts proving the
+  candidate claims in that sentence.
 
 SKILLS TABLE:
 - Return up to 4 rows; use 4 when four distinct defensible role-relevant rows
@@ -5565,27 +5053,13 @@ SKILLS TABLE:
 - Each row must be a distinct screening dimension.
 - For each row return:
   * skill_area: concise high-level competency
-  * area_evidence: 1-3 VERBATIM candidate-evidence excerpts proving the competency
+  * area_evidence: 1-3 VERBATIM resume excerpts proving the competency
   * role_evidence: 1-2 VERBATIM excerpts from the Official JD, Spotlight call,
     or MSP/VNDLY notes proving why the row matters to this requisition
-  * details: 2-6 atomic items, each with ONE VERBATIM candidate-evidence excerpt
-    supporting that detail
-- Skill areas may be natural umbrella competency labels synthesized from multiple
-  verified candidate facts. Details may use a concise natural label when the cited
-  evidence clearly anchors the concept and the broader candidate record supplies
-  the remaining context. Do not change the underlying scope, tool, domain, or
-  authority level merely to mirror Freddie wording.
-- Prefer the candidate's own terminology when a role synonym could imply a different
-  scope. Example: keep "Product Roadmaps" when that is what the evidence proves; do
-  not silently rewrite it as "Program Roadmaps" solely because the target is a
-  program role.
-- "Leadership Presentations" may describe presentations delivered to senior leaders;
-  the noun "leadership" does not by itself claim that the candidate led a team.
+  * details: 2-6 atomic items, each with ONE VERBATIM resume excerpt supporting
+    that exact detail
 - Do not use years in Skills rows.
-- Do not use manager-explicitly-excluded artifacts.
-- A merely de-emphasized JD skill may remain as a secondary detail for MSP/JD
-  coverage if candidate evidence supports it and it does not displace a current
-  manager priority.
+- Do not use manager-negated/de-emphasized artifacts.
 - Prefer direct operational/repeated evidence over impressive but secondary work.
 
 BULLET ORDER:
@@ -5609,9 +5083,6 @@ SPOTLIGHT CALL TRANSCRIPT:
 
 INTERNAL NOTES:
 {internal_notes}
-
-CANDIDATE-CONFIRMED CLARIFICATIONS / FOLLOW-UP ANSWERS:
-{candidate_clarifications or "NONE PROVIDED"}
 
 DRAFT FROM RECRUITER-WRITING PASS:
 {json.dumps(draft_data if isinstance(draft_data, dict) else {}, indent=2, ensure_ascii=False)}
@@ -5682,463 +5153,16 @@ def fred_role_priority_quote_found(
         if source and fred_source_quote_found(source, quote_text):
             return True
 
-    # Role evidence establishes WHY a row matters, not candidate history. Allow
-    # harmless shortening or tense changes while still requiring the substantive
-    # concepts to occur together in one authoritative source.
-    low_value = {
-        "all", "team", "role", "candidate", "person", "people", "current",
-        "need", "needs", "needed", "want", "wants", "wanted", "level",
-        "function", "functions", "provide", "provid", "support",
-    }
-    quote_tokens = [
-        token for token in fred_signal_tokens(quote_text)
-        if token not in low_value and len(token) >= 3
-    ]
+    quote_tokens = fred_signal_tokens(quote_text)
     if not quote_tokens:
         return False
 
     for source in sources:
         source_tokens = set(fred_signal_tokens(source))
-        if not source_tokens:
-            continue
-        matched = sum(1 for token in quote_tokens if token in source_tokens)
-        # For short evidence phrases require all substantive concepts. For longer
-        # phrases tolerate one harmless omitted/reworded token.
-        required = len(quote_tokens) if len(quote_tokens) <= 3 else max(3, len(quote_tokens) - 1)
-        if matched >= required:
+        if source_tokens and all(token in source_tokens for token in quote_tokens):
             return True
 
     return False
-
-
-
-def fred_evidence_segments(source_text):
-    """
-    Build candidate/source excerpts suitable for deterministic evidence repair.
-
-    AI evidence citations are metadata, not candidate claims. They may be shortened,
-    use an ellipsis, or select only part of a source paragraph. This helper preserves
-    actual source wording while exposing paragraph/sentence-sized excerpts that can
-    replace imperfect AI citations without weakening claim safety.
-    """
-    text = str(source_text or "").replace("\r\n", "\n").replace("\r", "\n")
-    if not text.strip():
-        return []
-
-    segments = []
-    seen = set()
-
-    def add(value):
-        value = re.sub(r"\s+", " ", str(value or "")).strip()
-        value = re.sub(r"^[•·▪◦*-]+\s*", "", value).strip()
-        if len(value) < 12 or len(value) > 450:
-            return
-        key = fred_normalize_quote_match_text(value)
-        if key and key not in seen:
-            seen.add(key)
-            segments.append(value)
-
-    paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", text) if part.strip()]
-    for paragraph in paragraphs:
-        add(paragraph)
-        lines = [line.strip() for line in paragraph.split("\n") if line.strip()]
-        for line in lines:
-            add(line)
-            for sentence in fred_split_sentences(line):
-                add(sentence)
-
-    # Also expose short adjacent-line windows because DOCX extraction can wrap one
-    # resume bullet across multiple physical lines.
-    lines = [line.strip() for line in text.split("\n") if line.strip()]
-    for i in range(len(lines)):
-        add(lines[i])
-        if i + 1 < len(lines):
-            add(lines[i] + " " + lines[i + 1])
-        if i + 2 < len(lines):
-            add(lines[i] + " " + lines[i + 1] + " " + lines[i + 2])
-
-    return segments
-
-
-def fred_best_source_evidence_excerpt(source_text, claim_text, minimum_ratio=0.50):
-    """Return the strongest ACTUAL source excerpt for a generated claim/skill label."""
-    claim_tokens = fred_signal_tokens(claim_text)
-    if not claim_tokens:
-        return ""
-
-    claim_set = set(claim_tokens)
-    identifiers = [
-        fred_normalize_quote_match_text(value)
-        for value in fred_explicit_identifiers(claim_text)
-        if fred_normalize_quote_match_text(value)
-    ]
-
-    best = ""
-    best_score = -1.0
-    best_matches = 0
-
-    for segment in fred_evidence_segments(source_text):
-        segment_tokens = set(fred_signal_tokens(segment))
-        if not segment_tokens:
-            continue
-
-        matched = len(claim_set.intersection(segment_tokens))
-        ratio = matched / max(1, len(claim_set))
-
-        # Concrete identifiers named in a claim must exist in the selected source
-        # excerpt or the excerpt cannot be used to justify that claim.
-        segment_norm = fred_normalize_quote_match_text(segment)
-        if identifiers and any(identifier not in segment_norm for identifier in identifiers):
-            continue
-
-        # Prefer concentrated support rather than a huge paragraph that happens to
-        # contain unrelated words.
-        density = matched / max(1, len(segment_tokens))
-        score = ratio * 10.0 + density
-
-        if score > best_score:
-            best_score = score
-            best = segment
-            best_matches = matched
-
-    if not best:
-        return ""
-
-    if len(claim_tokens) == 1:
-        return best if best_matches == 1 else ""
-
-    required_matches = 1 if len(claim_tokens) == 2 else 2
-    if best_matches < required_matches:
-        return ""
-
-    ratio = best_matches / max(1, len(set(claim_tokens)))
-    return best if ratio >= minimum_ratio else ""
-
-
-def fred_candidate_evidence_quote_found(candidate_source_text, quote):
-    """
-    Verify an AI evidence citation without requiring identical citation formatting.
-
-    Exact normalized quotes are preferred. A fallback accepts a citation when its
-    substantive concepts occur together in one real candidate-source excerpt. This
-    repairs shortened quotations and ellipses while preventing arbitrary stitching
-    across unrelated jobs/paragraphs.
-    """
-    if fred_source_quote_found(candidate_source_text, quote):
-        return True
-
-    quote_text = str(quote or "").strip()
-    quote_tokens = fred_signal_tokens(quote_text)
-    if not quote_tokens:
-        return False
-
-    quote_set = set(quote_tokens)
-    identifiers = [
-        fred_normalize_quote_match_text(value)
-        for value in fred_explicit_identifiers(quote_text)
-        if fred_normalize_quote_match_text(value)
-    ]
-
-    for segment in fred_evidence_segments(candidate_source_text):
-        segment_tokens = set(fred_signal_tokens(segment))
-        if not segment_tokens:
-            continue
-        segment_norm = fred_normalize_quote_match_text(segment)
-        if identifiers and any(identifier not in segment_norm for identifier in identifiers):
-            continue
-        matched = len(quote_set.intersection(segment_tokens))
-        if len(quote_set) <= 3:
-            required = len(quote_set)
-        else:
-            # Long AI citations may omit/reword a couple harmless words, but the
-            # majority of substantive concepts must co-occur in one source excerpt.
-            required = max(3, int(len(quote_set) * 0.72 + 0.9999))
-        if matched >= required:
-            return True
-
-    return False
-
-
-def fred_grounding_error_is_hard(error_text):
-    """
-    Identify issues that represent a genuine candidate-truth risk.
-
-    Citation-shape and lexical-similarity issues are deliberately NOT hard errors;
-    they are repaired/sanitized automatically. Hard issues are concrete fabrication,
-    unsupported scope/authority, explicit exclusions, or unusable output structure.
-    """
-    text = str(error_text or "").casefold()
-    hard_markers = [
-        "unsupported high-impact claim",
-        "unsupported named identifier",
-        "unsupported identifier",
-        "manager-explicitly-excluded",
-        "uses manager-explicitly-excluded",
-        "invalid structure",
-        " is blank",
-        "more than four rows",
-    ]
-    return any(marker in text for marker in hard_markers)
-
-
-def fred_safe_source_sentence(excerpt):
-    """Convert a real candidate-source excerpt into a clean fallback summary sentence."""
-    text = fred_clean_generated_text(excerpt)
-    text = re.sub(r"^[•·▪◦*-]+\s*", "", text).strip()
-    # Remove common resume heading prefixes while preserving the factual clause.
-    text = re.sub(r"^[A-Z][A-Za-z &/+-]{2,45}:\s*", "", text).strip()
-    # Some extraction paths collapse NAME + PROFESSIONAL SUMMARY + first paragraph
-    # into one physical line. Start after the summary heading in that case.
-    upper = text.upper()
-    for marker in ("PROFESSIONAL SUMMARY", "SUMMARY OF QUALIFICATIONS"):
-        pos = upper.find(marker)
-        if pos >= 0:
-            after = text[pos + len(marker):].strip(" :-")
-            if after:
-                text = after
-                break
-    if not text:
-        return ""
-    # Fallback content should be one real source sentence/statement, never a whole
-    # extraction paragraph containing multiple resume sections.
-    parts = fred_split_sentences(text)
-    if parts:
-        text = parts[0].strip()
-    if len(text) > 420:
-        text = text[:420].rsplit(" ", 1)[0].rstrip(" ,;:")
-    if text[-1] not in ".!?":
-        text += "."
-    return text
-
-
-def fred_sanitize_grounded_tailoring(
-    data,
-    resume_text,
-    structured_req,
-    job_description,
-    msp_notes,
-    spotlight_transcript,
-    candidate_clarifications="",
-):
-    """
-    Deterministic last-line Freddie safety repair.
-
-    The formatter should never make a recruiter repeatedly rerun a candidate merely
-    because Gemini cited evidence imperfectly. This routine repairs evidence metadata,
-    removes genuinely unsafe details, preserves safe high-quality content whenever
-    possible, and builds a source-grounded fallback when necessary.
-    """
-    structured_req = fred_coerce_structured_req(structured_req)
-    candidate_source = fred_candidate_evidence_text(
-        resume_text, candidate_clarifications
-    )
-    role_sources = [
-        str(job_description or ""),
-        str(spotlight_transcript or ""),
-        str(msp_notes or ""),
-    ]
-
-    source = data if isinstance(data, dict) else {}
-    cleaned = {
-        "CANDIDATE_TITLE": fred_clean_generated_text(source.get("CANDIDATE_TITLE", "")),
-        "SUMMARY_SENTENCES": [],
-        "SKILLS": [],
-        "BULLET_ORDER": source.get("BULLET_ORDER", {})
-        if isinstance(source.get("BULLET_ORDER", {}), dict)
-        else {},
-    }
-
-    # -------------------------------
-    # SUMMARY
-    # -------------------------------
-    summary_entries = source.get("SUMMARY_SENTENCES", [])
-    summary_entries = summary_entries if isinstance(summary_entries, list) else []
-
-    for idx, entry in enumerate(summary_entries[:4]):
-        if not isinstance(entry, dict):
-            continue
-        text = fred_clean_generated_text(entry.get("text", ""))
-        if not text:
-            continue
-
-        evidence = fred_string_list(entry.get("evidence", []))
-        valid_evidence = [
-            quote for quote in evidence
-            if fred_candidate_evidence_quote_found(candidate_source, quote)
-        ]
-
-        if not valid_evidence:
-            fallback = fred_best_source_evidence_excerpt(candidate_source, text, 0.42)
-            if fallback:
-                valid_evidence = [fallback]
-
-        joined = " ".join(valid_evidence)
-        hard_unsafe = bool(
-            fred_unsupported_high_impact_claims(text, joined)
-            or fred_explicit_identifiers_supported(text, joined, candidate_source)
-            or fred_output_hits_excluded_requirement(text, structured_req)
-        )
-
-        if hard_unsafe or not valid_evidence:
-            # Replace the whole generated sentence with real candidate-source wording
-            # rather than trying to surgically edit a potentially unsafe claim.
-            fallback = fred_best_source_evidence_excerpt(candidate_source, text, 0.34)
-            safe_text = fred_safe_source_sentence(fallback)
-            if safe_text:
-                text = safe_text
-                valid_evidence = [fallback]
-            else:
-                continue
-
-        cleaned["SUMMARY_SENTENCES"].append(
-            {"text": text, "evidence": valid_evidence[:3]}
-        )
-
-    # Fill any missing summary slots with distinct, role-relevant REAL source excerpts.
-    used_norm = {
-        fred_normalize_quote_match_text(item.get("text", ""))
-        for item in cleaned["SUMMARY_SENTENCES"]
-    }
-    role_text = "\n".join(role_sources)
-    role_tokens = set(fred_signal_tokens(role_text))
-    fallback_segments = []
-    for segment in fred_evidence_segments(candidate_source):
-        tokens = set(fred_signal_tokens(segment))
-        if not tokens:
-            continue
-        overlap = len(tokens.intersection(role_tokens))
-        if overlap <= 0:
-            continue
-        fallback_segments.append((overlap / max(1, len(tokens)), overlap, segment))
-    fallback_segments.sort(key=lambda item: (item[0], item[1]), reverse=True)
-
-    for _, __, segment in fallback_segments:
-        if len(cleaned["SUMMARY_SENTENCES"]) >= 4:
-            break
-        safe_text = fred_safe_source_sentence(segment)
-        key = fred_normalize_quote_match_text(safe_text)
-        if not safe_text or key in used_norm:
-            continue
-        if fred_output_hits_excluded_requirement(safe_text, structured_req):
-            continue
-        cleaned["SUMMARY_SENTENCES"].append(
-            {"text": safe_text, "evidence": [segment]}
-        )
-        used_norm.add(key)
-
-    # A candidate with weak/no role overlap should still receive a document rather
-    # than a grounding exception. Fill any remaining slots from substantive REAL
-    # candidate-source statements. This may be less tailored, but it is truthful and
-    # is preferable to blocking the recruiter.
-    if len(cleaned["SUMMARY_SENTENCES"]) < 4:
-        skip_line = re.compile(
-            r"^(?:name|email|phone|location|work authorization|available|interview availability|"
-            r"education|certifications?|skills?|summary|professional summary)\b",
-            flags=re.IGNORECASE,
-        )
-        for segment in fred_evidence_segments(candidate_source):
-            if len(cleaned["SUMMARY_SENTENCES"]) >= 4:
-                break
-            if skip_line.search(segment.strip()):
-                continue
-            if len(fred_signal_tokens(segment)) < 5:
-                continue
-            safe_text = fred_safe_source_sentence(segment)
-            key = fred_normalize_quote_match_text(safe_text)
-            if not safe_text or key in used_norm:
-                continue
-            if fred_output_hits_excluded_requirement(safe_text, structured_req):
-                continue
-            cleaned["SUMMARY_SENTENCES"].append(
-                {"text": safe_text, "evidence": [segment]}
-            )
-            used_norm.add(key)
-
-    # -------------------------------
-    # SKILLS
-    # -------------------------------
-    skills = source.get("SKILLS", [])
-    skills = skills if isinstance(skills, list) else []
-
-    for row in skills[:4]:
-        if not isinstance(row, dict):
-            continue
-        area = fred_clean_generated_text(row.get("skill_area", ""))
-        if not area or fred_output_hits_excluded_requirement(area, structured_req):
-            continue
-
-        area_evidence = [
-            quote for quote in fred_string_list(row.get("area_evidence", []))
-            if fred_candidate_evidence_quote_found(candidate_source, quote)
-        ]
-        if not area_evidence:
-            fallback = fred_best_source_evidence_excerpt(candidate_source, area, 0.42)
-            if fallback:
-                area_evidence = [fallback]
-
-        joined_area = " ".join(area_evidence)
-        if (
-            not area_evidence
-            or fred_unsupported_high_impact_claims(area, joined_area)
-            or fred_explicit_identifiers_supported(area, joined_area, candidate_source)
-        ):
-            continue
-
-        role_evidence = [
-            quote for quote in fred_string_list(row.get("role_evidence", []))
-            if fred_role_priority_quote_found(
-                job_description, msp_notes, spotlight_transcript, quote
-            )
-        ]
-        if not role_evidence:
-            # Role evidence is prioritization metadata. Find the strongest real role
-            # excerpt rather than failing the candidate output on citation wording.
-            for source_text in role_sources:
-                fallback = fred_best_source_evidence_excerpt(source_text, area, 0.34)
-                if fallback:
-                    role_evidence = [fallback]
-                    break
-
-        details = []
-        for detail in fred_normalize_audited_detail_records(row.get("details", []))[:6]:
-            item = fred_clean_generated_text(detail.get("item", ""))
-            evidence = str(detail.get("evidence", "") or "").strip()
-            if not item or fred_output_hits_excluded_requirement(item, structured_req):
-                continue
-
-            if not fred_candidate_evidence_quote_found(candidate_source, evidence):
-                evidence = fred_best_source_evidence_excerpt(candidate_source, item, 0.42)
-
-            if not evidence:
-                continue
-
-            # The whole verified candidate record may support a concise competency
-            # label, but named identifiers and authority/scope remain strict.
-            if not fred_claim_supported_by_candidate_context(
-                item, evidence, candidate_source
-            ) and not fred_claim_supported_by_evidence(item, candidate_source):
-                continue
-            if fred_unsupported_high_impact_claims(item, evidence):
-                continue
-            if fred_explicit_identifiers_supported(item, evidence, candidate_source):
-                continue
-
-            if item.casefold() not in {d["item"].casefold() for d in details}:
-                details.append({"item": item, "evidence": evidence})
-
-        if not details:
-            continue
-
-        cleaned["SKILLS"].append(
-            {
-                "skill_area": area,
-                "area_evidence": area_evidence[:3],
-                "role_evidence": role_evidence[:2],
-                "details": details[:6],
-            }
-        )
-
-    return cleaned
 
 
 def fred_validate_grounded_tailoring(
@@ -6148,13 +5172,9 @@ def fred_validate_grounded_tailoring(
     msp_notes,
     spotlight_transcript,
     data,
-    candidate_clarifications="",
 ):
     """Deterministically audit Freddie Summary/Skills evidence after AI fact-check."""
     errors = []
-    candidate_evidence_source = fred_candidate_evidence_text(
-        resume_text, candidate_clarifications
-    )
     structured_req = fred_coerce_structured_req(structured_req)
     role_text = "\n".join(
         [str(job_description or ""), str(msp_notes or ""), str(spotlight_transcript or "")]
@@ -6177,16 +5197,16 @@ def fred_validate_grounded_tailoring(
             errors.append(f"SUMMARY sentence {idx} is blank.")
             continue
         if not evidence:
-            errors.append(f"SUMMARY sentence {idx} has no candidate evidence.")
+            errors.append(f"SUMMARY sentence {idx} has no resume evidence.")
             continue
 
         valid_evidence = []
         for quote in evidence:
-            if fred_candidate_evidence_quote_found(candidate_evidence_source, quote):
+            if fred_source_quote_found(resume_text, quote):
                 valid_evidence.append(quote)
             else:
                 errors.append(
-                    f"SUMMARY sentence {idx} cites evidence not found in the supplied candidate sources: {quote[:120]}"
+                    f"SUMMARY sentence {idx} cites evidence not found in the resume: {quote[:120]}"
                 )
 
         joined = " ".join(valid_evidence)
@@ -6198,7 +5218,7 @@ def fred_validate_grounded_tailoring(
             )
 
         unsupported_identifiers = fred_explicit_identifiers_supported(
-            text, joined, candidate_evidence_source
+            text, joined, resume_text
         )
         if unsupported_identifiers:
             errors.append(
@@ -6206,27 +5226,33 @@ def fred_validate_grounded_tailoring(
                 + ", ".join(unsupported_identifiers)
             )
 
-        negated_hits = fred_output_hits_excluded_requirement(text, structured_req)
+        negated_hits = fred_output_hits_deemphasized_requirement(text, structured_req)
         if negated_hits:
             errors.append(
-                f"SUMMARY sentence {idx} emphasizes manager-explicitly-excluded concept(s): "
+                f"SUMMARY sentence {idx} emphasizes manager-deemphasized concept(s): "
                 + ", ".join(negated_hits)
             )
 
         # Sentence 4 may deliberately describe target-role transferability.
         if idx < 4:
             role_hits = fred_role_only_phrase_hits(
-                text, role_text, candidate_evidence_source, joined
+                text, role_text, resume_text, joined
             )
             token_hits = fred_role_only_signal_tokens(
-                text, role_text, candidate_evidence_source, joined
+                text, role_text, resume_text, joined
             )
-            # Role-language overlap is a repair signal, not a blocking safety error.
-            # Concrete named identifiers, high-impact authority/scope claims, explicit
-            # exclusions, and candidate evidence support are enforced separately.
-            # Treating generic role words as fatal caused repeated false stops on
-            # otherwise grounded candidates (for example a lone word such as "record").
-            _ = role_hits, token_hits
+            if role_hits:
+                errors.append(
+                    f"SUMMARY sentence {idx} contains role-source wording not "
+                    "independently supported as candidate history: "
+                    + "; ".join(role_hits)
+                )
+            if token_hits:
+                errors.append(
+                    f"SUMMARY sentence {idx} contains distinctive role-source "
+                    "term(s) absent from candidate evidence: "
+                    + ", ".join(token_hits)
+                )
 
     skills = data.get("SKILLS", []) if isinstance(data, dict) else []
     if not isinstance(skills, list):
@@ -6250,23 +5276,23 @@ def fred_validate_grounded_tailoring(
             errors.append(f"SKILL row {idx} has no skill area.")
             continue
         if not area_evidence:
-            errors.append(f"SKILL row {idx} has no candidate evidence.")
+            errors.append(f"SKILL row {idx} has no candidate resume evidence.")
         else:
             for quote in area_evidence:
-                if not fred_candidate_evidence_quote_found(candidate_evidence_source, quote):
+                if not fred_source_quote_found(resume_text, quote):
                     errors.append(
-                        f"SKILL row {idx} cites area evidence not found in the supplied candidate sources: {quote[:120]}"
+                        f"SKILL row {idx} cites area evidence not found in the resume: {quote[:120]}"
                     )
 
         joined_area_evidence = " ".join(
-            q for q in area_evidence if fred_candidate_evidence_quote_found(candidate_evidence_source, q)
+            q for q in area_evidence if fred_source_quote_found(resume_text, q)
         )
 
         if joined_area_evidence and not fred_claim_supported_by_evidence(
-            area, candidate_evidence_source
+            area, joined_area_evidence
         ):
             errors.append(
-                f"SKILL row {idx} area is not sufficiently supported by its cited candidate evidence."
+                f"SKILL row {idx} area is not sufficiently supported by its cited resume evidence."
             )
 
         unsupported_area_qualifiers = fred_unsupported_high_impact_claims(
@@ -6279,7 +5305,7 @@ def fred_validate_grounded_tailoring(
             )
 
         unsupported_area_identifiers = fred_explicit_identifiers_supported(
-            area, joined_area_evidence, candidate_evidence_source
+            area, joined_area_evidence, resume_text
         )
         if unsupported_area_identifiers:
             errors.append(
@@ -6287,10 +5313,10 @@ def fred_validate_grounded_tailoring(
                 + ", ".join(unsupported_area_identifiers)
             )
 
-        negated_hits = fred_output_hits_excluded_requirement(area, structured_req)
+        negated_hits = fred_output_hits_deemphasized_requirement(area, structured_req)
         if negated_hits:
             errors.append(
-                f"SKILL row {idx} emphasizes manager-explicitly-excluded concept(s): "
+                f"SKILL row {idx} emphasizes manager-deemphasized concept(s): "
                 + ", ".join(negated_hits)
             )
 
@@ -6313,17 +5339,15 @@ def fred_validate_grounded_tailoring(
             item = detail["item"]
             evidence = detail["evidence"]
 
-            if not fred_candidate_evidence_quote_found(candidate_evidence_source, evidence):
+            if not fred_source_quote_found(resume_text, evidence):
                 errors.append(
                     f"SKILL row {idx} detail '{item}' cites evidence not found in the resume."
                 )
                 continue
 
-            if not fred_claim_supported_by_candidate_context(
-                item, evidence, candidate_evidence_source
-            ):
+            if not fred_claim_supported_by_evidence(item, evidence):
                 errors.append(
-                    f"SKILL row {idx} detail '{item}' is not sufficiently supported by its cited candidate evidence."
+                    f"SKILL row {idx} detail '{item}' is not sufficiently supported by its cited resume evidence."
                 )
 
             unsupported_detail_qualifiers = fred_unsupported_high_impact_claims(
@@ -6336,7 +5360,7 @@ def fred_validate_grounded_tailoring(
                 )
 
             unsupported_detail_identifiers = fred_explicit_identifiers_supported(
-                item, evidence, candidate_evidence_source
+                item, evidence, resume_text
             )
             if unsupported_detail_identifiers:
                 errors.append(
@@ -6344,12 +5368,12 @@ def fred_validate_grounded_tailoring(
                     + ", ".join(unsupported_detail_identifiers)
                 )
 
-            detail_negated = fred_output_hits_excluded_requirement(
+            detail_negated = fred_output_hits_deemphasized_requirement(
                 item, structured_req
             )
             if detail_negated:
                 errors.append(
-                    f"SKILL row {idx} detail '{item}' uses manager-explicitly-excluded concept(s): "
+                    f"SKILL row {idx} detail '{item}' uses manager-deemphasized concept(s): "
                     + ", ".join(detail_negated)
                 )
 
@@ -6359,7 +5383,9 @@ def fred_validate_grounded_tailoring(
 def fred_finalize_grounded_tailoring(data):
     """Convert the audited evidence-rich Freddie payload back to template keys."""
     output = {
-        "CANDIDATE_TITLE": fred_clean_generated_text((data or {}).get("CANDIDATE_TITLE", "")),
+        "CANDIDATE_TITLE": re.sub(
+            r"\s+", " ", str((data or {}).get("CANDIDATE_TITLE", "") or "")
+        ).strip(),
         "SUMMARY": "",
         "BULLET_ORDER": (data or {}).get("BULLET_ORDER", {})
         if isinstance((data or {}).get("BULLET_ORDER", {}), dict)
@@ -6371,7 +5397,7 @@ def fred_finalize_grounded_tailoring(data):
     if isinstance(sentences, list):
         for entry in sentences[:4]:
             if isinstance(entry, dict):
-                text = fred_clean_generated_text(entry.get("text", ""))
+                text = re.sub(r"\s+", " ", str(entry.get("text", "") or "")).strip()
                 if text:
                     sentence_texts.append(text)
     output["SUMMARY"] = " ".join(sentence_texts)
@@ -6382,12 +5408,14 @@ def fred_finalize_grounded_tailoring(data):
     for idx in range(1, 5):
         if idx <= len(skills) and isinstance(skills[idx - 1], dict):
             row = skills[idx - 1]
-            output[f"SKILL{idx}"] = fred_clean_generated_text(row.get("skill_area", ""))
+            output[f"SKILL{idx}"] = re.sub(
+                r"\s+", " ", str(row.get("skill_area", "") or "")
+            ).strip()
 
             detail_names = []
             seen = set()
             for detail in fred_normalize_audited_detail_records(row.get("details", [])):
-                item = fred_clean_generated_text(detail["item"])
+                item = re.sub(r"\s+", " ", detail["item"]).strip()
                 key = item.casefold()
                 if not item or key in seen:
                     continue
@@ -6426,7 +5454,7 @@ def fred_standardize_dates(date_str):
 
     # Normalize line breaks, spacing, and dash characters.
     text = text.replace("\r", " ").replace("\n", " ")
-    text = text.replace("–", "-").replace("\u2014", "-")
+    text = text.replace("–", "-").replace("—", "-")
     text = re.sub(r"\s+", " ", text).strip()
 
     month_names = {
@@ -7001,37 +6029,21 @@ def fred_clean_summary(summary, candidate_name):
     if not summary:
         return ""
 
-    cleaned = fred_clean_generated_text(summary)
+    cleaned = str(summary).strip()
 
     # ------------------------------------------------------------
-    # 1. USE FIRST NAME ONLY IN THE FREDDIE RESUME SUMMARY
+    # 1. NORMALIZE CANDIDATE NAME CAPITALIZATION
     # ------------------------------------------------------------
 
     if candidate_name:
-        normalized_name = str(candidate_name).strip()
-        first_name = normalized_name.split()[0] if normalized_name else ""
-
-        if normalized_name and first_name:
-            # Candidate Information already displays the full legal name.
-            # Keep the narrative Summary natural by converting any full-name
-            # occurrence at the beginning of the Summary to first name only.
-            cleaned = re.sub(
-                r"^\s*" + re.escape(normalized_name) + r"\b",
-                first_name,
-                cleaned,
-                count=1,
-                flags=re.IGNORECASE,
-            )
-
-            # If Gemini starts with a capitalization variant of the first name,
-            # normalize that opening name without changing later proper nouns.
-            cleaned = re.sub(
-                r"^\s*" + re.escape(first_name) + r"\b",
-                first_name,
-                cleaned,
-                count=1,
-                flags=re.IGNORECASE,
-            )
+        # Replace any capitalization variation of the full candidate name
+        # with the normalized Title Case version extracted from the resume.
+        cleaned = re.sub(
+            re.escape(candidate_name),
+            candidate_name,
+            cleaned,
+            flags=re.IGNORECASE,
+        )
 
     # ------------------------------------------------------------
     # 2. REMOVE / REPLACE BANNED RECRUITER PHRASES
@@ -7291,7 +6303,7 @@ def process_freddie_word_doc(
                     pass
 
     # ================================================================
-    # 4. SKILLS - TWO-COLUMN SKILL AREA / SKILL DETAILS TABLE
+    # 4. SKILLS — TWO-COLUMN SKILL AREA / SKILL DETAILS TABLE
     #    Remove unused rows instead of leaving blanks.
     # ================================================================
 
@@ -7923,8 +6935,6 @@ def freddie_mac_app():
         "selection_feedback": [],
         "role_clarifications": [],
         "role_evolution": [],
-        "deemphasized_requirements": [],
-        "explicitly_excluded_requirements": [],
         "deemphasized_or_negated_requirements": [],
         "supplier_vetting_questions": [],
     }
@@ -7971,8 +6981,6 @@ def freddie_mac_app():
             "selection_feedback",
             "role_clarifications",
             "role_evolution",
-            "deemphasized_requirements",
-            "explicitly_excluded_requirements",
             "deemphasized_or_negated_requirements",
             "must_have_competency_groups",
         ]
@@ -8007,16 +7015,13 @@ def freddie_mac_app():
                 for item in clarifications:
                     st.markdown(f"- {item}")
 
-            deemphasized = req_analysis.get("deemphasized_requirements", [])
+            deemphasized = req_analysis.get(
+                "deemphasized_or_negated_requirements",
+                [],
+            )
             if deemphasized:
-                st.markdown("**De-emphasized / Secondary for Manager Review:**")
+                st.markdown("**De-emphasized / Not Required:**")
                 for item in deemphasized:
-                    st.markdown(f"- {item}")
-
-            excluded = req_analysis.get("explicitly_excluded_requirements", [])
-            if excluded:
-                st.markdown("**Explicitly Excluded / Negative Profile Signals:**")
-                for item in excluded:
                     st.markdown(f"- {item}")
 
             selection_feedback = req_analysis.get(
@@ -8061,7 +7066,7 @@ def freddie_mac_app():
                     if terms:
                         st.markdown(
                             f"{idx}. **{group.get('name', '')}** "
-                            f"- {terms}"
+                            f"— {terms}"
                         )
                     else:
                         st.markdown(
@@ -8132,11 +7137,11 @@ def freddie_mac_app():
             else:
                 st.markdown(
                     f"**{idx}. {question}**  \n"
-                    "*Optional - Freddie/MSP does not require a response.*"
+                    "*Optional — Freddie/MSP does not require a response.*"
                 )
                 response_label = f"Candidate Response {idx} (Optional)"
                 response_placeholder = (
-                    "Optional - leave blank if nothing is being submitted."
+                    "Optional — leave blank if nothing is being submitted."
                 )
 
             answer = st.text_area(
@@ -8147,27 +7152,6 @@ def freddie_mac_app():
             )
 
             vetting_answers.append(answer)
-
-    # ================================================================
-    # OPTIONAL CANDIDATE-CONFIRMED FOLLOW-UP DETAILS
-    # ================================================================
-
-    st.header("✅ Candidate-Confirmed Clarifications (Optional)")
-    st.caption(
-        "Paste direct candidate follow-up answers or recruiter-verified candidate facts "
-        "that are not already clear on the resume. Examples: executive reporting scope, "
-        "portfolio size, older tool experience, leadership audience, or other factual "
-        "clarifications. These are treated as secondary candidate evidence, never as role/JD evidence."
-    )
-    Candidate_Clarifications_Raw = st.text_area(
-        "Candidate-Confirmed Follow-Up Answers / Clarifications:",
-        height=140,
-        key="fred_candidate_clarifications",
-        placeholder="Optional. Paste direct candidate responses or verified screening notes here...",
-    )
-    Candidate_Clarifications = fred_clean_candidate_clarifications(
-        Candidate_Clarifications_Raw
-    )
 
     # ================================================================
     # FILE UPLOAD
@@ -8310,7 +7294,7 @@ def freddie_mac_app():
                 raw_text = extract_text(resume_path)
 
                 # ====================================================
-                # PASS 1 - STRUCTURED RESUME EXTRACTION
+                # PASS 1 — STRUCTURED RESUME EXTRACTION
                 # ====================================================
 
                 extraction_prompt = f"""
@@ -8391,10 +7375,10 @@ DATES:
 - NEVER present an in-progress or pending credential as completed.
 - For an unfinished credential, append the status directly to the credential
   name using this format:
-  "PMP - In Progress"
-  "CBAP - In Progress"
+  "PMP — In Progress"
+  "CBAP — In Progress"
 - If the resume explicitly labels a group of certifications as "In Progress",
-  apply "- In Progress" to every credential under that heading until the next
+  apply "— In Progress" to every credential under that heading until the next
   clear section heading or status change.
 - Do not invent an in-progress status for completed credentials.
 - Do not remove a credential solely because it is in progress; preserve it with
@@ -8595,7 +7579,7 @@ ORIGINAL RESUME:
                     )
 
                 # ====================================================
-                # PASS 2 - CANDIDATE MATCH / SUMMARY / SKILLS /
+                # PASS 2 — CANDIDATE MATCH / SUMMARY / SKILLS /
                 #          SAFE BULLET PRIORITIZATION
                 # ====================================================
 
@@ -8631,23 +7615,16 @@ CURRENT DATE:
 PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE:
 {calculated_total_experience}
 
-STRUCTURED VNDLY EXPERIENCE RANGE:
-Minimum: {selected_vndly_context.get("min_experience", "") or "BLANK"}
-Maximum: {selected_vndly_context.get("max_experience", "") or "BLANK"}
-
 The total professional experience value above was calculated deterministically
 from the candidate's dated work history.
 
 CRITICAL:
-- PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE is available for accuracy,
-  but it is NOT mandatory to lead with or even state total years in the Summary.
-- Use the total-years figure only when it materially strengthens the shortlist case.
-- If structured VNDLY experience guidance shows the candidate is materially
-  above the target range, DO NOT state the total-career years figure in the
-  Summary. Use a natural authority phrase such as "extensive experience".
-  This is a shortlist-positioning rule, not a change to the candidate's history.
-- If you do state total career experience, use the exact deterministic value.
-- Do NOT independently recalculate it, round it up, or alter its wording.
+- If PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE is populated, use that
+  EXACT value when stating total career experience in the Summary.
+- Do NOT independently recalculate it.
+- Do NOT round it up.
+- Do NOT change "7+ years" to "8+ years", "over 7 years", "nearly 8 years",
+  or any other variation.
 - If the calculated value is blank, do not invent a total-years figure.
 
 There are THREE sequential audiences for this submission:
@@ -8710,13 +7687,9 @@ CRITICAL:
 - Use selection_feedback and role_clarifications to understand why previous
   candidates failed and what must be made obvious in a new submission.
 - Use role_evolution to understand how the target profile changed over time.
-- Distinguish DE-EMPHASIZED from EXCLUDED. A manager statement such as
-  "we don't use user stories" lowers that concept's hiring-manager priority but
-  does not automatically remove a genuine candidate/JD match from MSP-facing
-  coverage. Keep it secondary when useful and truthful.
-- Only `explicitly_excluded_requirements` are true candidate-facing prohibitions.
-- Formal Must Haves still require strong truthful coverage unless authoritative
-  manager guidance clearly changes the requirement.
+- Never highlight a requirement the manager explicitly negated.
+- Formal Must Haves still require strong truthful coverage unless explicitly
+  negated or clarified by authoritative manager guidance.
 - Operational staffing noise must have ZERO influence on candidate claims.
 - Internal recruiter notes may guide emphasis but may not manufacture a
   requirement or override explicit Freddie guidance.
@@ -8747,7 +7720,7 @@ When the candidate genuinely possesses a Freddie Must Have:
 Do not engage in keyword stuffing.
 
 ======================================================================
-CANDIDATE POSITIONING TITLE - NATURAL MARKET TITLE
+CANDIDATE POSITIONING TITLE — NATURAL MARKET TITLE
 ======================================================================
 
 Before writing the Summary, choose ONE concise professional title for the
@@ -8783,14 +7756,6 @@ TITLE QUALITY RULES:
 - Prefer a conventional external-market title a recruiter or hiring manager
   would naturally say aloud.
 - Usually 2-5 words.
-- Prefer one clear occupational lane or at most two closely related functional
-  lanes. Do not create a broad mash-up title that stacks several senior
-  specialties (for example Product Management + Enterprise Risk + Technology)
-  when a simpler target-relevant identity such as Program Management / Business
-  Analysis would describe the candidate more naturally.
-- When the candidate is much more senior than the target experience band, choose
-  a credible target-relevant functional identity rather than the broadest or
-  most executive-sounding description of the candidate's career.
 - CANDIDATE_TITLE must be a grammatically complete occupational title that can
   stand on its own after the words "[First Name] is a...".
 - Do NOT copy a resume heading or job title literally when it combines the
@@ -8839,12 +7804,12 @@ SUMMARY CONSISTENCY RULE:
 - Do not introduce a competing title elsewhere in the Summary.
 
 ======================================================================
-SUMMARY - EXACTLY 4 SENTENCES
+SUMMARY — EXACTLY 4 SENTENCES
 ======================================================================
 
 Write exactly FOUR sentences as ONE paragraph.
 
-EVIDENCE-FIRST TRANSFERABILITY RULE - CRITICAL:
+EVIDENCE-FIRST TRANSFERABILITY RULE — CRITICAL:
 The goal is NOT to make the candidate's past sound identical to the Freddie job.
 The goal is to show:
 1. WHAT the candidate actually did,
@@ -8889,7 +7854,7 @@ The second half must provide the concrete proof that preserves hiring-manager
 credibility.
 
 ----------------------------------------------------------------------
-Sentence 1 - IDENTITY + STRONGEST DIFFERENTIATOR
+Sentence 1 — IDENTITY + STRONGEST DIFFERENTIATOR
 ----------------------------------------------------------------------
 
 - Use the candidate's FIRST NAME.
@@ -8904,13 +7869,9 @@ Sentence 1 - IDENTITY + STRONGEST DIFFERENTIATOR
 - Do not relabel a Data Engineer as a Data Scientist solely because Freddie's
   requisition uses that title. Target-role terminology may be used only when
   the candidate's actual work clearly supports that functional identity.
-- You MAY use PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE when it
-  strengthens the shortlist case, but do not force it into Sentence 1.
-- When the candidate is far above a stated target experience range, prefer
-  "extensive experience" or an equally natural authority phrase over a large
-  number that could create an unnecessary overqualification concern.
-- If you do state total career experience, use the exact deterministic value and
-  never independently calculate or alter it.
+- If PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE above is populated, use
+  that EXACT value for TOTAL CAREER EXPERIENCE only.
+- Never independently calculate or alter the total-years figure.
 - CRITICAL GRAMMAR RULE: The total-career experience figure must NOT be written
   in a way that implies the candidate has that same number of years with every
   skill named later in the sentence.
@@ -8928,7 +7889,7 @@ Sentence 1 - IDENTITY + STRONGEST DIFFERENTIATOR
 - Keep this sentence understandable without requiring deep technical knowledge.
 
 ----------------------------------------------------------------------
-Sentence 2 - CONCRETE RECENT PROOF
+Sentence 2 — CONCRETE RECENT PROOF
 ----------------------------------------------------------------------
 
 - Use the current/most-recent employer when it provides strong relevant proof.
@@ -8957,7 +7918,7 @@ when that is supported by the resume.
 The technical specifics can then appear in Sentence 3.
 
 ----------------------------------------------------------------------
-Sentence 3 - SUPPORTING DEPTH + IMPACT
+Sentence 3 — SUPPORTING DEPTH + IMPACT
 ----------------------------------------------------------------------
 
 - Now provide the concrete technical proof behind the plain-English match.
@@ -8975,7 +7936,7 @@ Sentence 3 - SUPPORTING DEPTH + IMPACT
   workflow accurately.
 
 ----------------------------------------------------------------------
-Sentence 4 - TRANSFER TO THIS FREDDIE ROLE
+Sentence 4 — TRANSFER TO THIS FREDDIE ROLE
 ----------------------------------------------------------------------
 
 - Tie together the strongest remaining evidence that increases confidence in
@@ -9044,7 +8005,6 @@ STYLE
 ======================================================================
 
 - Human recruiter voice.
-- NEVER use an em dash. Use commas, parentheses, colons, semicolons, or standard hyphens instead.
 - Direct, factual, concise.
 - Evidence over praise.
 - Clear enough for a knowledgeable staffing professional who is not a subject
@@ -9172,7 +8132,7 @@ When evidence is partial, it is better to omit the requirement from the Skills
 table than to overstate the candidate.
 
 ======================================================================
-SKILLS TABLE - EXACTLY 4 HIGH-SIGNAL ROWS WHEN SUPPORTED
+SKILLS TABLE — EXACTLY 4 HIGH-SIGNAL ROWS WHEN SUPPORTED
 ======================================================================
 
 The Freddie template has FOUR Skills rows and TWO columns:
@@ -9280,22 +8240,6 @@ Priority order:
 The final four rows should represent the candidate's FOUR strongest,
 most useful shortlist signals for THIS requisition.
 
-FREDDIE MSP COVERAGE RULE:
-- Do not automatically delete a supported JD skill merely because the manager
-  says the team does not use it or it is not central.
-- If that skill remains useful for MSP/JD keyword recognition, preserve it as a
-  secondary detail inside the most natural broader row whenever there is room
-  among the 3-6 details and it does not displace a higher-priority manager
-  requirement. Do not erase all visible top-of-resume coverage merely because
-  the manager said the team does not use the item day to day.
-- Example: if User Stories is in the JD, the candidate genuinely has User Story
-  experience, and the manager says "we don't do user stories", User Stories may
-  still appear as a detail under Business Requirements/Product Analysis while
-  the row itself emphasizes the requirements/process work the manager actually
-  needs.
-- Only a true `explicitly_excluded_requirements` item should be automatically
-  omitted.
-
 Do NOT mechanically convert Freddie's four planned competency groups into
 four resume rows. Those groups are prioritization guidance. Build the final
 rows around the candidate's actual evidence and the requirements that matter
@@ -9338,7 +8282,7 @@ The reviewer should NOT have to dig through the work history to discover the
 candidate's most important supported Freddie keywords.
 
 ----------------------------------------------------------------------
-CANDIDATE-EVIDENCE RULE - ABSOLUTE
+CANDIDATE-EVIDENCE RULE — ABSOLUTE
 ----------------------------------------------------------------------
 
 Every SKILL AREA and every SKILL DETAILS item must be genuinely supported by
@@ -9473,19 +8417,9 @@ Not allowed:
 OFFICIAL CANDIDATE-SUPPLIED VETTING Q&A:
 {vetting_for_ai}
 
-CANDIDATE-CONFIRMED CLARIFICATIONS / FOLLOW-UP ANSWERS:
-{Candidate_Clarifications or "NONE PROVIDED"}
-
-Candidate-confirmed clarifications are SECONDARY candidate evidence. They may
-add factual details the resume omitted, but may not contradict dated resume facts.
-
 ======================================================================
-CANDIDATE TRUTH SOURCES
+RESUME = PRIMARY SOURCE OF CANDIDATE TRUTH
 ======================================================================
-
-The original resume is PRIMARY. Candidate-confirmed clarifications and official
-Freddie vetting responses are SECONDARY factual sources. Role/JD/manager text is
-never candidate evidence.
 
 ZERO-TOLERANCE RULES:
 
@@ -9505,8 +8439,8 @@ ZERO-TOLERANCE RULES:
    ROLE, not the candidate.
 
 6. Every candidate claim in SUMMARY and SKILLS must survive a side-by-side
-   audit against the resume and any supplied candidate-confirmed clarifications,
-   with official vetting responses used only as factual secondary support.
+   audit against the resume, with only limited clarification from official
+   candidate vetting responses.
 
 ======================================================================
 EXPERIENCE PRIORITY / OPERATIONAL OWNERSHIP
@@ -9549,12 +8483,6 @@ Rules:
 - Do NOT merge bullets.
 - Do NOT rewrite bullets.
 - Rank only the existing indexes.
-- Current hiring-manager priorities outrank merely de-emphasized JD artifacts.
-  A truthful de-emphasized item may remain visible for MSP/JD coverage, but do
-  not move that bullet ahead of stronger bullets that directly prove the
-  manager's current priorities. In particular, do not make a de-emphasized
-  artifact the first bullet of a role when a materially stronger current-priority
-  bullet exists in that same role.
 - If the original order is already best, return the original indexes.
 - If a role has no bullets, return [].
 
@@ -9602,7 +8530,7 @@ FULL ORIGINAL RESUME
                 )
 
                 # ====================================================
-                # PASS 2B - INDEPENDENT FREDDIE GROUNDING / PRIORITY AUDIT
+                # PASS 2B — INDEPENDENT FREDDIE GROUNDING / PRIORITY AUDIT
                 # ====================================================
                 audited_summary_data = fred_generate_json(
                     API_KEY,
@@ -9616,7 +8544,6 @@ FULL ORIGINAL RESUME
                         draft_data=draft_summary_data,
                         calculated_total_experience=calculated_total_experience,
                         current_date=current_date,
-                        candidate_clarifications=Candidate_Clarifications,
                     ),
                 )
 
@@ -9627,7 +8554,6 @@ FULL ORIGINAL RESUME
                     MSP_Notes,
                     Call_Transcript,
                     audited_summary_data,
-                    candidate_clarifications=Candidate_Clarifications,
                 )
 
                 if freddie_grounding_errors:
@@ -9644,7 +8570,6 @@ FULL ORIGINAL RESUME
                             calculated_total_experience=calculated_total_experience,
                             current_date=current_date,
                             validator_errors=freddie_grounding_errors,
-                            candidate_clarifications=Candidate_Clarifications,
                         ),
                     )
 
@@ -9655,60 +8580,16 @@ FULL ORIGINAL RESUME
                         MSP_Notes,
                         Call_Transcript,
                         audited_summary_data,
-                        candidate_clarifications=Candidate_Clarifications,
                     )
 
                 if freddie_grounding_errors:
-                    # FINAL DETERMINISTIC SAFETY NET:
-                    # Do not make the recruiter repeatedly rerun a candidate because
-                    # Gemini shortened an evidence quote or used a natural competency
-                    # label that the lexical validator disliked. Repair evidence metadata,
-                    # remove genuinely unsafe details, and continue with a conservative
-                    # grounded package. The validator remains active internally.
-                    audited_summary_data = fred_sanitize_grounded_tailoring(
-                        audited_summary_data,
-                        raw_text,
-                        req_analysis,
-                        Job_Description,
-                        MSP_Notes,
-                        Call_Transcript,
-                        candidate_clarifications=Candidate_Clarifications,
+                    raise RuntimeError(
+                        "The Freddie Mac grounding safety check could not verify "
+                        "the generated Summary/Skills against the uploaded resume "
+                        "and current requisition intelligence. The formatter already "
+                        "attempted an automatic correction pass. Verification issues: "
+                        + " | ".join(freddie_grounding_errors[:8])
                     )
-
-                    final_grounding_errors = fred_validate_grounded_tailoring(
-                        raw_text,
-                        req_analysis,
-                        Job_Description,
-                        MSP_Notes,
-                        Call_Transcript,
-                        audited_summary_data,
-                        candidate_clarifications=Candidate_Clarifications,
-                    )
-
-                    # Never block resume generation on residual lexical/citation-shape
-                    # diagnostics. If any genuinely hard issue somehow survives the
-                    # sanitizer, run the sanitizer once more; unsafe rows/sentences are
-                    # dropped/replaced with real source wording rather than shown to the
-                    # user as a grounding failure.
-                    if any(
-                        fred_grounding_error_is_hard(error)
-                        for error in final_grounding_errors
-                    ):
-                        audited_summary_data = fred_sanitize_grounded_tailoring(
-                            audited_summary_data,
-                            raw_text,
-                            req_analysis,
-                            Job_Description,
-                            MSP_Notes,
-                            Call_Transcript,
-                            candidate_clarifications=Candidate_Clarifications,
-                        )
-
-                    if freddie_grounding_errors:
-                        print(
-                            "Freddie grounding safety net applied. Initial issues: "
-                            + " | ".join(freddie_grounding_errors[:8])
-                        )
 
                 summary_data = fred_finalize_grounded_tailoring(
                     audited_summary_data
@@ -9752,34 +8633,11 @@ FULL ORIGINAL RESUME
                     name,
                 )
 
-                final_summary = fred_suppress_overqualification_years_text(
-                    final_summary,
-                    calculated_total_experience,
-                    selected_vndly_context,
-                )
-
                 if not final_summary:
-                    # Last-resort source-only summary. This should be rare, but a
-                    # candidate should not fail formatting because an AI/audit payload
-                    # lost its summary structure. Use real candidate-source statements.
-                    fallback_source = fred_candidate_evidence_text(
-                        raw_text, Candidate_Clarifications
+                    raise RuntimeError(
+                        "The Freddie optimization step returned no "
+                        "candidate Summary."
                     )
-                    fallback_sentences = []
-                    for segment in fred_evidence_segments(fallback_source):
-                        sentence = fred_safe_source_sentence(segment)
-                        if not sentence:
-                            continue
-                        key = fred_normalize_quote_match_text(sentence)
-                        if key in {
-                            fred_normalize_quote_match_text(x)
-                            for x in fallback_sentences
-                        }:
-                            continue
-                        fallback_sentences.append(sentence)
-                        if len(fallback_sentences) >= 4:
-                            break
-                    final_summary = " ".join(fallback_sentences).strip()
 
                 # ====================================================
                 # APPLY SAFE BULLET REORDERING
@@ -9856,7 +8714,6 @@ FULL ORIGINAL RESUME
                     "required_vndly_skills_from_job_intelligence": [],
                     "manager_priority_vndly_skills": [],
                     "preferred_vndly_skills_from_job_intelligence": [],
-                    "jd_coverage_vndly_skills": [],
                     "additional_vndly_skills": [],
                 }
                 vndly_package_error = None
@@ -9875,15 +8732,6 @@ FULL ORIGINAL RESUME
                             final_summary,
                             calculated_total_experience,
                             candidate_positioning_title,
-                            candidate_submission_facts={
-                                "current_location": Current_Location,
-                                "available_onsite": Available_Onsite,
-                                "onsite_locations": Site,
-                                "former_freddie_cw_or_employee": Former_CW,
-                                "rehire_eligibility_check_completed": Eligibility,
-                                "interview_availability": Interview,
-                            },
-                            candidate_clarifications=Candidate_Clarifications,
                         )
                 except Exception as package_error:
                     vndly_package_error = str(package_error)
@@ -10058,7 +8906,7 @@ FULL ORIGINAL RESUME
                 )
 
                 # ====================================================
-                # VNDLY SUBMISSION PACKAGE - READY TO COPY
+                # VNDLY SUBMISSION PACKAGE — READY TO COPY
                 # ====================================================
 
                 st.subheader("📨 VNDLY Submission Details")
@@ -10084,11 +8932,12 @@ FULL ORIGINAL RESUME
                     [],
                 ) or []
 
-                st.markdown("**Recommended VNDLY Skills**")
+                st.markdown(
+                    f"**Recommended VNDLY Skills — Top {FREDDIE_VNDLY_SKILL_CAP} Maximum**"
+                )
                 st.caption(
-                    "Ranked from highest to lowest submission value. Select every skill below "
-                    "that is available in VNDLY. There is no artificial eight-skill cap; the "
-                    "tool stops when additional skills would add noise rather than shortlist value."
+                    "Ranked from highest to lowest submission value. "
+                    "Select these exact values in VNDLY."
                 )
 
                 source_labels = {
@@ -10116,7 +8965,7 @@ FULL ORIGINAL RESUME
                             "Recommended",
                         )
                         st.markdown(
-                            f"{index}. `{skill_name}` - {label}"
+                            f"{index}. `{skill_name}` — {label}"
                         )
                 else:
                     st.caption(
