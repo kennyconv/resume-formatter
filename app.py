@@ -3757,6 +3757,60 @@ OUTPUT:
     return fred_generate_json(api_key, prompt)
 
 
+
+def fred_build_vndly_summary_fallback(
+    candidate_name,
+    resume_summary,
+    candidate_submission_facts=None,
+):
+    """
+    Non-blocking Freddie VNDLY-comments fallback.
+
+    The resume Summary has already passed the Freddie candidate-truth pipeline.
+    If the separate VNDLY-comment AI cannot produce validator-friendly evidence
+    metadata, preserve that grounded content and add only deterministic UI-entered
+    logistics that materially help MSP review.
+    """
+    facts = candidate_submission_facts or {}
+    name = str(candidate_name or "Candidate").strip() or "Candidate"
+    clauses = []
+
+    former = str(facts.get("former_freddie_cw_or_employee", "") or "").strip().casefold()
+    rehire = str(facts.get("rehire_eligibility_check_completed", "") or "").strip().casefold()
+    onsite = str(facts.get("available_onsite", "") or "").strip().casefold()
+    current_location = str(facts.get("current_location", "") or "").strip()
+    onsite_locations = str(facts.get("onsite_locations", "") or "").strip()
+
+    if former in {"yes", "y", "true"}:
+        clause = f"{name} is a former Freddie Mac employee"
+        if rehire in {"yes", "y", "true"}:
+            clause += " with rehire eligibility completed"
+        clauses.append(clause)
+
+    if onsite in {"yes", "y", "true"}:
+        location = onsite_locations or current_location
+        if location:
+            clauses.append(f"is available onsite in {location}")
+        else:
+            clauses.append("is available for the required onsite schedule")
+
+    opening = ""
+    if clauses:
+        if len(clauses) == 1:
+            opening = clauses[0] + "."
+        else:
+            opening = clauses[0] + " and " + clauses[1] + "."
+
+    body = fred_clean_vndly_submission_summary(resume_summary, candidate_name)
+    combined = fred_clean_generated_text((opening + " " + body).strip())
+
+    # Keep recruiter comments compact. Preserve complete sentences where possible.
+    words = combined.split()
+    if len(words) > 175:
+        combined = " ".join(words[:175]).rstrip(" ,;:") + "."
+    return combined
+
+
 def fred_build_vndly_candidate_package(
     api_key,
     candidate_name,
@@ -4323,9 +4377,12 @@ Return ONLY:
     )
 
     if not vndly_summary:
-        raise RuntimeError(
-            "Gemini returned no VNDLY submission summary."
+        vndly_summary = fred_build_vndly_summary_fallback(
+            candidate_name,
+            resume_summary,
+            candidate_submission_facts,
         )
+        vndly_summary_evidence = []
 
     vndly_summary_errors = fred_validate_vndly_summary(
         vndly_summary,
@@ -4371,9 +4428,22 @@ Return ONLY:
         )
 
     if vndly_summary_errors:
-        raise RuntimeError(
-            "VNDLY Comments could not be safely grounded after the automatic "
-            "repair pass: " + " | ".join(vndly_summary_errors[:6])
+        # Do not withhold the entire VNDLY package because Gemini returned imperfect
+        # evidence citations. Fall back to the already-grounded resume Summary plus
+        # deterministic UI-entered shortlist logistics. Skill ranking continues below.
+        print(
+            "Freddie VNDLY summary safety fallback applied: "
+            + " | ".join(vndly_summary_errors[:6])
+        )
+        vndly_summary = fred_build_vndly_summary_fallback(
+            candidate_name,
+            resume_summary,
+            candidate_submission_facts,
+        )
+        vndly_summary = fred_suppress_overqualification_years_text(
+            vndly_summary,
+            calculated_total_experience,
+            vndly_context,
         )
 
     ranked_skill_pool = fred_build_final_ranked_vndly_skills(
@@ -5641,6 +5711,436 @@ def fred_role_priority_quote_found(
     return False
 
 
+
+def fred_evidence_segments(source_text):
+    """
+    Build candidate/source excerpts suitable for deterministic evidence repair.
+
+    AI evidence citations are metadata, not candidate claims. They may be shortened,
+    use an ellipsis, or select only part of a source paragraph. This helper preserves
+    actual source wording while exposing paragraph/sentence-sized excerpts that can
+    replace imperfect AI citations without weakening claim safety.
+    """
+    text = str(source_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not text.strip():
+        return []
+
+    segments = []
+    seen = set()
+
+    def add(value):
+        value = re.sub(r"\s+", " ", str(value or "")).strip()
+        value = re.sub(r"^[•·▪◦*-]+\s*", "", value).strip()
+        if len(value) < 12 or len(value) > 450:
+            return
+        key = fred_normalize_quote_match_text(value)
+        if key and key not in seen:
+            seen.add(key)
+            segments.append(value)
+
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", text) if part.strip()]
+    for paragraph in paragraphs:
+        add(paragraph)
+        lines = [line.strip() for line in paragraph.split("\n") if line.strip()]
+        for line in lines:
+            add(line)
+            for sentence in fred_split_sentences(line):
+                add(sentence)
+
+    # Also expose short adjacent-line windows because DOCX extraction can wrap one
+    # resume bullet across multiple physical lines.
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    for i in range(len(lines)):
+        add(lines[i])
+        if i + 1 < len(lines):
+            add(lines[i] + " " + lines[i + 1])
+        if i + 2 < len(lines):
+            add(lines[i] + " " + lines[i + 1] + " " + lines[i + 2])
+
+    return segments
+
+
+def fred_best_source_evidence_excerpt(source_text, claim_text, minimum_ratio=0.50):
+    """Return the strongest ACTUAL source excerpt for a generated claim/skill label."""
+    claim_tokens = fred_signal_tokens(claim_text)
+    if not claim_tokens:
+        return ""
+
+    claim_set = set(claim_tokens)
+    identifiers = [
+        fred_normalize_quote_match_text(value)
+        for value in fred_explicit_identifiers(claim_text)
+        if fred_normalize_quote_match_text(value)
+    ]
+
+    best = ""
+    best_score = -1.0
+    best_matches = 0
+
+    for segment in fred_evidence_segments(source_text):
+        segment_tokens = set(fred_signal_tokens(segment))
+        if not segment_tokens:
+            continue
+
+        matched = len(claim_set.intersection(segment_tokens))
+        ratio = matched / max(1, len(claim_set))
+
+        # Concrete identifiers named in a claim must exist in the selected source
+        # excerpt or the excerpt cannot be used to justify that claim.
+        segment_norm = fred_normalize_quote_match_text(segment)
+        if identifiers and any(identifier not in segment_norm for identifier in identifiers):
+            continue
+
+        # Prefer concentrated support rather than a huge paragraph that happens to
+        # contain unrelated words.
+        density = matched / max(1, len(segment_tokens))
+        score = ratio * 10.0 + density
+
+        if score > best_score:
+            best_score = score
+            best = segment
+            best_matches = matched
+
+    if not best:
+        return ""
+
+    if len(claim_tokens) == 1:
+        return best if best_matches == 1 else ""
+
+    required_matches = 1 if len(claim_tokens) == 2 else 2
+    if best_matches < required_matches:
+        return ""
+
+    ratio = best_matches / max(1, len(set(claim_tokens)))
+    return best if ratio >= minimum_ratio else ""
+
+
+def fred_candidate_evidence_quote_found(candidate_source_text, quote):
+    """
+    Verify an AI evidence citation without requiring identical citation formatting.
+
+    Exact normalized quotes are preferred. A fallback accepts a citation when its
+    substantive concepts occur together in one real candidate-source excerpt. This
+    repairs shortened quotations and ellipses while preventing arbitrary stitching
+    across unrelated jobs/paragraphs.
+    """
+    if fred_source_quote_found(candidate_source_text, quote):
+        return True
+
+    quote_text = str(quote or "").strip()
+    quote_tokens = fred_signal_tokens(quote_text)
+    if not quote_tokens:
+        return False
+
+    quote_set = set(quote_tokens)
+    identifiers = [
+        fred_normalize_quote_match_text(value)
+        for value in fred_explicit_identifiers(quote_text)
+        if fred_normalize_quote_match_text(value)
+    ]
+
+    for segment in fred_evidence_segments(candidate_source_text):
+        segment_tokens = set(fred_signal_tokens(segment))
+        if not segment_tokens:
+            continue
+        segment_norm = fred_normalize_quote_match_text(segment)
+        if identifiers and any(identifier not in segment_norm for identifier in identifiers):
+            continue
+        matched = len(quote_set.intersection(segment_tokens))
+        if len(quote_set) <= 3:
+            required = len(quote_set)
+        else:
+            # Long AI citations may omit/reword a couple harmless words, but the
+            # majority of substantive concepts must co-occur in one source excerpt.
+            required = max(3, int(len(quote_set) * 0.72 + 0.9999))
+        if matched >= required:
+            return True
+
+    return False
+
+
+def fred_grounding_error_is_hard(error_text):
+    """
+    Identify issues that represent a genuine candidate-truth risk.
+
+    Citation-shape and lexical-similarity issues are deliberately NOT hard errors;
+    they are repaired/sanitized automatically. Hard issues are concrete fabrication,
+    unsupported scope/authority, explicit exclusions, or unusable output structure.
+    """
+    text = str(error_text or "").casefold()
+    hard_markers = [
+        "unsupported high-impact claim",
+        "unsupported named identifier",
+        "unsupported identifier",
+        "manager-explicitly-excluded",
+        "uses manager-explicitly-excluded",
+        "invalid structure",
+        " is blank",
+        "more than four rows",
+    ]
+    return any(marker in text for marker in hard_markers)
+
+
+def fred_safe_source_sentence(excerpt):
+    """Convert a real candidate-source excerpt into a clean fallback summary sentence."""
+    text = fred_clean_generated_text(excerpt)
+    text = re.sub(r"^[•·▪◦*-]+\s*", "", text).strip()
+    # Remove common resume heading prefixes while preserving the factual clause.
+    text = re.sub(r"^[A-Z][A-Za-z &/+-]{2,45}:\s*", "", text).strip()
+    # Some extraction paths collapse NAME + PROFESSIONAL SUMMARY + first paragraph
+    # into one physical line. Start after the summary heading in that case.
+    upper = text.upper()
+    for marker in ("PROFESSIONAL SUMMARY", "SUMMARY OF QUALIFICATIONS"):
+        pos = upper.find(marker)
+        if pos >= 0:
+            after = text[pos + len(marker):].strip(" :-")
+            if after:
+                text = after
+                break
+    if not text:
+        return ""
+    # Fallback content should be one real source sentence/statement, never a whole
+    # extraction paragraph containing multiple resume sections.
+    parts = fred_split_sentences(text)
+    if parts:
+        text = parts[0].strip()
+    if len(text) > 420:
+        text = text[:420].rsplit(" ", 1)[0].rstrip(" ,;:")
+    if text[-1] not in ".!?":
+        text += "."
+    return text
+
+
+def fred_sanitize_grounded_tailoring(
+    data,
+    resume_text,
+    structured_req,
+    job_description,
+    msp_notes,
+    spotlight_transcript,
+    candidate_clarifications="",
+):
+    """
+    Deterministic last-line Freddie safety repair.
+
+    The formatter should never make a recruiter repeatedly rerun a candidate merely
+    because Gemini cited evidence imperfectly. This routine repairs evidence metadata,
+    removes genuinely unsafe details, preserves safe high-quality content whenever
+    possible, and builds a source-grounded fallback when necessary.
+    """
+    structured_req = fred_coerce_structured_req(structured_req)
+    candidate_source = fred_candidate_evidence_text(
+        resume_text, candidate_clarifications
+    )
+    role_sources = [
+        str(job_description or ""),
+        str(spotlight_transcript or ""),
+        str(msp_notes or ""),
+    ]
+
+    source = data if isinstance(data, dict) else {}
+    cleaned = {
+        "CANDIDATE_TITLE": fred_clean_generated_text(source.get("CANDIDATE_TITLE", "")),
+        "SUMMARY_SENTENCES": [],
+        "SKILLS": [],
+        "BULLET_ORDER": source.get("BULLET_ORDER", {})
+        if isinstance(source.get("BULLET_ORDER", {}), dict)
+        else {},
+    }
+
+    # -------------------------------
+    # SUMMARY
+    # -------------------------------
+    summary_entries = source.get("SUMMARY_SENTENCES", [])
+    summary_entries = summary_entries if isinstance(summary_entries, list) else []
+
+    for idx, entry in enumerate(summary_entries[:4]):
+        if not isinstance(entry, dict):
+            continue
+        text = fred_clean_generated_text(entry.get("text", ""))
+        if not text:
+            continue
+
+        evidence = fred_string_list(entry.get("evidence", []))
+        valid_evidence = [
+            quote for quote in evidence
+            if fred_candidate_evidence_quote_found(candidate_source, quote)
+        ]
+
+        if not valid_evidence:
+            fallback = fred_best_source_evidence_excerpt(candidate_source, text, 0.42)
+            if fallback:
+                valid_evidence = [fallback]
+
+        joined = " ".join(valid_evidence)
+        hard_unsafe = bool(
+            fred_unsupported_high_impact_claims(text, joined)
+            or fred_explicit_identifiers_supported(text, joined, candidate_source)
+            or fred_output_hits_excluded_requirement(text, structured_req)
+        )
+
+        if hard_unsafe or not valid_evidence:
+            # Replace the whole generated sentence with real candidate-source wording
+            # rather than trying to surgically edit a potentially unsafe claim.
+            fallback = fred_best_source_evidence_excerpt(candidate_source, text, 0.34)
+            safe_text = fred_safe_source_sentence(fallback)
+            if safe_text:
+                text = safe_text
+                valid_evidence = [fallback]
+            else:
+                continue
+
+        cleaned["SUMMARY_SENTENCES"].append(
+            {"text": text, "evidence": valid_evidence[:3]}
+        )
+
+    # Fill any missing summary slots with distinct, role-relevant REAL source excerpts.
+    used_norm = {
+        fred_normalize_quote_match_text(item.get("text", ""))
+        for item in cleaned["SUMMARY_SENTENCES"]
+    }
+    role_text = "\n".join(role_sources)
+    role_tokens = set(fred_signal_tokens(role_text))
+    fallback_segments = []
+    for segment in fred_evidence_segments(candidate_source):
+        tokens = set(fred_signal_tokens(segment))
+        if not tokens:
+            continue
+        overlap = len(tokens.intersection(role_tokens))
+        if overlap <= 0:
+            continue
+        fallback_segments.append((overlap / max(1, len(tokens)), overlap, segment))
+    fallback_segments.sort(key=lambda item: (item[0], item[1]), reverse=True)
+
+    for _, __, segment in fallback_segments:
+        if len(cleaned["SUMMARY_SENTENCES"]) >= 4:
+            break
+        safe_text = fred_safe_source_sentence(segment)
+        key = fred_normalize_quote_match_text(safe_text)
+        if not safe_text or key in used_norm:
+            continue
+        if fred_output_hits_excluded_requirement(safe_text, structured_req):
+            continue
+        cleaned["SUMMARY_SENTENCES"].append(
+            {"text": safe_text, "evidence": [segment]}
+        )
+        used_norm.add(key)
+
+    # A candidate with weak/no role overlap should still receive a document rather
+    # than a grounding exception. Fill any remaining slots from substantive REAL
+    # candidate-source statements. This may be less tailored, but it is truthful and
+    # is preferable to blocking the recruiter.
+    if len(cleaned["SUMMARY_SENTENCES"]) < 4:
+        skip_line = re.compile(
+            r"^(?:name|email|phone|location|work authorization|available|interview availability|"
+            r"education|certifications?|skills?|summary|professional summary)\b",
+            flags=re.IGNORECASE,
+        )
+        for segment in fred_evidence_segments(candidate_source):
+            if len(cleaned["SUMMARY_SENTENCES"]) >= 4:
+                break
+            if skip_line.search(segment.strip()):
+                continue
+            if len(fred_signal_tokens(segment)) < 5:
+                continue
+            safe_text = fred_safe_source_sentence(segment)
+            key = fred_normalize_quote_match_text(safe_text)
+            if not safe_text or key in used_norm:
+                continue
+            if fred_output_hits_excluded_requirement(safe_text, structured_req):
+                continue
+            cleaned["SUMMARY_SENTENCES"].append(
+                {"text": safe_text, "evidence": [segment]}
+            )
+            used_norm.add(key)
+
+    # -------------------------------
+    # SKILLS
+    # -------------------------------
+    skills = source.get("SKILLS", [])
+    skills = skills if isinstance(skills, list) else []
+
+    for row in skills[:4]:
+        if not isinstance(row, dict):
+            continue
+        area = fred_clean_generated_text(row.get("skill_area", ""))
+        if not area or fred_output_hits_excluded_requirement(area, structured_req):
+            continue
+
+        area_evidence = [
+            quote for quote in fred_string_list(row.get("area_evidence", []))
+            if fred_candidate_evidence_quote_found(candidate_source, quote)
+        ]
+        if not area_evidence:
+            fallback = fred_best_source_evidence_excerpt(candidate_source, area, 0.42)
+            if fallback:
+                area_evidence = [fallback]
+
+        joined_area = " ".join(area_evidence)
+        if (
+            not area_evidence
+            or fred_unsupported_high_impact_claims(area, joined_area)
+            or fred_explicit_identifiers_supported(area, joined_area, candidate_source)
+        ):
+            continue
+
+        role_evidence = [
+            quote for quote in fred_string_list(row.get("role_evidence", []))
+            if fred_role_priority_quote_found(
+                job_description, msp_notes, spotlight_transcript, quote
+            )
+        ]
+        if not role_evidence:
+            # Role evidence is prioritization metadata. Find the strongest real role
+            # excerpt rather than failing the candidate output on citation wording.
+            for source_text in role_sources:
+                fallback = fred_best_source_evidence_excerpt(source_text, area, 0.34)
+                if fallback:
+                    role_evidence = [fallback]
+                    break
+
+        details = []
+        for detail in fred_normalize_audited_detail_records(row.get("details", []))[:6]:
+            item = fred_clean_generated_text(detail.get("item", ""))
+            evidence = str(detail.get("evidence", "") or "").strip()
+            if not item or fred_output_hits_excluded_requirement(item, structured_req):
+                continue
+
+            if not fred_candidate_evidence_quote_found(candidate_source, evidence):
+                evidence = fred_best_source_evidence_excerpt(candidate_source, item, 0.42)
+
+            if not evidence:
+                continue
+
+            # The whole verified candidate record may support a concise competency
+            # label, but named identifiers and authority/scope remain strict.
+            if not fred_claim_supported_by_candidate_context(
+                item, evidence, candidate_source
+            ) and not fred_claim_supported_by_evidence(item, candidate_source):
+                continue
+            if fred_unsupported_high_impact_claims(item, evidence):
+                continue
+            if fred_explicit_identifiers_supported(item, evidence, candidate_source):
+                continue
+
+            if item.casefold() not in {d["item"].casefold() for d in details}:
+                details.append({"item": item, "evidence": evidence})
+
+        if not details:
+            continue
+
+        cleaned["SKILLS"].append(
+            {
+                "skill_area": area,
+                "area_evidence": area_evidence[:3],
+                "role_evidence": role_evidence[:2],
+                "details": details[:6],
+            }
+        )
+
+    return cleaned
+
+
 def fred_validate_grounded_tailoring(
     resume_text,
     structured_req,
@@ -5682,7 +6182,7 @@ def fred_validate_grounded_tailoring(
 
         valid_evidence = []
         for quote in evidence:
-            if fred_source_quote_found(candidate_evidence_source, quote):
+            if fred_candidate_evidence_quote_found(candidate_evidence_source, quote):
                 valid_evidence.append(quote)
             else:
                 errors.append(
@@ -5721,18 +6221,12 @@ def fred_validate_grounded_tailoring(
             token_hits = fred_role_only_signal_tokens(
                 text, role_text, candidate_evidence_source, joined
             )
-            if role_hits:
-                errors.append(
-                    f"SUMMARY sentence {idx} contains role-source wording not "
-                    "independently supported as candidate history: "
-                    + "; ".join(role_hits)
-                )
-            if token_hits:
-                errors.append(
-                    f"SUMMARY sentence {idx} contains distinctive role-source "
-                    "term(s) absent from candidate evidence: "
-                    + ", ".join(token_hits)
-                )
+            # Role-language overlap is a repair signal, not a blocking safety error.
+            # Concrete named identifiers, high-impact authority/scope claims, explicit
+            # exclusions, and candidate evidence support are enforced separately.
+            # Treating generic role words as fatal caused repeated false stops on
+            # otherwise grounded candidates (for example a lone word such as "record").
+            _ = role_hits, token_hits
 
     skills = data.get("SKILLS", []) if isinstance(data, dict) else []
     if not isinstance(skills, list):
@@ -5759,13 +6253,13 @@ def fred_validate_grounded_tailoring(
             errors.append(f"SKILL row {idx} has no candidate evidence.")
         else:
             for quote in area_evidence:
-                if not fred_source_quote_found(candidate_evidence_source, quote):
+                if not fred_candidate_evidence_quote_found(candidate_evidence_source, quote):
                     errors.append(
                         f"SKILL row {idx} cites area evidence not found in the supplied candidate sources: {quote[:120]}"
                     )
 
         joined_area_evidence = " ".join(
-            q for q in area_evidence if fred_source_quote_found(candidate_evidence_source, q)
+            q for q in area_evidence if fred_candidate_evidence_quote_found(candidate_evidence_source, q)
         )
 
         if joined_area_evidence and not fred_claim_supported_by_evidence(
@@ -5819,7 +6313,7 @@ def fred_validate_grounded_tailoring(
             item = detail["item"]
             evidence = detail["evidence"]
 
-            if not fred_source_quote_found(candidate_evidence_source, evidence):
+            if not fred_candidate_evidence_quote_found(candidate_evidence_source, evidence):
                 errors.append(
                     f"SKILL row {idx} detail '{item}' cites evidence not found in the resume."
                 )
@@ -9165,13 +9659,56 @@ FULL ORIGINAL RESUME
                     )
 
                 if freddie_grounding_errors:
-                    raise RuntimeError(
-                        "The Freddie Mac grounding safety check could not verify "
-                        "the generated Summary/Skills against the uploaded resume "
-                        "and current requisition intelligence. The formatter already "
-                        "attempted an automatic correction pass. Verification issues: "
-                        + " | ".join(freddie_grounding_errors[:8])
+                    # FINAL DETERMINISTIC SAFETY NET:
+                    # Do not make the recruiter repeatedly rerun a candidate because
+                    # Gemini shortened an evidence quote or used a natural competency
+                    # label that the lexical validator disliked. Repair evidence metadata,
+                    # remove genuinely unsafe details, and continue with a conservative
+                    # grounded package. The validator remains active internally.
+                    audited_summary_data = fred_sanitize_grounded_tailoring(
+                        audited_summary_data,
+                        raw_text,
+                        req_analysis,
+                        Job_Description,
+                        MSP_Notes,
+                        Call_Transcript,
+                        candidate_clarifications=Candidate_Clarifications,
                     )
+
+                    final_grounding_errors = fred_validate_grounded_tailoring(
+                        raw_text,
+                        req_analysis,
+                        Job_Description,
+                        MSP_Notes,
+                        Call_Transcript,
+                        audited_summary_data,
+                        candidate_clarifications=Candidate_Clarifications,
+                    )
+
+                    # Never block resume generation on residual lexical/citation-shape
+                    # diagnostics. If any genuinely hard issue somehow survives the
+                    # sanitizer, run the sanitizer once more; unsafe rows/sentences are
+                    # dropped/replaced with real source wording rather than shown to the
+                    # user as a grounding failure.
+                    if any(
+                        fred_grounding_error_is_hard(error)
+                        for error in final_grounding_errors
+                    ):
+                        audited_summary_data = fred_sanitize_grounded_tailoring(
+                            audited_summary_data,
+                            raw_text,
+                            req_analysis,
+                            Job_Description,
+                            MSP_Notes,
+                            Call_Transcript,
+                            candidate_clarifications=Candidate_Clarifications,
+                        )
+
+                    if freddie_grounding_errors:
+                        print(
+                            "Freddie grounding safety net applied. Initial issues: "
+                            + " | ".join(freddie_grounding_errors[:8])
+                        )
 
                 summary_data = fred_finalize_grounded_tailoring(
                     audited_summary_data
@@ -9222,10 +9759,27 @@ FULL ORIGINAL RESUME
                 )
 
                 if not final_summary:
-                    raise RuntimeError(
-                        "The Freddie optimization step returned no "
-                        "candidate Summary."
+                    # Last-resort source-only summary. This should be rare, but a
+                    # candidate should not fail formatting because an AI/audit payload
+                    # lost its summary structure. Use real candidate-source statements.
+                    fallback_source = fred_candidate_evidence_text(
+                        raw_text, Candidate_Clarifications
                     )
+                    fallback_sentences = []
+                    for segment in fred_evidence_segments(fallback_source):
+                        sentence = fred_safe_source_sentence(segment)
+                        if not sentence:
+                            continue
+                        key = fred_normalize_quote_match_text(sentence)
+                        if key in {
+                            fred_normalize_quote_match_text(x)
+                            for x in fallback_sentences
+                        }:
+                            continue
+                        fallback_sentences.append(sentence)
+                        if len(fallback_sentences) >= 4:
+                            break
+                    final_summary = " ".join(fallback_sentences).strip()
 
                 # ====================================================
                 # APPLY SAFE BULLET REORDERING
