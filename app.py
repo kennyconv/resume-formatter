@@ -1611,6 +1611,17 @@ def fred_signal_tokens(value):
         "prioritize": "priorit",
         "prioritized": "priorit",
         "stakeholders": "stakeholder",
+        # Normalize adjective/adverb and noun/verb forms used in natural
+        # competency labels. Example: "Independent Risk Identification" must
+        # match candidate evidence such as "independently identified program
+        # and project risks" without weakening the separate authority check.
+        "independent": "independ",
+        "independently": "independ",
+        "identification": "identif",
+        "identify": "identif",
+        "identifies": "identif",
+        "identified": "identif",
+        "identifying": "identif",
         "strategic": "strateg",
         "strategy": "strateg",
         "alignment": "align",
