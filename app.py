@@ -1338,6 +1338,17 @@ def fred_cap_skill_details(value, max_items=6):
             flags=re.IGNORECASE,
         ).strip()
 
+        # Skill-table labels should name the capability itself, not grade or
+        # timestamp it. Remove trailing proficiency/recency qualifiers while
+        # preserving the underlying tool/capability name.
+        clean = re.sub(
+            r"\s+(?:familiarity|working\s+knowledge|prior\s+experience|"
+            r"previous\s+experience|hands[-\s]?on\s+experience)\s*$",
+            "",
+            clean,
+            flags=re.IGNORECASE,
+        ).strip()
+
         key = clean.casefold()
 
         if not clean or key in seen:
@@ -1359,6 +1370,19 @@ def fred_normalize_skill_name(value):
         " ",
         str(value or "").replace("\u00a0", " "),
     ).strip().casefold()
+
+
+def fred_canonical_vndly_skill_label(value):
+    """Collapse known equivalent Freddie VNDLY labels to the preferred display value."""
+    raw = re.sub(r"\s+", " ", str(value or "")).strip()
+    key = fred_normalize_skill_name(raw)
+    canonical = {
+        "microsoft sharepoint": "SharePoint",
+        "sharepoint": "SharePoint",
+        "microsoft power platform": "Power Platform",
+        "power platform": "Power Platform",
+    }
+    return canonical.get(key, raw)
 
 
 def fred_normalize_match_surface(value):
@@ -2838,6 +2862,14 @@ def fred_vndly_skill_family(skill_name):
             "risk management",
             "business risk management",
         },
+        "sharepoint_label": {
+            "sharepoint",
+            "microsoft sharepoint",
+        },
+        "power_platform_label": {
+            "power platform",
+            "microsoft power platform",
+        },
     }
 
     for family_name, members in families.items():
@@ -3244,6 +3276,10 @@ def fred_vndly_redundancy_preference(skill_name):
         "program management": 1,
         "business risk management": 0,
         "risk management": 1,
+        "sharepoint": 0,
+        "microsoft sharepoint": 1,
+        "power platform": 0,
+        "microsoft power platform": 1,
         "financial services": 0,
         "finance": 1,
 
@@ -3308,11 +3344,14 @@ def fred_apply_vndly_redundancy_control(
     structured_req = fred_coerce_structured_req(structured_req)
 
     for idx, item in enumerate(ranked_skills or []):
-        name = str(item.get("skill_name", "") or "").strip()
+        name = fred_canonical_vndly_skill_label(
+            item.get("skill_name", "")
+        )
         key = fred_normalize_skill_name(name)
         if not name or key in seen:
             continue
         copy_item = dict(item)
+        copy_item["skill_name"] = name
         copy_item["_sort_key"] = fred_required_skill_sort_key(copy_item, structured_req, idx)
         candidates.append(copy_item)
         seen.add(key)
@@ -3353,6 +3392,8 @@ def fred_apply_vndly_redundancy_control(
             "data_quality_validation": 1,
             "program_management_label": 1,
             "risk_management_label": 1,
+            "sharepoint_label": 1,
+            "power_platform_label": 1,
         }
         if family and family_counts.get(family, 0) >= family_caps.get(family, 99):
             return False
@@ -4312,6 +4353,13 @@ STYLE - VERY IMPORTANT:
 - The final sentence may be more explicit than the resume Summary about WHY the
   candidate should advance, as long as it is phrased as evidence-based
   transferability rather than unsupported praise.
+- FINAL-SENTENCE SIGNAL RULE: prefer 2-4 concrete, supported secondary shortlist
+  signals that matter to this requisition and have not already dominated the
+  paragraph (for example domain knowledge, a preferred platform, Agile/User
+  Stories, SharePoint, Power Platform, or another supported JD/preferred item).
+  Do NOT spend the final sentence on generic language such as "supports the
+  need", "strong fit", or "can contribute" when concrete supported signals
+  are available.
 
 GOOD MODEL - communications example:
 "Kristin is a senior communications specialist with 18+ years of experience
@@ -5768,6 +5816,20 @@ own/ownership, manage/managed/manager, oversight, architect, expert, advanced,
 hands-on, enterprise-wide, organization-wide, global,
 end-to-end, high-volume, large-scale, production.
 
+CANDIDATE_TITLE TARGET-FUNCTION CHECK:
+- Re-evaluate CANDIDATE_TITLE independently. Do not preserve the draft title
+  merely because it is factually true.
+- The best title is the candidate's strongest SUPPORTED functional identity for
+  THIS requisition, not automatically the latest/current job title.
+- If Freddie's role is primarily program/project/business-operations work and the
+  candidate repeatedly demonstrates program/portfolio management plus business
+  analysis/requirements work, do not default to Product Management simply
+  because the latest title is Product Manager.
+- For a genuinely hybrid target role, combine at most two closely related lanes
+  when both are repeatedly supported (for example, "Program Management &
+  Business Analysis Lead").
+- Never force a target function the candidate does not actually demonstrate.
+
 SUMMARY:
 - Exactly 4 sentences, one paragraph after finalization.
 - Natural human recruiter voice, concise and evidence-based.
@@ -6857,6 +6919,130 @@ def fred_clean_summary(summary, candidate_name):
     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
 
     return cleaned
+
+
+def fred_ensure_secondary_jd_skill_coverage(
+    summary_data,
+    raw_resume_text,
+    structured_req,
+    job_description,
+):
+    """Preserve supported User Stories as secondary Freddie JD/MSP coverage."""
+    data = dict(summary_data or {})
+    req = fred_coerce_structured_req(structured_req)
+
+    excluded_text = " ".join(
+        str(x) for x in (req.get("explicitly_excluded_requirements", []) or [])
+    )
+    role_text = " ".join(
+        [
+            str(job_description or ""),
+            " ".join(str(x) for x in (req.get("deemphasized_requirements", []) or [])),
+            " ".join(str(x) for x in (req.get("required_requirements", []) or [])),
+            " ".join(str(x) for x in (req.get("preferred_requirements", []) or [])),
+        ]
+    )
+
+    if (
+        fred_skill_matches_text("User Story", role_text)
+        and not fred_skill_matches_text("User Story", excluded_text)
+        and fred_skill_work_history_evidence("User Story", raw_resume_text) > 0
+    ):
+        combined = " ".join(
+            str(data.get(f"SKILL{i}", "")) + " " + str(data.get(f"SKILLDETAILS{i}", ""))
+            for i in range(1, 5)
+        )
+        if not fred_skill_matches_text("User Story", combined):
+            best_row = None
+            best_score = -1
+            row_keywords = {
+                "requirements": 5,
+                "business analysis": 5,
+                "product analysis": 5,
+                "backlog": 3,
+                "stakeholder": 2,
+                "product": 2,
+                "agile": 1,
+            }
+            for i in range(1, 5):
+                row_text = (
+                    str(data.get(f"SKILL{i}", "")) + " "
+                    + str(data.get(f"SKILLDETAILS{i}", ""))
+                ).casefold()
+                details = [
+                    x.strip() for x in str(data.get(f"SKILLDETAILS{i}", "")).split(",")
+                    if x.strip()
+                ]
+                if not str(data.get(f"SKILL{i}", "")).strip() or len(details) >= 6:
+                    continue
+                score = sum(weight for kw, weight in row_keywords.items() if kw in row_text)
+                if score > best_score:
+                    best_score = score
+                    best_row = i
+
+            if best_row is not None:
+                key = f"SKILLDETAILS{best_row}"
+                details = [
+                    x.strip() for x in str(data.get(key, "")).split(",") if x.strip()
+                ]
+                details.append("User Stories")
+                data[key] = ", ".join(details[:6])
+
+    return data
+
+
+def fred_restore_source_bullet_boundaries(experience, raw_resume_text):
+    """Restore exact source bullet boundaries if extraction concatenates bullets."""
+    if not isinstance(experience, list):
+        return experience
+
+    source_lines = []
+    for line in str(raw_resume_text or "").splitlines():
+        clean = re.sub(r"\s+", " ", line).strip(" \t•·-*–—")
+        if len(clean) < 40:
+            continue
+        source_lines.append(clean)
+
+    def norm(value):
+        value = str(value or "").replace("‑", "-").replace("–", "-").replace("—", "-")
+        return re.sub(r"\s+", " ", value).strip().casefold()
+
+    normalized_sources = [(src, norm(src)) for src in source_lines]
+    restored = []
+    for role in experience:
+        role_copy = dict(role) if isinstance(role, dict) else role
+        if not isinstance(role_copy, dict):
+            restored.append(role_copy)
+            continue
+
+        new_bullets = []
+        for bullet in role_copy.get("Bullets", []) or []:
+            bullet_text = re.sub(r"\s+", " ", str(bullet or "")).strip()
+            bullet_norm = norm(bullet_text)
+            matches = []
+            for src, src_norm in normalized_sources:
+                pos = bullet_norm.find(src_norm)
+                if pos >= 0:
+                    matches.append((pos, src))
+            matches.sort(key=lambda x: x[0])
+
+            unique = []
+            seen_src = set()
+            for pos, src in matches:
+                k = norm(src)
+                if k not in seen_src:
+                    unique.append((pos, src))
+                    seen_src.add(k)
+
+            if len(unique) >= 2:
+                new_bullets.extend(src for _, src in unique)
+            else:
+                new_bullets.append(bullet_text)
+
+        role_copy["Bullets"] = new_bullets
+        restored.append(role_copy)
+
+    return restored
 
 
 def fred_safe_reorder_bullets(bullets, requested_order):
@@ -8168,6 +8354,12 @@ TITLE:
 
 BULLETS:
 - Preserve every substantive original bullet.
+- ONE SOURCE BULLET = ONE JSON ARRAY ITEM. NEVER concatenate, combine, merge,
+  summarize, or compress two separate source bullets into one array item, even
+  when they discuss the same project, tool, or responsibility.
+- Preserve source bullet boundaries exactly. If three consecutive source bullets
+  describe roadmaps, User Stories, and sprint planning, return THREE separate
+  Bullets items.
 - Light cleanup of malformed bullet characters/spacing is allowed.
 - Keep bullets in ORIGINAL ORDER in this extraction response.
 - Do NOT rewrite bullets to match Freddie's JD.
@@ -8279,6 +8471,13 @@ ORIGINAL RESUME:
                     list,
                 ):
                     experience = []
+
+                # Deterministically undo accidental concatenation of separate
+                # original bullets before any relevance reordering occurs.
+                experience = fred_restore_source_bullet_boundaries(
+                    experience,
+                    raw_text,
+                )
 
                 # Normalize ALL extracted dated roles first. Older abbreviated
                 # "Earlier Experience" entries are retained here for accurate
@@ -8585,9 +8784,15 @@ TARGET-FUNCTION OVERRIDE:
 - Do NOT simply reuse the candidate's latest job title when it describes only one
   adjacent part of the work and would misposition the candidate for the current
   Freddie need.
+- The dominant function of the CURRENT FREDDIE REQUISITION wins when the
+  candidate repeatedly demonstrates that function in dated experience.
 - When the candidate strongly demonstrates the target function across multiple
   roles, prefer a truthful target-relevant functional identity over the latest
   title.
+- Treat adjacent disciplines as supporting context, not as the primary identity,
+  when they are not the central function Freddie is hiring for. For example, do
+  not lead with Product Management for a Program/Business Analysis role merely
+  because the candidate's latest title is Product Manager.
 - Example: a candidate whose recent title is Senior Product Manager but whose
   history repeatedly proves program/portfolio management, business analysis,
   requirements translation, executive reporting, and cross-functional delivery
@@ -9639,6 +9844,13 @@ FULL ORIGINAL RESUME
                         summary_data.get(details_key, ""),
                         max_items=6,
                     )
+
+                summary_data = fred_ensure_secondary_jd_skill_coverage(
+                    summary_data,
+                    raw_text,
+                    req_analysis,
+                    Job_Description,
+                )
 
                 # ====================================================
                 # BUILD VNDLY SUBMISSION SUMMARY + RECOMMENDED SKILLS
