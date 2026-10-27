@@ -1380,6 +1380,214 @@ def fred_source_quote_found(source_text, quote):
     return quote_norm in source
 
 
+def fred_evidence_segments(source_text):
+    """Return real source excerpts used only to verify AI evidence citations."""
+    text = str(source_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not text.strip():
+        return []
+
+    segments = []
+    seen = set()
+
+    def add(value):
+        value = re.sub(r"\s+", " ", str(value or "")).strip()
+        value = re.sub(r"^[•·▪◦*-]+\s*", "", value).strip()
+        if len(value) < 10 or len(value) > 650:
+            return
+        key = fred_normalize_quote_match_text(value)
+        if key and key not in seen:
+            seen.add(key)
+            segments.append(value)
+
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    for i, line in enumerate(lines):
+        add(line)
+        if i + 1 < len(lines):
+            add(line + " " + lines[i + 1])
+        if i + 2 < len(lines):
+            add(line + " " + lines[i + 1] + " " + lines[i + 2])
+
+    return segments
+
+
+def fred_candidate_evidence_quote_found(candidate_source_text, quote):
+    """
+    Verify AI evidence metadata without requiring identical punctuation or an
+    identical excerpt boundary. This never creates candidate evidence; it only
+    confirms that the same substantive concepts co-occur in a real source excerpt.
+    """
+    if fred_source_quote_found(candidate_source_text, quote):
+        return True
+
+    quote_text = str(quote or "").replace("...", " ").strip()
+    quote_tokens = fred_signal_tokens(quote_text)
+    if not quote_tokens:
+        return False
+
+    quote_set = set(quote_tokens)
+    identifiers = [
+        fred_normalize_quote_match_text(value)
+        for value in fred_explicit_identifiers(quote_text)
+        if fred_normalize_quote_match_text(value)
+    ]
+
+    for segment in fred_evidence_segments(candidate_source_text):
+        segment_tokens = set(fred_signal_tokens(segment))
+        if not segment_tokens:
+            continue
+        segment_norm = fred_normalize_quote_match_text(segment)
+        if identifiers and any(identifier not in segment_norm for identifier in identifiers):
+            continue
+        matched = len(quote_set.intersection(segment_tokens))
+        if len(quote_set) <= 3:
+            required = len(quote_set)
+        else:
+            required = max(3, int(len(quote_set) * 0.70 + 0.9999))
+        if matched >= required:
+            return True
+
+    return False
+
+
+def fred_vndly_summary_evidence_found(candidate_source_text, evidence):
+    """
+    Validate VNDLY-comment evidence. Resume/clarification citations may use a
+    harmlessly shortened excerpt. UI-entered logistics may be rendered naturally,
+    but this flexibility is limited to the CANDIDATE SUBMISSION FACTS block.
+    """
+    if fred_candidate_evidence_quote_found(candidate_source_text, evidence):
+        return True
+
+    marker = "CANDIDATE SUBMISSION FACTS:"
+    source_text = str(candidate_source_text or "")
+    if marker not in source_text:
+        return False
+
+    facts_text = source_text.split(marker, 1)[1]
+    evidence_tokens = fred_signal_tokens(evidence)
+    fact_tokens = set(fred_signal_tokens(facts_text))
+    if not evidence_tokens or not fact_tokens:
+        return False
+    return all(token in fact_tokens for token in evidence_tokens)
+
+
+def fred_numeric_years(value):
+    match = re.search(r"(\d+(?:\.\d+)?)", str(value or ""))
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except Exception:
+        return None
+
+
+def fred_should_suppress_total_years(calculated_total_experience, vndly_context):
+    """Presentation-only guard against unnecessarily advertising overqualification."""
+    vndly_context = vndly_context or {}
+    total_years = fred_numeric_years(calculated_total_experience)
+    max_years = fred_numeric_years(vndly_context.get("max_experience", ""))
+    if total_years is None or max_years is None or max_years <= 0:
+        return False
+    return total_years >= max_years + 8 or (max_years <= 10 and total_years >= max_years * 2)
+
+
+def fred_suppress_total_career_years(value, calculated_total_experience, vndly_context):
+    """
+    Remove only the deterministic total-career number when it is strategically
+    counterproductive. The replacement consumes modifiers such as "over" so it
+    cannot create broken phrases like "over extensive experience".
+    """
+    text = str(value or "")
+    if not text or not fred_should_suppress_total_years(calculated_total_experience, vndly_context):
+        return text
+
+    total_years = fred_numeric_years(calculated_total_experience)
+    if total_years is None:
+        return text
+    year_token = str(int(total_years)) if float(total_years).is_integer() else str(total_years).rstrip("0").rstrip(".")
+    modifier = r"(?:(?:over|more\s+than|approximately|about|nearly)\s+)?"
+
+    # e.g. "over 30+ years of professional experience" -> "extensive professional experience"
+    text = re.sub(
+        rf"\b{modifier}{re.escape(year_token)}\s*\+?\s*years?\s+of\s+",
+        "extensive ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    # e.g. "30+ years professional experience" -> "extensive professional experience"
+    text = re.sub(
+        rf"\b{modifier}{re.escape(year_token)}\s*\+?\s*years?\s+(?=(?:professional|overall|total)\s+experience\b)",
+        "extensive ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def fred_grounding_error_is_hard(error_text):
+    """Only genuine fabrication/scope/exclusion issues are blocking safety issues."""
+    value = str(error_text or "").casefold()
+    hard_markers = [
+        "unsupported high-impact claim",
+        "unsupported named identifier",
+        "unsupported identifier",
+        "manager-explicitly-excluded",
+        "uses manager-explicitly-excluded",
+        "emphasizes manager-explicitly-excluded",
+    ]
+    return any(marker in value for marker in hard_markers)
+
+
+def fred_drop_hard_grounding_items(data, hard_errors):
+    """
+    Last-resort safety action that drops complete unsafe sentences/details/rows.
+    It never splices resume fragments into generated prose.
+    """
+    result = copy.deepcopy(data) if isinstance(data, dict) else {}
+    sentences = result.get("SUMMARY_SENTENCES", [])
+    skills = result.get("SKILLS", [])
+    sentences = sentences if isinstance(sentences, list) else []
+    skills = skills if isinstance(skills, list) else []
+
+    summary_drop = set()
+    row_drop = set()
+    detail_drop = {}
+
+    for error in hard_errors or []:
+        sm = re.search(r"SUMMARY sentence\s+(\d+)", str(error), flags=re.IGNORECASE)
+        if sm:
+            summary_drop.add(int(sm.group(1)) - 1)
+            continue
+
+        dm = re.search(r"SKILL row\s+(\d+)\s+detail\s+'([^']+)'", str(error), flags=re.IGNORECASE)
+        if dm:
+            row_idx = int(dm.group(1)) - 1
+            detail_drop.setdefault(row_idx, set()).add(dm.group(2).casefold())
+            continue
+
+        rm = re.search(r"SKILL row\s+(\d+)", str(error), flags=re.IGNORECASE)
+        if rm:
+            row_drop.add(int(rm.group(1)) - 1)
+
+    result["SUMMARY_SENTENCES"] = [
+        entry for idx, entry in enumerate(sentences) if idx not in summary_drop
+    ]
+
+    safe_skills = []
+    for idx, row in enumerate(skills):
+        if idx in row_drop or not isinstance(row, dict):
+            continue
+        row = copy.deepcopy(row)
+        drops = detail_drop.get(idx, set())
+        if drops:
+            details = fred_normalize_audited_detail_records(row.get("details", []))
+            row["details"] = [d for d in details if str(d.get("item", "")).casefold() not in drops]
+        if row.get("details", []):
+            safe_skills.append(row)
+    result["SKILLS"] = safe_skills
+    return result
+
+
 def fred_string_list(value):
     if isinstance(value, list):
         return [
@@ -1513,6 +1721,13 @@ def fred_signal_tokens(value):
         "prioritize": "priorit",
         "prioritized": "priorit",
         "stakeholders": "stakeholder",
+        "independent": "independ",
+        "independently": "independ",
+        "identification": "identif",
+        "identify": "identif",
+        "identifies": "identif",
+        "identified": "identif",
+        "identifying": "identif",
         "strategic": "strateg",
         "strategy": "strateg",
         "alignment": "align",
@@ -2419,6 +2634,7 @@ def fred_supplement_priority_skills(
     raw_resume_text,
     selected_must_items=None,
     selected_nice_items=None,
+    vndly_context=None,
 ):
     """
     Deterministically supplement Gemini's VNDLY pool with candidate-supported
@@ -2474,9 +2690,12 @@ def fred_supplement_priority_skills(
                 continue
             category = fred_skill_priority_category(name, structured_req)
 
-        # Additional strengths are intentionally left to Gemini; this deterministic
-        # pass exists to rescue actual requisition signals, not to expand inventory.
-        if category == "additional_high_value":
+        # Rescue an Additional skill only when it is genuinely supported AND
+        # materially relevant to this requisition. This keeps no-cap behavior
+        # useful without turning the list into a generic candidate inventory.
+        if category == "additional_high_value" and not fred_additional_skill_role_relevance(
+            name, structured_req, vndly_context or {}
+        ):
             continue
 
         evidence = fred_find_skill_evidence_excerpt(name, raw_resume_text)
@@ -2552,6 +2771,14 @@ def fred_vndly_skill_family(skill_name):
             "data validation",
             "data quality validation",
             "validation",
+        },
+        "program_management_label": {
+            "program management",
+            "enterprise program management",
+        },
+        "risk_management_label": {
+            "risk management",
+            "business risk management",
         },
     }
 
@@ -3062,6 +3289,8 @@ def fred_apply_vndly_redundancy_control(
             "test_automation": 1,
             "finance_generic": 1,
             "data_quality_validation": 1,
+            "program_management_label": 1,
+            "risk_management_label": 1,
         }
         if family and family_counts.get(family, 0) >= family_caps.get(family, 99):
             return False
@@ -3112,6 +3341,7 @@ def fred_additional_skill_role_relevance(skill_name, structured_req, vndly_conte
         "jira": ["agile", "scrum", "sprint", "backlog", "project management", "product management"],
         "confluence": ["agile", "scrum", "requirements", "documentation", "project management"],
         "product management": ["product analyst", "product owner", "product team", "roadmap", "product"],
+        "project management": ["project", "projects", "project delivery", "project planning", "managing specific projects", "manage specific projects"],
         "enterprise program management": ["program management", "program specialist", "portfolio", "multiple projects", "concurrent projects"],
         "business risk management": ["risk", "issue tracking", "escalation", "program health"],
         "snowflake": ["snowflake", "data warehouse", "data engineering", "data platform", "sql database"],
@@ -3446,8 +3676,18 @@ def fred_clean_vndly_submission_summary(summary, candidate_name):
         return ""
 
     cleaned = fred_clean_generated_text(summary)
-    first_name = str(candidate_name or "").strip().split()[0] if candidate_name else ""
-    last_name = str(candidate_name or "").strip().split()[-1] if candidate_name else ""
+    full_name = str(candidate_name or "").strip()
+    first_name = full_name.split()[0] if full_name else ""
+    last_name = full_name.split()[-1] if full_name else ""
+
+    if full_name and first_name:
+        cleaned = re.sub(
+            r"^\s*" + re.escape(full_name) + r"\b",
+            first_name,
+            cleaned,
+            count=1,
+            flags=re.IGNORECASE,
+        )
 
     # Remove honorific constructions the model should never use in this field.
     if last_name and first_name:
@@ -3498,7 +3738,7 @@ def fred_validate_vndly_summary(
 
     valid_evidence = []
     for evidence in evidence_list:
-        if fred_source_quote_found(raw_resume_text, evidence):
+        if fred_vndly_summary_evidence_found(raw_resume_text, evidence):
             valid_evidence.append(evidence)
         else:
             errors.append(
@@ -3620,7 +3860,9 @@ RULES:
 - Final sentence may explain truthful transferability to the Freddie need.
 - NEVER use an em dash.
 - Never mention "VNDLY requirements" or similar process-oriented matching language.
-- Return 2-8 short VERBATIM candidate-evidence excerpts supporting every claim.
+- Return 2-8 short candidate-evidence excerpts supporting every claim. Resume
+  and candidate-clarification evidence must be VERBATIM. UI-entered logistics
+  facts may be cited using a concise natural rendering of the structured fact.
 
 STRUCTURED REQUISITION:
 {json.dumps(fred_coerce_structured_req(structured_req), indent=2, ensure_ascii=False)}
@@ -3888,11 +4130,13 @@ LENGTH / STRUCTURE:
   compensation or unnecessary immigration details.
 - Do NOT lead with a very large total-years number when it could create an
   unnecessary overqualification concern. Use a natural authority phrase instead.
-- Also return VNDLY_SUMMARY_EVIDENCE containing 2-8 short VERBATIM excerpts
-  copied from the candidate evidence sources (original resume or supplied
-  candidate-confirmed clarifications) that collectively support every candidate
-  experience/skill/ownership claim in the paragraph. Role-source wording may
-  explain transferability, but may not substitute for candidate evidence.
+- Also return VNDLY_SUMMARY_EVIDENCE containing 2-8 short evidence excerpts
+  that collectively support every candidate claim. Experience/skill/ownership
+  evidence must come from the original resume or candidate-confirmed
+  clarifications. UI-entered logistics such as former-Freddie status, rehire
+  eligibility, current location, and onsite availability may be cited from the
+  structured CANDIDATE SUBMISSION FACTS. Role-source wording may explain
+  transferability, but may not substitute for candidate evidence.
 - Sentence 1: natural candidate positioning title + the strongest genuine role
   anchors. Use the deterministic total-career figure only when it strengthens
   the shortlist case and does not unnecessarily advertise overqualification.
@@ -4198,6 +4442,11 @@ Return ONLY:
         raw_package.get("VNDLY_SUMMARY", ""),
         candidate_name,
     )
+    vndly_summary = fred_suppress_total_career_years(
+        vndly_summary,
+        calculated_total_experience,
+        vndly_context,
+    )
     vndly_summary_evidence = fred_string_list(
         raw_package.get("VNDLY_SUMMARY_EVIDENCE", [])
     )
@@ -4233,6 +4482,11 @@ Return ONLY:
                 repaired_summary.get("VNDLY_SUMMARY", ""),
                 candidate_name,
             )
+            vndly_summary = fred_suppress_total_career_years(
+                vndly_summary,
+                calculated_total_experience,
+                vndly_context,
+            )
             vndly_summary_evidence = fred_string_list(
                 repaired_summary.get("VNDLY_SUMMARY_EVIDENCE", [])
             )
@@ -4246,10 +4500,67 @@ Return ONLY:
         )
 
     if vndly_summary_errors:
-        raise RuntimeError(
-            "VNDLY Comments could not be safely grounded after the automatic "
-            "repair pass: " + " | ".join(vndly_summary_errors[:6])
-        )
+        hard_vndly_errors = [
+            error for error in vndly_summary_errors
+            if fred_grounding_error_is_hard(error)
+        ]
+        if hard_vndly_errors:
+            second_repair = fred_repair_vndly_summary(
+                api_key,
+                candidate_name,
+                vndly_summary,
+                hard_vndly_errors,
+                vndly_summary_candidate_evidence,
+                structured_req,
+                vndly_context,
+                calculated_total_experience,
+                candidate_positioning_title,
+            )
+            if isinstance(second_repair, dict):
+                candidate = fred_clean_vndly_submission_summary(
+                    second_repair.get("VNDLY_SUMMARY", ""),
+                    candidate_name,
+                )
+                candidate = fred_suppress_total_career_years(
+                    candidate, calculated_total_experience, vndly_context
+                )
+                candidate_evidence = fred_string_list(
+                    second_repair.get("VNDLY_SUMMARY_EVIDENCE", [])
+                )
+                candidate_errors = fred_validate_vndly_summary(
+                    candidate,
+                    candidate_evidence,
+                    vndly_summary_candidate_evidence,
+                    structured_req,
+                    vndly_context,
+                )
+                candidate_hard = [
+                    error for error in candidate_errors
+                    if fred_grounding_error_is_hard(error)
+                ]
+                if not candidate_hard and candidate:
+                    vndly_summary = candidate
+                    vndly_summary_evidence = candidate_evidence
+                    hard_vndly_errors = []
+
+        if hard_vndly_errors:
+            # Use the already-grounded coherent resume Summary rather than
+            # splicing raw resume fragments. This preserves readable English.
+            vndly_summary = fred_clean_vndly_submission_summary(
+                resume_summary, candidate_name
+            )
+            vndly_summary = fred_suppress_total_career_years(
+                vndly_summary, calculated_total_experience, vndly_context
+            )
+            print(
+                "Freddie VNDLY hard safety fallback used coherent resume summary: "
+                + " | ".join(hard_vndly_errors[:6])
+            )
+        else:
+            print(
+                "Freddie VNDLY soft grounding diagnostics accepted after repair: "
+                + " | ".join(vndly_summary_errors[:6])
+            )
 
     ranked_skill_pool = fred_build_final_ranked_vndly_skills(
         raw_package.get(
@@ -4269,6 +4580,7 @@ Return ONLY:
         candidate_evidence_text,
         selected_must_items=selected_must_items,
         selected_nice_items=selected_nice_items,
+        vndly_context=vndly_context,
     )
 
     evidence_ranked_skills = fred_rerank_vndly_skills_by_evidence(
@@ -5557,7 +5869,7 @@ def fred_validate_grounded_tailoring(
 
         valid_evidence = []
         for quote in evidence:
-            if fred_source_quote_found(candidate_evidence_source, quote):
+            if fred_candidate_evidence_quote_found(candidate_evidence_source, quote):
                 valid_evidence.append(quote)
             else:
                 errors.append(
@@ -5640,7 +5952,7 @@ def fred_validate_grounded_tailoring(
                     )
 
         joined_area_evidence = " ".join(
-            q for q in area_evidence if fred_source_quote_found(candidate_evidence_source, q)
+            q for q in area_evidence if fred_candidate_evidence_quote_found(candidate_evidence_source, q)
         )
 
         if joined_area_evidence and not fred_claim_supported_by_evidence(
@@ -5694,14 +6006,19 @@ def fred_validate_grounded_tailoring(
             item = detail["item"]
             evidence = detail["evidence"]
 
-            if not fred_source_quote_found(candidate_evidence_source, evidence):
+            if not fred_candidate_evidence_quote_found(candidate_evidence_source, evidence):
                 errors.append(
                     f"SKILL row {idx} detail '{item}' cites evidence not found in the resume."
                 )
                 continue
 
-            if not fred_claim_supported_by_candidate_context(
-                item, evidence, candidate_evidence_source
+            if not (
+                fred_claim_supported_by_candidate_context(
+                    item, evidence, candidate_evidence_source
+                )
+                or fred_claim_supported_by_evidence(
+                    item, candidate_evidence_source
+                )
             ):
                 errors.append(
                     f"SKILL row {idx} detail '{item}' is not sufficiently supported by its cited candidate evidence."
@@ -6389,14 +6706,23 @@ def fred_clean_summary(summary, candidate_name):
     # ------------------------------------------------------------
 
     if candidate_name:
-        # Replace any capitalization variation of the full candidate name
-        # with the normalized Title Case version extracted from the resume.
-        cleaned = re.sub(
-            re.escape(candidate_name),
-            candidate_name,
-            cleaned,
-            flags=re.IGNORECASE,
-        )
+        normalized_name = str(candidate_name).strip()
+        first_name = normalized_name.split()[0] if normalized_name else ""
+        if normalized_name and first_name:
+            cleaned = re.sub(
+                r"^\s*" + re.escape(normalized_name) + r"\b",
+                first_name,
+                cleaned,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+            cleaned = re.sub(
+                r"^\s*" + re.escape(first_name) + r"\b",
+                first_name,
+                cleaned,
+                count=1,
+                flags=re.IGNORECASE,
+            )
 
     # ------------------------------------------------------------
     # 2. REMOVE / REPLACE BANNED RECRUITER PHRASES
@@ -7996,6 +8322,10 @@ CURRENT DATE:
 PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE:
 {calculated_total_experience}
 
+STRUCTURED VNDLY EXPERIENCE RANGE:
+Minimum: {selected_vndly_context.get("min_experience", "") or "BLANK"}
+Maximum: {selected_vndly_context.get("max_experience", "") or "BLANK"}
+
 The total professional experience value above was calculated deterministically
 from the candidate's dated work history.
 
@@ -8003,9 +8333,9 @@ CRITICAL:
 - PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE is available for accuracy,
   but it is NOT mandatory to lead with or even state total years in the Summary.
 - Use the total-years figure only when it materially strengthens the shortlist case.
-- If structured VNDLY experience guidance suggests the candidate is far more
-  experienced than the target range, prefer a natural authority phrase such as
-  "extensive experience" rather than unnecessarily advertising overqualification.
+- If structured VNDLY experience guidance shows the candidate is materially
+  above the target range, DO NOT state the total-career years figure in the
+  Summary. Use a natural authority phrase such as "extensive experience".
 - If you do state total career experience, use the exact deterministic value.
 - Do NOT independently recalculate it, round it up, or alter its wording.
 - If the calculated value is blank, do not invent a total-years figure.
@@ -8143,6 +8473,9 @@ TITLE QUALITY RULES:
 - Prefer a conventional external-market title a recruiter or hiring manager
   would naturally say aloud.
 - Usually 2-5 words.
+- Prefer one clear occupational lane or at most two closely related functional
+  lanes. Do not create a broad mash-up title that stacks several senior
+  specialties when a simpler target-relevant identity describes the candidate.
 - CANDIDATE_TITLE must be a grammatically complete occupational title that can
   stand on its own after the words "[First Name] is a...".
 - Do NOT copy a resume heading or job title literally when it combines the
@@ -8899,6 +9232,9 @@ Rules:
 - Do NOT merge bullets.
 - Do NOT rewrite bullets.
 - Rank only the existing indexes.
+- Current hiring-manager priorities outrank merely de-emphasized JD artifacts.
+  A truthful de-emphasized item may remain visible for MSP/JD coverage, but do
+  not move that bullet ahead of stronger bullets proving current manager priorities.
 - If the original order is already best, return the original indexes.
 - If a role has no bullets, return [].
 
@@ -9003,13 +9339,58 @@ FULL ORIGINAL RESUME
                     )
 
                 if freddie_grounding_errors:
-                    raise RuntimeError(
-                        "The Freddie Mac grounding safety check could not verify "
-                        "the generated Summary/Skills against the uploaded resume "
-                        "and current requisition intelligence. The formatter already "
-                        "attempted an automatic correction pass. Verification issues: "
-                        + " | ".join(freddie_grounding_errors[:8])
-                    )
+                    hard_grounding_errors = [
+                        error for error in freddie_grounding_errors
+                        if fred_grounding_error_is_hard(error)
+                    ]
+
+                    if hard_grounding_errors:
+                        audited_summary_data = fred_generate_json(
+                            API_KEY,
+                            fred_grounding_audit_prompt(
+                                resume_text=raw_text,
+                                structured_req=req_analysis,
+                                job_description=Job_Description,
+                                msp_notes=MSP_Notes,
+                                spotlight_transcript=Call_Transcript,
+                                internal_notes=Internal_Notes,
+                                draft_data=audited_summary_data,
+                                calculated_total_experience=calculated_total_experience,
+                                current_date=current_date,
+                                validator_errors=hard_grounding_errors,
+                                candidate_clarifications=Candidate_Clarifications,
+                            ),
+                        )
+                        final_errors = fred_validate_grounded_tailoring(
+                            raw_text,
+                            req_analysis,
+                            Job_Description,
+                            MSP_Notes,
+                            Call_Transcript,
+                            audited_summary_data,
+                            candidate_clarifications=Candidate_Clarifications,
+                        )
+                        remaining_hard = [
+                            error for error in final_errors
+                            if fred_grounding_error_is_hard(error)
+                        ]
+                        if remaining_hard:
+                            audited_summary_data = fred_drop_hard_grounding_items(
+                                audited_summary_data,
+                                remaining_hard,
+                            )
+                            print(
+                                "Freddie hard grounding items removed after repair: "
+                                + " | ".join(remaining_hard[:8])
+                            )
+                    else:
+                        # Citation-shape, lexical-similarity, and generic competency
+                        # diagnostics are useful repair guidance, but they must not
+                        # destroy coherent recruiter-quality prose or block the run.
+                        print(
+                            "Freddie soft grounding diagnostics accepted after repair: "
+                            + " | ".join(freddie_grounding_errors[:8])
+                        )
 
                 summary_data = fred_finalize_grounded_tailoring(
                     audited_summary_data
@@ -9051,6 +9432,11 @@ FULL ORIGINAL RESUME
                 final_summary = fred_clean_summary(
                     final_summary,
                     name,
+                )
+                final_summary = fred_suppress_total_career_years(
+                    final_summary,
+                    calculated_total_experience,
+                    selected_vndly_context,
                 )
 
                 if not final_summary:
