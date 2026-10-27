@@ -1216,6 +1216,30 @@ def fannie_mae_app():
 
 FREDDIE_VNDLY_SKILLS_FILENAME = "freddie_vndly_skills_curated.json"
 
+# Exact VNDLY labels that have been confirmed in the Freddie program.
+# The bundled JSON remains the primary catalogue. These values are only merged
+# when the JSON is missing one of them, preventing a stale/incomplete local
+# catalogue from suppressing a genuinely supported shortlist skill.
+FREDDIE_CONFIRMED_CORE_VNDLY_SKILLS = [
+    "Agile Delivery",
+    "Automation",
+    "Business Analysis",
+    "Business Risk Management",
+    "Enterprise Program Management",
+    "Executive Reporting",
+    "Jira",
+    "Mortgage Industry",
+    "Power Platform",
+    "Product Management",
+    "Program Management",
+    "Project Management",
+    "Requirements Analysis",
+    "Risk Management",
+    "SharePoint",
+    "Stakeholder Management",
+    "User Story",
+]
+
 
 @st.cache_data(show_spinner=False)
 def fred_load_vndly_skill_catalog(path=FREDDIE_VNDLY_SKILLS_FILENAME):
@@ -1260,6 +1284,26 @@ def fred_load_vndly_skill_catalog(path=FREDDIE_VNDLY_SKILLS_FILENAME):
                 }
             )
 
+        # Merge only exact labels already confirmed to exist in Freddie's VNDLY
+        # programme. They still must pass the normal candidate-evidence and
+        # requisition-relevance gates before recommendation.
+        existing = {
+            fred_normalize_skill_name(item.get("skill_name", ""))
+            for item in cleaned
+        }
+        for skill_name in FREDDIE_CONFIRMED_CORE_VNDLY_SKILLS:
+            key = fred_normalize_skill_name(skill_name)
+            if key in existing:
+                continue
+            cleaned.append(
+                {
+                    "id": None,
+                    "skill_name": skill_name,
+                    "catalog_tier": "canonical_preferred",
+                }
+            )
+            existing.add(key)
+
         return cleaned
 
     except Exception:
@@ -1282,6 +1326,18 @@ def fred_cap_skill_details(value, max_items=6):
 
     for part in raw.split(","):
         clean = re.sub(r"\s+", " ", str(part or "")).strip()
+
+        # The Skills table lists capabilities, not caveats about when the
+        # candidate used them. Preserve useful acronym parentheticals, but strip
+        # recency/experience qualifiers such as "(Prior Experience)".
+        clean = re.sub(
+            r"\s*\((?:prior|previous|past|older|earlier|less\s+recent|historical)"
+            r"(?:\s+(?:hands[-\s]?on))?\s+experience\)\s*$",
+            "",
+            clean,
+            flags=re.IGNORECASE,
+        ).strip()
+
         key = clean.casefold()
 
         if not clean or key in seen:
@@ -2442,10 +2498,12 @@ def fred_skill_work_history_evidence(skill_name, raw_resume_text):
         ],
         "jira": ["jira"],
         "sharepoint": ["sharepoint"],
+        "microsoft sharepoint": ["sharepoint", "microsoft sharepoint"],
         "power bi": ["power bi"],
         "power apps": ["power apps"],
         "power automate": ["power automate"],
-        "power platform": ["power platform", "power apps", "power automate", "power bi"],
+        "power platform": ["power platform", "microsoft power platform", "power apps", "power automate", "power bi"],
+        "microsoft power platform": ["power platform", "microsoft power platform", "power apps", "power automate", "power bi"],
         "agile delivery": ["agile", "scrum", "sprint planning", "backlog", "pi planning"],
         "agile": ["agile", "scrum", "sprint planning"],
         "product management": ["product manager", "product management", "product owner", "product roadmap", "product roadmaps"],
@@ -2859,10 +2917,12 @@ def fred_skill_is_explicitly_named_in_job(skill_name, structured_req):
         "ai/ml": ["ai/ml", "artificial intelligence", "machine learning", "ai enabled", "ai-enabled"],
         "jira": ["jira"],
         "sharepoint": ["sharepoint"],
+        "microsoft sharepoint": ["sharepoint", "microsoft sharepoint"],
         "power bi": ["power bi"],
         "power apps": ["power apps"],
         "power automate": ["power automate"],
-        "power platform": ["power platform", "power apps", "power automate", "power bi"],
+        "power platform": ["power platform", "microsoft power platform", "power apps", "power automate", "power bi"],
+        "microsoft power platform": ["power platform", "microsoft power platform", "power apps", "power automate", "power bi"],
         "agile delivery": ["agile", "scrum", "sprint planning", "backlog", "pi planning"],
         "agile": ["agile", "scrum", "sprint planning"],
         "product management": ["product management", "product manager", "product owner", "product roadmap"],
@@ -2955,10 +3015,12 @@ def fred_skill_aliases_for_requirement(skill_name):
         "ai/ml": ["ai/ml", "artificial intelligence", "machine learning", "ai enabled", "ai-enabled"],
         "jira": ["jira"],
         "sharepoint": ["sharepoint"],
+        "microsoft sharepoint": ["sharepoint", "microsoft sharepoint"],
         "power bi": ["power bi"],
         "power apps": ["power apps"],
         "power automate": ["power automate"],
-        "power platform": ["power platform", "power apps", "power automate", "power bi"],
+        "power platform": ["power platform", "microsoft power platform", "power apps", "power automate", "power bi"],
+        "microsoft power platform": ["power platform", "microsoft power platform", "power apps", "power automate", "power bi"],
         "agile delivery": ["agile", "scrum", "sprint planning", "backlog", "pi planning"],
         "agile": ["agile", "scrum", "sprint planning"],
         "product management": ["product management", "product manager", "product owner", "product roadmap", "product analyst", "product team"],
@@ -3670,7 +3732,11 @@ def fred_extract_spotlight_hiring_manager_name(spotlight_transcript):
     return ", ".join(first_names[:-1]) + f", and {first_names[-1]}"
 
 
-def fred_clean_vndly_submission_summary(summary, candidate_name):
+def fred_clean_vndly_submission_summary(
+    summary,
+    candidate_name,
+    candidate_submission_facts=None,
+):
     """Deterministic cleanup for the recruiter-facing VNDLY Comments field."""
     if not summary:
         return ""
@@ -3681,11 +3747,30 @@ def fred_clean_vndly_submission_summary(summary, candidate_name):
     last_name = full_name.split()[-1] if full_name else ""
 
     if full_name and first_name:
+        # VNDLY Comments are narrative copy. The candidate's full legal name is
+        # already present elsewhere in the submission, so use first name only
+        # anywhere the model repeats the full name.
         cleaned = re.sub(
-            r"^\s*" + re.escape(full_name) + r"\b",
+            r"\b" + re.escape(full_name) + r"\b",
             first_name,
             cleaned,
-            count=1,
+            flags=re.IGNORECASE,
+        )
+
+    candidate_submission_facts = candidate_submission_facts or {}
+    former_value = str(
+        candidate_submission_facts.get("former_freddie_cw_or_employee", "")
+        or ""
+    ).strip().casefold()
+
+    # The current UI question is intentionally combined: "Former CW/Employee?"
+    # A bare Yes does not prove which status applied. Prevent the narrative from
+    # inventing either "employee" or "contingent worker" from that ambiguous flag.
+    if former_value in {"yes", "y", "true", "1"}:
+        cleaned = re.sub(
+            r"\bformer\s+freddie\s+mac\s+(?:contingent\s+worker|contractor|employee)\b",
+            "former Freddie Mac professional",
+            cleaned,
             flags=re.IGNORECASE,
         )
 
@@ -3830,6 +3915,9 @@ def fred_repair_vndly_summary(
     candidate_positioning_title,
 ):
     """One evidence-grounded repair pass for Freddie VNDLY Comments."""
+    spotlight_hiring_manager_name = fred_extract_spotlight_hiring_manager_name(
+        (vndly_context or {}).get("transcript", "")
+    )
     prompt = f"""
 Return valid JSON ONLY.
 
@@ -3838,6 +3926,7 @@ candidate-grounding checks found problems.
 
 CANDIDATE: {candidate_name}
 CANDIDATE POSITIONING TITLE: {candidate_positioning_title or "BLANK"}
+SPOTLIGHT HIRING MANAGER NAME: {spotlight_hiring_manager_name or "BLANK"}
 PYTHON-CALCULATED TOTAL EXPERIENCE: {calculated_total_experience or "BLANK"}
 
 VALIDATOR ERRORS:
@@ -3848,6 +3937,14 @@ DRAFT COMMENTS:
 
 RULES:
 - 3-5 compact sentences, one paragraph, about 105-155 words and never over 175.
+- Use the candidate's FIRST NAME only in narrative prose. Never repeat the full
+  legal name inside the Comments paragraph.
+- If the only former-Freddie logistics fact is a combined "Former CW/Employee? Yes"
+  flag, use the neutral phrase "former Freddie Mac professional". Do NOT infer
+  "employee", "contingent worker", or "contractor" from that ambiguous flag.
+- If SPOTLIGHT HIRING MANAGER NAME is populated and substantive manager priorities
+  exist in the supplied role intelligence, use the manager name string ONCE to
+  connect proven candidate evidence to what the manager(s) emphasized.
 - The candidate evidence source below contains the original resume and may also
   contain candidate-confirmed follow-up facts. Use only facts supported there.
 - Official JD, Spotlight transcript, and MSP notes define role priorities only.
@@ -4122,6 +4219,15 @@ the shortlist case.
 LENGTH / STRUCTURE:
 - 3-5 compact sentences as ONE paragraph.
 - Target roughly 105-155 words. Do not exceed 175 words.
+- Use the candidate's FIRST NAME only in narrative prose. The full legal name is
+  already stored elsewhere in VNDLY and should not be repeated in Comments.
+- IMPORTANT FOR FORMER-FREDDIE STATUS: the current UI field combines CW and
+  employee status. If CANDIDATE SUBMISSION FACTS only says
+  former_freddie_cw_or_employee = Yes, that proves only that the candidate
+  previously worked at Freddie in some capacity. Say "former Freddie Mac
+  professional". Do NOT infer "former employee", "contingent worker",
+  "contractor", or any more specific status unless a candidate source explicitly
+  establishes it.
 - The comments are allowed to be more explicit than the resume Summary because
   their first job is to help the MSP make a fast shortlist decision.
 - When candidate submission facts contain a materially helpful logistics signal,
@@ -4148,9 +4254,11 @@ LENGTH / STRUCTURE:
   the candidate worth manager review.
 
 HIRING-MANAGER NAME RULE:
-- If SPOTLIGHT HIRING MANAGER NAME above is populated, it may contain one or
-  multiple first names (for example "Bruce and Colton"). Use that name string
-  ONCE when it makes the comments more useful to the MSP.
+- If SPOTLIGHT HIRING MANAGER NAME above is populated AND STRUCTURED REQUISITION
+  INTELLIGENCE contains substantive current_manager_priorities, selection_feedback,
+  or role_clarifications from that supplier/Spotlight call, use that name string
+  ONCE in the Comments. This is expected, not optional.
+- It may contain one or multiple first names (for example "Bruce and Colton").
 - Best use: connect proven candidate evidence to a priority the hiring manager
   explicitly emphasized on the supplier/Spotlight call.
 - Natural pattern:
@@ -4441,6 +4549,7 @@ Return ONLY:
     vndly_summary = fred_clean_vndly_submission_summary(
         raw_package.get("VNDLY_SUMMARY", ""),
         candidate_name,
+        candidate_submission_facts,
     )
     vndly_summary = fred_suppress_total_career_years(
         vndly_summary,
@@ -4481,6 +4590,7 @@ Return ONLY:
             vndly_summary = fred_clean_vndly_submission_summary(
                 repaired_summary.get("VNDLY_SUMMARY", ""),
                 candidate_name,
+                candidate_submission_facts,
             )
             vndly_summary = fred_suppress_total_career_years(
                 vndly_summary,
@@ -4520,6 +4630,7 @@ Return ONLY:
                 candidate = fred_clean_vndly_submission_summary(
                     second_repair.get("VNDLY_SUMMARY", ""),
                     candidate_name,
+                    candidate_submission_facts,
                 )
                 candidate = fred_suppress_total_career_years(
                     candidate, calculated_total_experience, vndly_context
@@ -4547,7 +4658,7 @@ Return ONLY:
             # Use the already-grounded coherent resume Summary rather than
             # splicing raw resume fragments. This preserves readable English.
             vndly_summary = fred_clean_vndly_submission_summary(
-                resume_summary, candidate_name
+                resume_summary, candidate_name, candidate_submission_facts
             )
             vndly_summary = fred_suppress_total_career_years(
                 vndly_summary, calculated_total_experience, vndly_context
@@ -8461,13 +8572,29 @@ CRITICAL DISTINCTION:
   market-facing professional title AND accurately describes the candidate.
 
 HOW TO CHOOSE CANDIDATE_TITLE:
-Use ALL relevant evidence together:
+Use ALL relevant evidence together, with the target function first:
 1. What function the current role actually needs, based on the JD plus current
    manager/MSP/Spotlight guidance.
-2. What the candidate has actually done in dated work history.
+2. Which of those target functions the candidate repeatedly and credibly
+   demonstrates in dated work history.
 3. The candidate's recent/repeated professional titles and responsibilities.
 4. A more natural role title stated inside the body of the JD, when present.
 5. The VNDLY Job Title only as supporting context, never as the default wording.
+
+TARGET-FUNCTION OVERRIDE:
+- Do NOT simply reuse the candidate's latest job title when it describes only one
+  adjacent part of the work and would misposition the candidate for the current
+  Freddie need.
+- When the candidate strongly demonstrates the target function across multiple
+  roles, prefer a truthful target-relevant functional identity over the latest
+  title.
+- Example: a candidate whose recent title is Senior Product Manager but whose
+  history repeatedly proves program/portfolio management, business analysis,
+  requirements translation, executive reporting, and cross-functional delivery
+  for a Freddie role centered on program support may be better positioned as
+  "Program Management & Business Analysis Lead" than "Senior Product Manager."
+- This is positioning, not title invention: use it only when the dated candidate
+  evidence genuinely supports every functional lane in the chosen title.
 
 TITLE QUALITY RULES:
 - Prefer a conventional external-market title a recruiter or hiring manager
@@ -8968,9 +9095,11 @@ most useful shortlist signals for THIS requisition.
 FREDDIE MSP COVERAGE RULE:
 - Do not automatically delete a supported JD skill merely because the manager
   says the team does not use it or it is not central.
-- If that skill remains useful for MSP/JD keyword recognition, keep it as a
-  secondary detail inside a broader row when doing so costs little and does not
-  displace a higher-priority manager requirement.
+- If that skill remains useful for MSP/JD keyword recognition, candidate evidence
+  clearly supports it, and one of the four rows has natural room for it, INCLUDE
+  it as a secondary detail inside the broader row unless doing so would displace
+  a higher-priority manager requirement. Treat this as expected secondary
+  coverage, not an optional afterthought.
 - Example: if User Stories is in the JD, the candidate genuinely has User Story
   experience, and the manager says "we don't do user stories", User Stories may
   still appear as a detail under Business Requirements/Product Analysis while
@@ -9107,7 +9236,11 @@ SKILL DETAILS RULES
 - Prioritize the most important requirement-specific items rather than the
   candidate's entire technology inventory.
 - Do not add weak filler merely to reach a certain number of items.
-- Do not include years, proficiency ratings, or "current".
+- Do not include years, proficiency ratings, "current", or recency/history
+  caveats such as "(Prior Experience)", "(Previous Experience)", "older
+  experience", or "less recent". If a capability is strong enough to include in
+  the Skills table, list the capability cleanly (for example "Microsoft Power
+  Platform"), while the work history/clarifications can carry timing context.
 - Do not repeat the exact same detail across multiple rows unless unavoidable.
 
 ----------------------------------------------------------------------
