@@ -1515,6 +1515,10 @@ def fred_signal_tokens(value):
         "stakeholders": "stakeholder",
         "strategic": "strateg",
         "strategy": "strateg",
+        "alignment": "align",
+        "align": "align",
+        "aligned": "align",
+        "aligning": "align",
         "technical": "tech",
         "technology": "tech",
         "technologies": "tech",
@@ -1538,14 +1542,24 @@ def fred_signal_tokens(value):
         "integrate": "integrat",
         "integrated": "integrat",
         "integrating": "integrat",
-        "coordination": "coordinat",
-        "coordinate": "coordinat",
-        "coordinated": "coordinat",
-        "coordinating": "coordinat",
-        "collaboration": "collaborat",
-        "collaborate": "collaborat",
-        "collaborated": "collaborat",
-        "collaborating": "collaborat",
+        # Coordination, collaboration, and partnership are equivalent umbrella
+        # concepts for competency-label grounding. Concrete role nouns/tools still
+        # require their own evidence, and authority claims remain separately strict.
+        "coordination": "collab",
+        "coordinator": "collab",
+        "coordinate": "collab",
+        "coordinated": "collab",
+        "coordinating": "collab",
+        "collaboration": "collab",
+        "collaborate": "collab",
+        "collaborated": "collab",
+        "collaborating": "collab",
+        "partnership": "collab",
+        "partnerships": "collab",
+        "partner": "collab",
+        "partners": "collab",
+        "partnered": "collab",
+        "partnering": "collab",
         "implementation": "implement",
         "implement": "implement",
         "implemented": "implement",
@@ -4447,6 +4461,42 @@ def fred_generation_email_key(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def fred_repair_and_load_json(raw_text):
+    """Freddie-only JSON repair without global Streamlit warning side effects."""
+    text = str(raw_text or "").strip()
+    text = re.sub(r'^```[a-zA-Z]*\n|\n```$', '', text, flags=re.MULTILINE).strip()
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if match:
+        text = match.group()
+
+    candidates = [text]
+
+    repaired = text
+    repaired = re.sub(r'"\s*\n\s*"', '",\n"', repaired)
+    repaired = re.sub(r'\}\s*\n\s*\{', '},\n{', repaired)
+    repaired = re.sub(r'\]\s*\n\s*"', '],\n"', repaired)
+    repaired = re.sub(r',\s*([}\]])', r'\1', repaired)
+    # Gemini occasionally emits an otherwise-valid object with an unquoted
+    # structural key. Quote only key-shaped tokens immediately after { or ,.
+    repaired = re.sub(
+        r'([\{,]\s*)([A-Za-z_][A-Za-z0-9_ ]*?)(\s*:)',
+        lambda m: m.group(1) + json.dumps(m.group(2).strip()) + m.group(3),
+        repaired,
+    )
+    if repaired != text:
+        candidates.append(repaired)
+
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate, strict=False)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            continue
+
+    return {}
+
+
 def fred_generate_json(api_key, prompt, max_attempts=6):
     """
     Freddie-specific Gemini JSON helper with the same retry philosophy
@@ -4482,10 +4532,14 @@ def fred_generate_json(api_key, prompt, max_attempts=6):
                 ),
             )
 
-            data = repair_and_load_json(response.text)
+            data = fred_repair_and_load_json(response.text)
 
             if data:
                 return data
+
+            last_error = ValueError(
+                "Gemini returned malformed or unusable Freddie Mac JSON."
+            )
 
         except Exception as e:
             last_error = e
