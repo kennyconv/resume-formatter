@@ -1380,6 +1380,104 @@ def fred_source_quote_found(source_text, quote):
     return quote_norm in source
 
 
+def fred_vndly_summary_evidence_found(candidate_source_text, evidence):
+    """
+    Validate VNDLY-comment evidence against candidate truth sources.
+
+    Resume/clarification excerpts remain exact-normalized quotes. UI-entered
+    submission facts are different: Gemini may harmlessly render snake_case
+    keys as natural labels or combine location components that are separately
+    present in the same structured-facts block. Allow token-complete matching
+    ONLY inside the CANDIDATE SUBMISSION FACTS block so this flexibility cannot
+    be used to stitch together substantive resume experience claims.
+    """
+    if fred_source_quote_found(candidate_source_text, evidence):
+        return True
+
+    marker = "CANDIDATE SUBMISSION FACTS:"
+    source_text = str(candidate_source_text or "")
+    if marker not in source_text:
+        return False
+
+    facts_text = source_text.split(marker, 1)[1]
+    evidence_tokens = fred_signal_tokens(evidence)
+    fact_tokens = set(fred_signal_tokens(facts_text))
+
+    if not evidence_tokens or not fact_tokens:
+        return False
+
+    # Require every substantive evidence token to be present somewhere in the
+    # structured logistics facts. This safely handles examples such as
+    # "rehire-eligibility check completed: Yes" versus the stored
+    # "rehire_eligibility_check_completed: Yes", and "onsite_locations:
+    # McLean, VA" when McLean + VA are both present across the location facts.
+    return all(token in fact_tokens for token in evidence_tokens)
+
+
+def fred_numeric_years(value):
+    match = re.search(r"(\d+(?:\.\d+)?)", str(value or ""))
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except Exception:
+        return None
+
+
+def fred_should_suppress_total_years(calculated_total_experience, vndly_context):
+    """
+    Avoid unnecessarily advertising a very large total-career number when the
+    structured Freddie requisition targets a materially lower experience band.
+    This affects presentation only; it never changes the candidate's history.
+    """
+    vndly_context = vndly_context or {}
+    total_years = fred_numeric_years(calculated_total_experience)
+    max_years = fred_numeric_years(vndly_context.get("max_experience", ""))
+
+    if total_years is None or max_years is None or max_years <= 0:
+        return False
+
+    return (
+        total_years >= max_years + 8
+        or (max_years <= 10 and total_years >= max_years * 2)
+    )
+
+
+def fred_suppress_overqualification_years_text(
+    value,
+    calculated_total_experience,
+    vndly_context,
+):
+    """Replace only the deterministic TOTAL-career number when it is strategically
+    counterproductive versus Freddie's structured experience range.
+
+    Specific skill/domain tenures are not touched.
+    """
+    text = str(value or "")
+    if not text or not fred_should_suppress_total_years(
+        calculated_total_experience, vndly_context
+    ):
+        return text
+
+    total_years = fred_numeric_years(calculated_total_experience)
+    if total_years is None:
+        return text
+
+    if float(total_years).is_integer():
+        year_token = str(int(total_years))
+    else:
+        year_token = str(total_years).rstrip("0").rstrip(".")
+
+    # "30+ years of professional experience" -> "extensive professional experience"
+    # "30 years of Freddie Mac experience" -> "extensive Freddie Mac experience"
+    pattern = re.compile(
+        rf"\b{re.escape(year_token)}\s*\+?\s*years?\s+of\s+",
+        flags=re.IGNORECASE,
+    )
+    text = pattern.sub("extensive ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def fred_string_list(value):
     if isinstance(value, list):
         return [
@@ -3498,7 +3596,7 @@ def fred_validate_vndly_summary(
 
     valid_evidence = []
     for evidence in evidence_list:
-        if fred_source_quote_found(raw_resume_text, evidence):
+        if fred_vndly_summary_evidence_found(raw_resume_text, evidence):
             valid_evidence.append(evidence)
         else:
             errors.append(
@@ -3620,7 +3718,9 @@ RULES:
 - Final sentence may explain truthful transferability to the Freddie need.
 - NEVER use an em dash.
 - Never mention "VNDLY requirements" or similar process-oriented matching language.
-- Return 2-8 short VERBATIM candidate-evidence excerpts supporting every claim.
+- Return 2-8 short candidate-evidence excerpts supporting every claim. Resume
+  and candidate-clarification evidence must be VERBATIM. For UI-entered logistics
+  facts, a concise natural rendering of the structured fact is allowed.
 
 STRUCTURED REQUISITION:
 {json.dumps(fred_coerce_structured_req(structured_req), indent=2, ensure_ascii=False)}
@@ -3888,11 +3988,15 @@ LENGTH / STRUCTURE:
   compensation or unnecessary immigration details.
 - Do NOT lead with a very large total-years number when it could create an
   unnecessary overqualification concern. Use a natural authority phrase instead.
-- Also return VNDLY_SUMMARY_EVIDENCE containing 2-8 short VERBATIM excerpts
-  copied from the candidate evidence sources (original resume or supplied
-  candidate-confirmed clarifications) that collectively support every candidate
-  experience/skill/ownership claim in the paragraph. Role-source wording may
-  explain transferability, but may not substitute for candidate evidence.
+- Also return VNDLY_SUMMARY_EVIDENCE containing 2-8 short evidence excerpts
+  that collectively support every candidate claim in the paragraph. For
+  experience/skill/ownership claims, copy VERBATIM excerpts from the original
+  resume or candidate-confirmed clarifications. For UI-entered logistics claims
+  such as former-Freddie status, rehire eligibility, current location, or onsite
+  availability, you may cite a concise natural rendering of the corresponding
+  CANDIDATE SUBMISSION FACTS. Never add a logistics value that is absent from
+  those structured facts. Role-source wording may explain transferability, but
+  may not substitute for candidate evidence.
 - Sentence 1: natural candidate positioning title + the strongest genuine role
   anchors. Use the deterministic total-career figure only when it strengthens
   the shortlist case and does not unnecessarily advertise overqualification.
@@ -4198,6 +4302,11 @@ Return ONLY:
         raw_package.get("VNDLY_SUMMARY", ""),
         candidate_name,
     )
+    vndly_summary = fred_suppress_overqualification_years_text(
+        vndly_summary,
+        calculated_total_experience,
+        vndly_context,
+    )
     vndly_summary_evidence = fred_string_list(
         raw_package.get("VNDLY_SUMMARY_EVIDENCE", [])
     )
@@ -4232,6 +4341,11 @@ Return ONLY:
             vndly_summary = fred_clean_vndly_submission_summary(
                 repaired_summary.get("VNDLY_SUMMARY", ""),
                 candidate_name,
+            )
+            vndly_summary = fred_suppress_overqualification_years_text(
+                vndly_summary,
+                calculated_total_experience,
+                vndly_context,
             )
             vndly_summary_evidence = fred_string_list(
                 repaired_summary.get("VNDLY_SUMMARY_EVIDENCE", [])
@@ -6385,18 +6499,34 @@ def fred_clean_summary(summary, candidate_name):
     cleaned = fred_clean_generated_text(summary)
 
     # ------------------------------------------------------------
-    # 1. NORMALIZE CANDIDATE NAME CAPITALIZATION
+    # 1. USE FIRST NAME ONLY IN THE FREDDIE RESUME SUMMARY
     # ------------------------------------------------------------
 
     if candidate_name:
-        # Replace any capitalization variation of the full candidate name
-        # with the normalized Title Case version extracted from the resume.
-        cleaned = re.sub(
-            re.escape(candidate_name),
-            candidate_name,
-            cleaned,
-            flags=re.IGNORECASE,
-        )
+        normalized_name = str(candidate_name).strip()
+        first_name = normalized_name.split()[0] if normalized_name else ""
+
+        if normalized_name and first_name:
+            # Candidate Information already displays the full legal name.
+            # Keep the narrative Summary natural by converting any full-name
+            # occurrence at the beginning of the Summary to first name only.
+            cleaned = re.sub(
+                r"^\s*" + re.escape(normalized_name) + r"\b",
+                first_name,
+                cleaned,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+
+            # If Gemini starts with a capitalization variant of the first name,
+            # normalize that opening name without changing later proper nouns.
+            cleaned = re.sub(
+                r"^\s*" + re.escape(first_name) + r"\b",
+                first_name,
+                cleaned,
+                count=1,
+                flags=re.IGNORECASE,
+            )
 
     # ------------------------------------------------------------
     # 2. REMOVE / REPLACE BANNED RECRUITER PHRASES
@@ -7996,6 +8126,10 @@ CURRENT DATE:
 PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE:
 {calculated_total_experience}
 
+STRUCTURED VNDLY EXPERIENCE RANGE:
+Minimum: {selected_vndly_context.get("min_experience", "") or "BLANK"}
+Maximum: {selected_vndly_context.get("max_experience", "") or "BLANK"}
+
 The total professional experience value above was calculated deterministically
 from the candidate's dated work history.
 
@@ -8003,9 +8137,10 @@ CRITICAL:
 - PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE is available for accuracy,
   but it is NOT mandatory to lead with or even state total years in the Summary.
 - Use the total-years figure only when it materially strengthens the shortlist case.
-- If structured VNDLY experience guidance suggests the candidate is far more
-  experienced than the target range, prefer a natural authority phrase such as
-  "extensive experience" rather than unnecessarily advertising overqualification.
+- If structured VNDLY experience guidance shows the candidate is materially
+  above the target range, DO NOT state the total-career years figure in the
+  Summary. Use a natural authority phrase such as "extensive experience".
+  This is a shortlist-positioning rule, not a change to the candidate's history.
 - If you do state total career experience, use the exact deterministic value.
 - Do NOT independently recalculate it, round it up, or alter its wording.
 - If the calculated value is blank, do not invent a total-years figure.
@@ -8143,6 +8278,14 @@ TITLE QUALITY RULES:
 - Prefer a conventional external-market title a recruiter or hiring manager
   would naturally say aloud.
 - Usually 2-5 words.
+- Prefer one clear occupational lane or at most two closely related functional
+  lanes. Do not create a broad mash-up title that stacks several senior
+  specialties (for example Product Management + Enterprise Risk + Technology)
+  when a simpler target-relevant identity such as Program Management / Business
+  Analysis would describe the candidate more naturally.
+- When the candidate is much more senior than the target experience band, choose
+  a credible target-relevant functional identity rather than the broadest or
+  most executive-sounding description of the candidate's career.
 - CANDIDATE_TITLE must be a grammatically complete occupational title that can
   stand on its own after the words "[First Name] is a...".
 - Do NOT copy a resume heading or job title literally when it combines the
@@ -8635,9 +8778,11 @@ most useful shortlist signals for THIS requisition.
 FREDDIE MSP COVERAGE RULE:
 - Do not automatically delete a supported JD skill merely because the manager
   says the team does not use it or it is not central.
-- If that skill remains useful for MSP/JD keyword recognition, keep it as a
-  secondary detail inside a broader row when doing so costs little and does not
-  displace a higher-priority manager requirement.
+- If that skill remains useful for MSP/JD keyword recognition, preserve it as a
+  secondary detail inside the most natural broader row whenever there is room
+  among the 3-6 details and it does not displace a higher-priority manager
+  requirement. Do not erase all visible top-of-resume coverage merely because
+  the manager said the team does not use the item day to day.
 - Example: if User Stories is in the JD, the candidate genuinely has User Story
   experience, and the manager says "we don't do user stories", User Stories may
   still appear as a detail under Business Requirements/Product Analysis while
@@ -8899,6 +9044,12 @@ Rules:
 - Do NOT merge bullets.
 - Do NOT rewrite bullets.
 - Rank only the existing indexes.
+- Current hiring-manager priorities outrank merely de-emphasized JD artifacts.
+  A truthful de-emphasized item may remain visible for MSP/JD coverage, but do
+  not move that bullet ahead of stronger bullets that directly prove the
+  manager's current priorities. In particular, do not make a de-emphasized
+  artifact the first bullet of a role when a materially stronger current-priority
+  bullet exists in that same role.
 - If the original order is already best, return the original indexes.
 - If a role has no bullets, return [].
 
@@ -9051,6 +9202,12 @@ FULL ORIGINAL RESUME
                 final_summary = fred_clean_summary(
                     final_summary,
                     name,
+                )
+
+                final_summary = fred_suppress_overqualification_years_text(
+                    final_summary,
+                    calculated_total_experience,
+                    selected_vndly_context,
                 )
 
                 if not final_summary:
