@@ -7,3 +7,4 @@ pdf2docx
 pdfservices-sdk
 pandas
 st-gsheets-connection
+openai
