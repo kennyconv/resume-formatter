@@ -1,3 +1,8 @@
+# v22 A/B TEST BUILD
+# Adds selectable Gemini vs OpenAI GPT-6 Luna provider routing.
+# Gemini client-specific logic remains unchanged from v21; OpenAI uses the same
+# prompts/validators with Responses API strict Structured Outputs.
+
 import streamlit as st
 import pandas as pd
 from streamlit_gsheets import GSheetsConnection
@@ -201,6 +206,297 @@ def repair_and_load_json(raw_text):
         except Exception as e:
             st.warning(f"⚠️ Minor Error: AI formatting glitch on this resume. Bypassing crash... ({e})")
             return {}
+
+
+# ====================================================================
+# --- AI PROVIDER ABSTRACTION (Gemini vs OpenAI A/B testing) ---
+# ====================================================================
+
+AI_PROVIDER_GEMINI = "Gemini - Gemini 2.5 Flash"
+AI_PROVIDER_OPENAI = "OpenAI / ChatGPT - GPT-6 Luna"
+OPENAI_MODEL_ID = "gpt-6-luna"
+OPENAI_REASONING_EFFORT = "medium"
+
+
+def get_selected_ai_provider():
+    """Return the globally selected AI provider, defaulting to v21 Gemini behavior."""
+    return st.session_state.get("global_ai_provider", AI_PROVIDER_GEMINI)
+
+
+def using_openai_provider():
+    return get_selected_ai_provider() == AI_PROVIDER_OPENAI
+
+
+def active_ai_provider_name():
+    return "OpenAI GPT-6 Luna" if using_openai_provider() else "Gemini"
+
+
+def render_ai_api_configuration(scope_key):
+    """
+    Render the API-key status/input for the currently selected provider.
+
+    Existing Gemini deployments keep using st.secrets["API_KEY"]. OpenAI uses the
+    separate st.secrets["OPENAI_API_KEY"] value so the two providers can coexist.
+    """
+    if using_openai_provider():
+        if "OPENAI_API_KEY" in st.secrets:
+            api_key = st.secrets["OPENAI_API_KEY"]
+            st.success("✅ OpenAI API Key loaded from Secrets")
+        else:
+            api_key = st.text_input(
+                "OpenAI API Key",
+                type="password",
+                key=f"{scope_key}_openai_api_key",
+            )
+            st.info("Paste your OpenAI API key here to run GPT-6 Luna.")
+        st.caption("Model: GPT-6 Luna | Reasoning: medium | Strict Structured Outputs")
+        return api_key
+
+    if "API_KEY" in st.secrets:
+        api_key = st.secrets["API_KEY"]
+        st.success("✅ Gemini API Key loaded from Secrets")
+    else:
+        api_key = st.text_input(
+            "Gemini API Key",
+            type="password",
+            key=f"{scope_key}_gemini_api_key",
+        )
+        st.info("Paste your Gemini API key here to run the tool.")
+    st.caption("Primary model: Gemini 2.5 Flash (existing v21 retry path)")
+    return api_key
+
+
+def _ai_balanced_json_object(text_value, start_index):
+    """Return one balanced JSON-object substring beginning at start_index."""
+    depth = 0
+    in_string = False
+    escape = False
+
+    for idx in range(start_index, len(text_value)):
+        ch = text_value[idx]
+
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text_value[start_index:idx + 1]
+
+    return ""
+
+
+def _ai_json_template_candidates(prompt):
+    """Yield valid JSON objects embedded in a formatter prompt."""
+    candidates = []
+    for match in re.finditer(r"\{", str(prompt or "")):
+        raw = _ai_balanced_json_object(str(prompt or ""), match.start())
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            candidates.append((match.start(), raw, parsed))
+    return candidates
+
+
+def _ai_template_score(value):
+    """Prefer output skeletons (mostly blank/example values) over populated input JSON."""
+    if isinstance(value, dict):
+        if not value:
+            return 0
+        return 2 + sum(_ai_template_score(v) for v in value.values())
+    if isinstance(value, list):
+        if not value:
+            return 2
+        return 1 + sum(_ai_template_score(v) for v in value[:3])
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return 5
+        # Output examples often use short instructional placeholders.
+        if len(stripped) <= 80 and not re.search(r"\d{3,}", stripped):
+            return 2
+        return -1
+    if value is None:
+        return 3
+    return 0
+
+
+def _ai_find_output_template(prompt):
+    """
+    Locate the JSON output example already present in each existing formatter prompt.
+
+    This lets OpenAI use strict Structured Outputs without maintaining a second,
+    divergent schema beside every client-specific prompt.
+    """
+    prompt_text = str(prompt or "")
+    candidates = _ai_json_template_candidates(prompt_text)
+    if not candidates:
+        raise RuntimeError(
+            "OpenAI Structured Outputs could not locate a JSON output template in this prompt."
+        )
+
+    marker_patterns = [
+        r"OUTPUT SCHEMA\s*:",
+        r"OUTPUT FORMAT(?:\s*\(STRICT\))?",
+        r"={5,}\s*OUTPUT\s*={5,}",
+        r"\bOUTPUT\s*:",
+        r"JSON Structure\s*:",
+        r"Return ONLY valid JSON\s*:",
+        r"Return valid JSON ONLY\s*\.?",
+    ]
+
+    marker_positions = []
+    for pattern in marker_patterns:
+        marker_positions.extend(
+            m.end() for m in re.finditer(pattern, prompt_text, flags=re.IGNORECASE)
+        )
+
+    # First valid object after the latest explicit output marker is normally the
+    # schema example. Use a bounded preference so later embedded resume JSON does
+    # not outrank the explicit output section.
+    for marker_pos in sorted(marker_positions, reverse=True):
+        after = [c for c in candidates if c[0] >= marker_pos]
+        if after:
+            first = min(after, key=lambda c: c[0])
+            if first[0] - marker_pos <= 5000:
+                return first[2]
+
+    # Fallback: choose the object that most resembles a blank/example template.
+    return max(candidates, key=lambda c: (_ai_template_score(c[2]), -c[0]))[2]
+
+
+def _ai_schema_from_template(value, path=()):
+    """Convert an existing JSON output example to a strict JSON Schema."""
+    if isinstance(value, dict):
+        properties = {
+            str(key): _ai_schema_from_template(val, path + (str(key),))
+            for key, val in value.items()
+        }
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": list(properties.keys()),
+            "additionalProperties": False,
+        }
+
+    if isinstance(value, list):
+        if value:
+            item_schema = _ai_schema_from_template(value[0], path + ("[]",))
+        else:
+            # Existing prompts use empty arrays for either lists of strings
+            # (bullets/certifications) or Freddie BULLET_ORDER index lists.
+            if "BULLET_ORDER" in path:
+                item_schema = {"type": "integer"}
+            else:
+                item_schema = {"type": "string"}
+        return {"type": "array", "items": item_schema}
+
+    if isinstance(value, bool):
+        return {"type": "boolean"}
+    if isinstance(value, int) and not isinstance(value, bool):
+        return {"type": "integer"}
+    if isinstance(value, float):
+        return {"type": "number"}
+    if value is None:
+        return {"type": ["string", "null"]}
+
+    return {"type": "string"}
+
+
+def _openai_generate_strict_json_text(api_key, prompt):
+    """Call GPT-6 Luna through the Responses API with strict Structured Outputs."""
+    try:
+        from openai import OpenAI
+    except Exception as exc:
+        raise RuntimeError(
+            "The OpenAI Python package is not available. Confirm 'openai' is in requirements.txt."
+        ) from exc
+
+    output_template = _ai_find_output_template(prompt)
+    schema = _ai_schema_from_template(output_template)
+    schema_fingerprint = hashlib.sha1(
+        json.dumps(schema, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:12]
+
+    client = OpenAI(api_key=api_key)
+    response = client.responses.create(
+        model=OPENAI_MODEL_ID,
+        input=str(prompt),
+        reasoning={"effort": OPENAI_REASONING_EFFORT},
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": f"resume_formatter_{schema_fingerprint}",
+                "schema": schema,
+                "strict": True,
+            }
+        },
+    )
+
+    output_text = str(getattr(response, "output_text", "") or "").strip()
+    if not output_text:
+        raise RuntimeError("OpenAI returned no structured output text.")
+
+    # Structured Outputs should already be valid JSON; parse once here so an
+    # incomplete/refused response fails visibly instead of reaching Word output.
+    parsed = json.loads(output_text)
+    if not isinstance(parsed, dict):
+        raise RuntimeError("OpenAI returned structured output that was not a JSON object.")
+
+    return json.dumps(parsed, ensure_ascii=False)
+
+
+class _AITextResponse:
+    def __init__(self, text_value):
+        self.text = text_value
+
+
+class _OpenAIModelsAdapter:
+    """Mimic the google-genai client.models.generate_content surface used in v21."""
+    def __init__(self, api_key):
+        self.api_key = api_key
+
+    def generate_content(self, model=None, contents=None, config=None):
+        # model/config are intentionally accepted for compatibility with the
+        # unchanged Gemini call sites. GPT-6 Luna and strict JSON are controlled
+        # centrally above when OpenAI is selected.
+        return _AITextResponse(
+            _openai_generate_strict_json_text(self.api_key, contents)
+        )
+
+
+class _OpenAIClientAdapter:
+    def __init__(self, api_key):
+        self.models = _OpenAIModelsAdapter(api_key)
+
+
+def create_ai_client(api_key):
+    """
+    Return the original Gemini client or an OpenAI compatibility adapter.
+
+    Gemini behavior is intentionally unchanged from v21. OpenAI uses GPT-6 Luna
+    through Responses API Structured Outputs while preserving the exact same
+    client-specific prompts, validators, and downstream formatter logic.
+    """
+    if using_openai_provider():
+        return _OpenAIClientAdapter(api_key)
+    return genai.Client(api_key=api_key)
+
 
 def replace_tag_safely(p, tag, value, unbold=False, force_bold=False, font_name=None):
     if tag.lower() not in p.text.lower():
@@ -696,12 +992,7 @@ def fannie_mae_app():
 
     with st.sidebar:
         st.header("🔑 API Configuration")
-        if "API_KEY" in st.secrets:
-            API_KEY = st.secrets["API_KEY"]
-            st.success("✅ API Key loaded from Secrets")
-        else:
-            API_KEY = st.text_input("Gemini API Key", type="password")
-            st.info("Paste your Gemini API key here to run the tool.")
+        API_KEY = render_ai_api_configuration("fannie")
 
     st.header("📋 Candidate Information")
     col1, col2 = st.columns(2)
@@ -833,7 +1124,7 @@ def fannie_mae_app():
 
     if st.button("🚀 Generate Fannie Mae Submission", type="primary"):
         if not API_KEY:
-            st.error("❌ Error: Please enter your Gemini API Key in the sidebar.")
+            st.error("❌ Error: Please configure the API key for the selected AI provider in the sidebar.")
         elif not resume_file:
             st.error("❌ Error: Please upload a resume.")
         elif not os.path.exists(TEMPLATE_FILENAME):
@@ -846,7 +1137,7 @@ def fannie_mae_app():
                         f.write(resume_file.getbuffer())
 
                     raw_text = extract_text(resume_path)
-                    client = genai.Client(api_key=API_KEY)
+                    client = create_ai_client(api_key=API_KEY)
 
                     prompt = f"""
                     Return a valid JSON object ONLY.
@@ -4591,7 +4882,7 @@ Return ONLY:
 
     if not isinstance(raw_package, dict):
         raise RuntimeError(
-            "Gemini returned an invalid VNDLY package payload."
+            "The selected AI provider returned an invalid VNDLY package payload."
         )
 
     vndly_summary = fred_clean_vndly_submission_summary(
@@ -4610,7 +4901,7 @@ Return ONLY:
 
     if not vndly_summary:
         raise RuntimeError(
-            "Gemini returned no VNDLY submission summary."
+            "The selected AI provider returned no VNDLY submission summary."
         )
 
     vndly_summary_errors = fred_validate_vndly_summary(
@@ -4970,10 +5261,10 @@ def fred_repair_and_load_json(raw_text):
 
 def fred_generate_json(api_key, prompt, max_attempts=6):
     """
-    Freddie-specific Gemini JSON helper with the same retry philosophy
+    Freddie-specific provider-aware JSON helper with the same retry philosophy
     already used throughout the app.
     """
-    client = genai.Client(api_key=api_key)
+    client = create_ai_client(api_key=api_key)
 
     models_to_try = [
         "gemini-2.5-flash",
@@ -5009,7 +5300,7 @@ def fred_generate_json(api_key, prompt, max_attempts=6):
                 return data
 
             last_error = ValueError(
-                "Gemini returned malformed or unusable Freddie Mac JSON."
+                "The selected AI provider returned malformed or unusable Freddie Mac JSON."
             )
 
         except Exception as e:
@@ -5024,7 +5315,7 @@ def fred_generate_json(api_key, prompt, max_attempts=6):
                 continue
 
     raise RuntimeError(
-        f"Gemini could not return usable Freddie Mac JSON after retries. "
+        f"{active_ai_provider_name()} could not return usable Freddie Mac JSON after retries. "
         f"Last error: {last_error}"
     )
 
@@ -7475,20 +7766,7 @@ def freddie_mac_app():
 
     with st.sidebar:
         st.header("🔑 API Configuration")
-
-        if "API_KEY" in st.secrets:
-            API_KEY = st.secrets["API_KEY"]
-            st.success("✅ API Key loaded from Secrets")
-        else:
-            API_KEY = st.text_input(
-                "Gemini API Key",
-                type="password",
-                key="fred_api_key",
-            )
-
-            st.info(
-                "Paste your Gemini API key here to run the tool."
-            )
+        API_KEY = render_ai_api_configuration("freddie")
 
     # ================================================================
     # CANDIDATE INFORMATION
@@ -8186,7 +8464,7 @@ def freddie_mac_app():
 
         if not API_KEY:
             validation_errors.append(
-                "Gemini API Key is missing."
+                "API key for the selected AI provider is missing."
             )
 
         if not Job_Description.strip():
@@ -10226,12 +10504,7 @@ def peraton_app():
 
     with st.sidebar:
         st.header("🔑 API Configuration")
-        if "API_KEY" in st.secrets:
-            API_KEY = st.secrets["API_KEY"]
-            st.success("✅ API Key loaded from Secrets")
-        else:
-            API_KEY = st.text_input("Gemini API Key", type="password")
-            st.info("Paste your Gemini API key here to run the tool.")
+        API_KEY = render_ai_api_configuration("peraton")
 
     st.header("🎤 Supplier Technical Interview Results")
     
@@ -10268,7 +10541,7 @@ def peraton_app():
 
     if st.button("🚀 Generate Peraton Submission", type="primary"):
         if not API_KEY:
-            st.error("❌ Error: Please enter your Gemini API Key in the sidebar.")
+            st.error("❌ Error: Please configure the API key for the selected AI provider in the sidebar.")
         elif not resume_file:
             st.error("❌ Error: Please upload a resume.")
         elif not os.path.exists(TEMPLATE_FILENAME):
@@ -10281,7 +10554,7 @@ def peraton_app():
                         f.write(resume_file.getbuffer())
 
                     raw_text = extract_text(resume_path)
-                    client = genai.Client(api_key=API_KEY)
+                    client = create_ai_client(api_key=API_KEY)
 
                     prompt = f"""
                     Return a valid JSON object ONLY.
@@ -10557,12 +10830,7 @@ def capital_one_app():
 
     with st.sidebar:
         st.header("🔑 API Configuration")
-        if "API_KEY" in st.secrets:
-            API_KEY = st.secrets["API_KEY"]
-            st.success("✅ API Key loaded from Secrets")
-        else:
-            API_KEY = st.text_input("Gemini API Key", type="password")
-            st.info("Paste your Gemini API key here to run the tool.")
+        API_KEY = render_ai_api_configuration("capital_one")
 
     st.header("📋 Candidate Information")
     col1, col2 = st.columns(2)
@@ -10635,7 +10903,7 @@ def capital_one_app():
 
     if st.button("🚀 Generate Capital One Submission", type="primary"):
         if not API_KEY:
-            st.error("❌ Error: Please enter your Gemini API Key in the sidebar.")
+            st.error("❌ Error: Please configure the API key for the selected AI provider in the sidebar.")
         elif not resume_file:
             st.error("❌ Error: Please upload a resume.")
         elif not os.path.exists(TEMPLATE_FILENAME):
@@ -10648,7 +10916,7 @@ def capital_one_app():
                         f.write(resume_file.getbuffer())
 
                     raw_text = extract_text(resume_path)
-                    client = genai.Client(api_key=API_KEY)
+                    client = create_ai_client(api_key=API_KEY)
 
                     prompt = f"""
                     Return a valid JSON object ONLY.
@@ -10939,12 +11207,7 @@ def adusa_app():
 
     with st.sidebar:
         st.header("🔑 API Configuration")
-        if "API_KEY" in st.secrets:
-            API_KEY = st.secrets["API_KEY"]
-            st.success("✅ API Key loaded from Secrets")
-        else:
-            API_KEY = st.text_input("Gemini API Key", type="password")
-            st.info("Paste your Gemini API key here to run the tool.")
+        API_KEY = render_ai_api_configuration("adusa")
 
     st.header("📋 Candidate Information")
     col1, col2 = st.columns(2)
@@ -11012,7 +11275,7 @@ def adusa_app():
 
     if st.button("🚀 Generate ADUSA Submission", type="primary"):
         if not API_KEY:
-            st.error("❌ Error: Please enter your Gemini API Key in the sidebar.")
+            st.error("❌ Error: Please configure the API key for the selected AI provider in the sidebar.")
         elif not resume_file:
             st.error("❌ Error: Please upload a resume.")
         elif not os.path.exists(TEMPLATE_FILENAME):
@@ -11025,7 +11288,7 @@ def adusa_app():
                         f.write(resume_file.getbuffer())
 
                     raw_text = extract_text(resume_path)
-                    client = genai.Client(api_key=API_KEY)
+                    client = create_ai_client(api_key=API_KEY)
 
                     prompt = f"""
                     Return a valid JSON object ONLY.
@@ -11290,12 +11553,7 @@ def cbre_app():
 
     with st.sidebar:
         st.header("🔑 API Configuration")
-        if "API_KEY" in st.secrets:
-            API_KEY = st.secrets["API_KEY"]
-            st.success("✅ API Key loaded from Secrets")
-        else:
-            API_KEY = st.text_input("Gemini API Key", type="password")
-            st.info("Paste your Gemini API key here to run the tool.")
+        API_KEY = render_ai_api_configuration("cbre")
 
     st.header("📋 Candidate Information")
     col1, col2 = st.columns(2)
@@ -11364,7 +11622,7 @@ def cbre_app():
 
     if st.button("🚀 Generate CBRE Submission", type="primary"):
         if not API_KEY:
-            st.error("❌ Error: Please enter your Gemini API Key in the sidebar.")
+            st.error("❌ Error: Please configure the API key for the selected AI provider in the sidebar.")
         elif not resume_file:
             st.error("❌ Error: Please upload a resume.")
         elif not os.path.exists(TEMPLATE_FILENAME):
@@ -11377,7 +11635,7 @@ def cbre_app():
                         f.write(resume_file.getbuffer())
 
                     raw_text = extract_text(resume_path)
-                    client = genai.Client(api_key=API_KEY)
+                    client = create_ai_client(api_key=API_KEY)
 
                     prompt = f"""
                     Return a valid JSON object ONLY.
@@ -11642,12 +11900,7 @@ def bnsf_app():
 
     with st.sidebar:
         st.header("🔑 API Configuration")
-        if "API_KEY" in st.secrets:
-            API_KEY = st.secrets["API_KEY"]
-            st.success("✅ API Key loaded from Secrets")
-        else:
-            API_KEY = st.text_input("Gemini API Key", type="password")
-            st.info("Paste your Gemini API key here to run the tool.")
+        API_KEY = render_ai_api_configuration("bnsf")
 
     st.header("📋 Candidate Information")
     col1, col2 = st.columns(2)
@@ -11720,7 +11973,7 @@ def bnsf_app():
 
     if st.button("🚀 Generate BNSF Submission", type="primary"):
         if not API_KEY:
-            st.error("❌ Error: Please enter your Gemini API Key in the sidebar.")
+            st.error("❌ Error: Please configure the API key for the selected AI provider in the sidebar.")
         elif not resume_file:
             st.error("❌ Error: Please upload a resume.")
         elif not os.path.exists(TEMPLATE_FILENAME):
@@ -11733,7 +11986,7 @@ def bnsf_app():
                         f.write(resume_file.getbuffer())
 
                     raw_text = extract_text(resume_path)
-                    client = genai.Client(api_key=API_KEY)
+                    client = create_ai_client(api_key=API_KEY)
 
                     prompt = f"""
                     Return a valid JSON object ONLY.
@@ -11999,12 +12252,7 @@ def dallas_generic_app():
 
     with st.sidebar:
         st.header("🔑 API Configuration")
-        if "API_KEY" in st.secrets:
-            API_KEY = st.secrets["API_KEY"]
-            st.success("✅ API Key loaded from Secrets")
-        else:
-            API_KEY = st.text_input("Gemini API Key", type="password")
-            st.info("Paste your Gemini API key here to run the tool.")
+        API_KEY = render_ai_api_configuration("dallas")
 
     st.header("📋 Candidate Information")
     col1, col2 = st.columns(2)
@@ -12061,7 +12309,7 @@ def dallas_generic_app():
 
     if st.button("🚀 Generate Dallas Generic Submission", type="primary"):
         if not API_KEY:
-            st.error("❌ Error: Please enter your Gemini API Key in the sidebar.")
+            st.error("❌ Error: Please configure the API key for the selected AI provider in the sidebar.")
         elif not resume_file:
             st.error("❌ Error: Please upload a resume.")
         elif not os.path.exists(TEMPLATE_FILENAME):
@@ -12074,7 +12322,7 @@ def dallas_generic_app():
                         f.write(resume_file.getbuffer())
 
                     raw_text = extract_text(resume_path)
-                    client = genai.Client(api_key=API_KEY)
+                    client = create_ai_client(api_key=API_KEY)
 
                     prompt = f"""
                     Return a valid JSON object ONLY.
@@ -12567,12 +12815,7 @@ def deloitte_app():
 
     with st.sidebar:
         st.header("🔑 API Configuration")
-        if "API_KEY" in st.secrets:
-            API_KEY = st.secrets["API_KEY"]
-            st.success("✅ API Key loaded from Secrets")
-        else:
-            API_KEY = st.text_input("Gemini API Key", type="password")
-            st.info("Paste your Gemini API key here to run the tool.")
+        API_KEY = render_ai_api_configuration("deloitte")
 
     st.header("📋 Candidate Information")
     col1, col2 = st.columns(2)
@@ -12665,7 +12908,7 @@ def deloitte_app():
 
     if st.button("🚀 Generate Deloitte Submission", type="primary"):
         if not API_KEY:
-            st.error("❌ Error: Please enter your Gemini API Key in the sidebar.")
+            st.error("❌ Error: Please configure the API key for the selected AI provider in the sidebar.")
         elif not resume_file:
             st.error("❌ Error: Please upload a resume.")
         elif not os.path.exists(TEMPLATE_FILENAME):
@@ -12703,7 +12946,7 @@ def deloitte_app():
                     # Keep extracting text from the ORIGINAL uploaded file.
                     # extract_text() already handles PDFs correctly.
                     raw_text = extract_text(resume_path)
-                    client = genai.Client(api_key=API_KEY)
+                    client = create_ai_client(api_key=API_KEY)
 
                     prompt = f"""
                     Return a valid JSON object ONLY.
@@ -12984,8 +13227,8 @@ def deloitte_app():
 # ====================================================================
 
 def navy_generate_json(api_key, prompt, max_attempts=6):
-    """Navy Federal Gemini JSON helper using the Freddie retry pattern."""
-    client = genai.Client(api_key=api_key)
+    """Navy Federal provider-aware JSON helper using the Freddie retry pattern."""
+    client = create_ai_client(api_key=api_key)
 
     models_to_try = [
         "gemini-2.5-flash",
@@ -13032,7 +13275,7 @@ def navy_generate_json(api_key, prompt, max_attempts=6):
                 continue
 
     raise RuntimeError(
-        "Gemini could not return usable Navy Federal JSON after retries. "
+        f"{active_ai_provider_name()} could not return usable Navy Federal JSON after retries. "
         f"Last error: {last_error}"
     )
 
@@ -14770,17 +15013,7 @@ def navy_federal_app():
     # ================================================================
     with st.sidebar:
         st.header("🔑 API Configuration")
-
-        if "API_KEY" in st.secrets:
-            API_KEY = st.secrets["API_KEY"]
-            st.success("✅ API Key loaded from Secrets")
-        else:
-            API_KEY = st.text_input(
-                "Gemini API Key",
-                type="password",
-                key="navy_api_key",
-            )
-            st.info("Paste your Gemini API key here to run the tool.")
+        API_KEY = render_ai_api_configuration("navy")
 
     # ================================================================
     # CANDIDATE INFORMATION
@@ -14969,7 +15202,7 @@ def navy_federal_app():
         validation_errors = []
 
         if not API_KEY:
-            validation_errors.append("Enter the Gemini API Key.")
+            validation_errors.append("Configure the API key for the selected AI provider.")
 
         if not Full_Legal_Name.strip():
             validation_errors.append("Enter the candidate's Full Legal Name.")
@@ -15710,6 +15943,24 @@ FULL ORIGINAL RESUME:
 
 st.title("Resume Formatter")
 st.markdown("Please select your client account below to access the customized formatter.")
+
+with st.sidebar:
+    st.header("🤖 AI Provider / Model")
+    st.selectbox(
+        "Choose the AI engine for this run:",
+        [AI_PROVIDER_GEMINI, AI_PROVIDER_OPENAI],
+        index=0,
+        key="global_ai_provider",
+        help=(
+            "A/B testing mode. Gemini preserves the existing v21 path. "
+            "OpenAI routes the same formatter prompts through GPT-6 Luna "
+            "with medium reasoning and strict Structured Outputs."
+        ),
+    )
+    if using_openai_provider():
+        st.caption("OpenAI mode: GPT-6 Luna, medium reasoning")
+    else:
+        st.caption("Gemini mode: Gemini 2.5 Flash primary")
 
 client_selection = st.selectbox(
     "Select Client Account or Tool:", 
