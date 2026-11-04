@@ -1,7 +1,8 @@
-# v22 A/B TEST BUILD
-# Adds selectable Gemini vs OpenAI GPT-6 Luna provider routing.
-# Gemini client-specific logic remains unchanged from v21; OpenAI uses the same
-# prompts/validators with Responses API strict Structured Outputs.
+# v24 SOURCE FIDELITY BUILD - OPENAI DEFAULT / PROVIDER SELECTOR HIDDEN
+# Preserves the v23 Gemini vs OpenAI GPT-6 Luna routing while forcing OpenAI in production and hardening
+# resume ingestion and source fidelity. Historical resume content is treated as
+# immutable evidence: no bullet rewriting/reordering/merging, safer structural
+# PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
 
 import streamlit as st
 import pandas as pd
@@ -10,8 +11,8 @@ from google import genai
 from google.genai import types
 import docx
 from docx.text.paragraph import Paragraph
+from docx.table import Table
 from docx.shared import Pt
-import pypdf
 import json
 import re
 import os
@@ -20,8 +21,10 @@ import time
 import subprocess
 import smtplib
 import hashlib
+import difflib
+import tempfile
+import unicodedata
 from email.message import EmailMessage
-from pdf2docx import Converter
 from copy import deepcopy
 from datetime import date
 
@@ -83,21 +86,232 @@ if not check_password():
 # --- UNIVERSAL HELPER FUNCTIONS (Shared by all clients) ---
 # ====================================================================
 
+# Source-fidelity registry keyed by the SHA1 of the exact text handed to the AI.
+# It lets every client verify that extracted historical resume content came from
+# the uploaded source rather than trusting generated wording.
+_SOURCE_FIDELITY_REGISTRY = {}
+
+
+def _source_key(text):
+    return hashlib.sha1(str(text or "").encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _normalize_source_match(value):
+    """Normalize only for comparison. The original source text is restored later."""
+    value = unicodedata.normalize("NFKC", str(value or ""))
+    value = value.replace("\u00a0", " ")
+    value = value.replace("–", "-").replace("—", "-").replace("‑", "-")
+    value = value.replace("“", '"').replace("”", '"').replace("’", "'")
+    value = re.sub(r"\s+", " ", value).strip()
+    return value.casefold()
+
+
+def _strip_list_marker_only(value):
+    """
+    Remove only an actual list marker, never ordinary leading digits/punctuation.
+
+    Safe examples:
+      "• Built..." -> "Built..."
+      "1. Built..." -> "Built..."
+      "- Built..." -> "Built..."
+
+    Preserved examples:
+      "99.8% SLA..."
+      "2024 migration..."
+      ".NET Core..."
+      "3M records..."
+      "5+ years..."
+    """
+    text = str(value or "").strip()
+    text = re.sub(r"^(?:[•·▪◦●○■□►▸*]|[-–—])\s+", "", text)
+    text = re.sub(r"^\(?\d{1,3}[.)]\s+", "", text)
+    return text.strip()
+
+
 def clean_bullets(bullet_list):
+    """Preserve bullet wording/order while removing only true list markers."""
     if isinstance(bullet_list, str):
-        bullet_list = bullet_list.split('\n')
+        bullet_list = bullet_list.split("\n")
+    if not isinstance(bullet_list, list):
+        return ""
     cleaned = []
     for line in bullet_list:
-        line = re.sub(r'^[\s\-\•\d\.\*]+', '', line).strip()
-        if line:
-            cleaned.append(line)
+        text = _strip_list_marker_only(line)
+        if text:
+            cleaned.append(text)
     return "\n".join(cleaned)
 
+
+
+def _strip_trailing_date_range(value):
+    """Remove an accidentally attached employment date range from a display field."""
+    text = str(value or '').strip()
+    month = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|\d{1,2})"
+    endpoint = rf"(?:(?:{month})[ /-]+)?(?:19|20)\d{{2}}"
+    return re.sub(
+        rf"\s*(?:\||,)?\s*\(?\s*{endpoint}\s*(?:[-–—]|\bto\b)\s*(?:{endpoint}|present|current)\s*\)?\s*$",
+        "",
+        text,
+        flags=re.I,
+    ).strip(" |,-")
+
+
+def clean_company_name(name):
+    """
+    Preserve the user's intended display convention: company/end-client name only.
+
+    The AI still identifies the primary employer/end-client from the source. This
+    deterministic cleanup removes only obvious labels and trailing location text;
+    it never invents a different company.
+    """
+    text = re.sub(r"\s+", " ", str(name or "")).strip(" |,-")
+    text = _strip_trailing_date_range(text)
+    text = re.sub(r"\s*[,|/-]\s*(?:remote|hybrid|onsite|on-site)\s*$", "", text, flags=re.I).strip(" |,-")
+    if not text:
+        return ""
+
+    # If the source/extractor explicitly identifies an end client, prefer that
+    # value because the formatter intentionally displays the client rather than
+    # the staffing/vendor company. This is a source selection, not an invention.
+    explicit_client = re.search(
+        r"(?:^|[(/|,-]\s*)(?:end\s*client|client)\s*:\s*([^)|]+)",
+        text,
+        flags=re.I,
+    )
+    if explicit_client:
+        text = explicit_client.group(1).strip(" |,-)")
+    else:
+        text = re.sub(r"^(?:end\s*client|client|employer)\s*:\s*", "", text, flags=re.I)
+
+    # Remove explicit trailing location patterns while preserving legitimate
+    # institutional/company punctuation in the core name.
+    us_states = (
+        r"AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|"
+        r"MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|"
+        r"WA|WV|WI|WY|DC"
+    )
+    text = re.sub(
+        rf"\s+[-–—|]\s+[A-Za-z .'-]+,\s*(?:{us_states})(?:\s+\d{{5}}(?:-\d{{4}})?)?$",
+        "",
+        text,
+        flags=re.I,
+    ).strip(" |,-")
+    text = re.sub(
+        rf",\s*[A-Za-z .'-]+,\s*(?:{us_states})(?:\s+\d{{5}}(?:-\d{{4}})?)?$",
+        "",
+        text,
+        flags=re.I,
+    ).strip(" |,-")
+    text = re.sub(
+        rf",\s*(?:{us_states})(?:\s+\d{{5}}(?:-\d{{4}})?)?$",
+        "",
+        text,
+        flags=re.I,
+    ).strip(" |,-")
+    text = re.sub(
+        r"(?:\s+[-–—|]\s+|,\s*)[A-Za-z .'-]+,\s*(?:United States|USA|U\.S\.A\.|India|Canada|United Kingdom|UK)\s*$",
+        "",
+        text,
+        flags=re.I,
+    ).strip(" |,-")
+    text = re.sub(
+        r"\s*[-–—|,]\s*(?:United States|USA|U\.S\.A\.|India|Canada|United Kingdom|UK)\s*$",
+        "",
+        text,
+        flags=re.I,
+    ).strip(" |,-")
+    return text
+
+
+def clean_job_title(title):
+    """
+    Keep the actual job title while removing clearly extraneous employment/project
+    qualifiers. This replaces the old rule that deleted everything after the first
+    parenthesis or dash.
+    """
+    text = re.sub(r"\s+", " ", str(title or "")).strip(" |,-")
+    text = _strip_trailing_date_range(text)
+    if not text:
+        return ""
+
+    # Explicit employment-type suffixes.
+    text = re.sub(
+        r"\s*(?:\(|[-–—|])\s*(?:contract|contractor|consultant|temporary|temp|contract-to-hire|c2h)\b[^)]*\)?\s*$",
+        "",
+        text,
+        flags=re.I,
+    ).strip(" |,-")
+
+    # Explicit project/client/workstream qualifiers, e.g. "Senior Developer - Starship Project".
+    qualifier = re.compile(
+        r"^(?:project|program|initiative|workstream|engagement|assignment|client|team)\b",
+        flags=re.I,
+    )
+    parts = re.split(r"\s+(?:[-–—|])\s+", text, maxsplit=1)
+    if len(parts) == 2 and qualifier.search(parts[1].strip()):
+        text = parts[0].strip()
+    elif len(parts) == 2 and re.search(r"\bproject\b", parts[1], flags=re.I):
+        text = parts[0].strip()
+
+    # Parenthetical project/client qualifiers only. Keep technology/specialty
+    # parentheticals such as "Developer (Java/AWS)".
+    text = re.sub(
+        r"\s*\([^)]*\b(?:project|program|initiative|workstream|engagement|assignment|client)\b[^)]*\)\s*$",
+        "",
+        text,
+        flags=re.I,
+    ).strip(" |,-")
+    return text
+
+
 def clean_school(name):
-    for delimiter in [' - ', ' – ', ' , ', ', ']:
-        if delimiter in name:
-            name = name.split(delimiter)[0]
-    return name.strip()
+    """
+    Keep the actual institution name and remove only clear trailing location noise.
+    Unlike the old implementation, commas/dashes inside legitimate school names are
+    preserved (for example, "University of Maryland, College Park").
+    """
+    text = re.sub(r"\s+", " ", str(name or "")).strip(" |,-")
+    text = _strip_trailing_date_range(text)
+    text = re.sub(r"\s*[|,-]?\s*\(?\b(?:19|20)\d{2}\b\)?\s*$", "", text).strip(" |,-")
+    if not text:
+        return ""
+    us_states = (
+        r"AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|"
+        r"MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|"
+        r"WA|WV|WI|WY|DC"
+    )
+    text = re.sub(
+        rf"\s+[-–—|]\s+[A-Za-z .'-]+,\s*(?:{us_states})(?:\s+\d{{5}}(?:-\d{{4}})?)?$",
+        "",
+        text,
+        flags=re.I,
+    ).strip(" |,-")
+    text = re.sub(
+        rf",\s*[A-Za-z .'-]+,\s*(?:{us_states})(?:\s+\d{{5}}(?:-\d{{4}})?)?$",
+        "",
+        text,
+        flags=re.I,
+    ).strip(" |,-")
+    text = re.sub(
+        rf",\s*(?:{us_states})(?:\s+\d{{5}}(?:-\d{{4}})?)?$",
+        "",
+        text,
+        flags=re.I,
+    ).strip(" |,-")
+    text = re.sub(
+        r",\s*[A-Za-z .'-]+,\s*(?:United States|USA|U\.S\.A\.|India|Canada|United Kingdom|UK)\s*$",
+        "",
+        text,
+        flags=re.I,
+    ).strip(" |,-")
+    text = re.sub(
+        r",\s*(?:United States|USA|U\.S\.A\.|India|Canada|United Kingdom|UK)\s*$",
+        "",
+        text,
+        flags=re.I,
+    ).strip(" |,-")
+    return text
+
 
 def standardize_dates(date_str):
     """
@@ -125,69 +339,998 @@ def standardize_dates(date_str):
             date_str = re.sub(full, short, date_str, flags=re.IGNORECASE)
     return date_str
 
+
 def format_peraton_dates(date_str):
-    """
-    Format Peraton dates without inventing missing month detail.
-
-    Examples:
-    - "10/2019 - 07/2024" -> "10/2019 to 07/2024"
-    - "2019 - 2024"       -> "2019 to 2024"
-    - "2019 - Present"    -> "2019 to Present"
-
-    If the original resume gives only a year, keep only the year.
-    """
+    """Format Peraton dates without inventing missing month detail."""
     if not date_str:
         return ""
-    # Swap common hyphens/dashes to the required " to "
     date_str = re.sub(r'\s*[-–—]\s*', ' to ', date_str)
-    # Ensure "Present" or "Current" is properly formatted
     date_str = re.sub(r'(?i)present', 'Present', date_str)
     date_str = re.sub(r'(?i)current', 'Present', date_str)
     return date_str.strip()
 
+
+def _xml_text(element):
+    """Read visible Word text from a paragraph/table XML element in XML order."""
+    pieces = []
+    for node in element.xpath('.//w:t | .//w:tab | .//w:br'):
+        tag = node.tag.rsplit('}', 1)[-1]
+        if tag == 't':
+            pieces.append(node.text or '')
+        elif tag == 'tab':
+            pieces.append('\t')
+        else:
+            pieces.append('\n')
+    text = ''.join(pieces)
+    return re.sub(r'[ \t]+', ' ', text).strip()
+
+
+def _paragraph_is_list_item(paragraph, text=None):
+    text = str(text if text is not None else paragraph.text or "").strip()
+    try:
+        if paragraph._p.pPr is not None and paragraph._p.pPr.numPr is not None:
+            return True
+    except Exception:
+        pass
+    try:
+        if 'list' in str(paragraph.style.name or '').casefold():
+            return True
+    except Exception:
+        pass
+    return bool(re.match(r"^(?:[•·▪◦●○■□►▸*]|[-–—])\s+|^\(?\d{1,3}[.)]\s+", text))
+
+
+def _looks_like_section_heading(text):
+    value = str(text or "").strip()
+    if not value or len(value) > 80:
+        return False
+
+    # Recognize standard resume section labels regardless of capitalization.
+    if re.fullmatch(
+        r"(?:professional summary|summary|profile|core competencies|competencies|"
+        r"technical skills|skills|professional experience|work experience|employment history|"
+        r"career history|additional experience|earlier experience|education|certifications?|"
+        r"certificates?|awards?|references?)\s*:?",
+        value,
+        flags=re.I,
+    ):
+        return True
+
+    letters = re.sub(r"[^A-Za-z]", "", value)
+    if len(letters) < 3:
+        return False
+    return value.upper() == value and not re.search(r"[.!?]$", value)
+
+
+def _iter_container_blocks(container, kind_prefix="BODY"):
+    """Yield Word paragraphs and table-cell paragraphs in true XML body order."""
+    element = container.element.body if hasattr(container.element, 'body') else container._element
+    for child in list(element):
+        tag = child.tag.rsplit('}', 1)[-1]
+        if tag == 'p':
+            p = Paragraph(child, container)
+            text = (
+                _xml_text(child)
+                if child.xpath('.//w:txbxContent')
+                else (p.text.strip() or _xml_text(child))
+            )
+            if text:
+                yield {
+                    'text': text,
+                    'kind': f'{kind_prefix}_P',
+                    'is_list': _paragraph_is_list_item(p, text),
+                    'style': str(getattr(getattr(p, 'style', None), 'name', '') or ''),
+                }
+        elif tag == 'tbl':
+            table = Table(child, container)
+            for row_idx, row in enumerate(table.rows):
+                seen_cells = set()
+                for cell_idx, cell in enumerate(row.cells):
+                    cell_key = id(cell._tc)
+                    if cell_key in seen_cells:
+                        continue
+                    seen_cells.add(cell_key)
+                    for p in cell.paragraphs:
+                        text = (
+                            _xml_text(p._p)
+                            if p._p.xpath('.//w:txbxContent')
+                            else (p.text.strip() or _xml_text(p._p))
+                        )
+                        if text:
+                            yield {
+                                'text': text,
+                                'kind': f'{kind_prefix}_TABLE',
+                                'is_list': _paragraph_is_list_item(p, text),
+                                'style': str(getattr(getattr(p, 'style', None), 'name', '') or ''),
+                                'row': row_idx,
+                                'cell': cell_idx,
+                            }
+
+
+def _merge_pdf_conversion_continuations(blocks, converted_from_pdf=False):
+    """
+    Repair a common PDF->DOCX artifact where one visual bullet is split into a
+    real list paragraph followed by an unnumbered continuation paragraph.
+
+    For Adobe-converted PDFs, a structurally unfinished list item between two
+    list items is enough to join the continuation. For ordinary uploaded DOCX
+    files, use a narrower signal so legitimate standalone paragraphs are not
+    silently absorbed into a bullet. Wording is never rewritten, only joined.
+    """
+    merged = []
+    i = 0
+    continuation_tail = re.compile(
+        r"(?:[,/:]|\b(?:and|or|to|by|for|with|using|including|leveraging|supporting|"
+        r"through|via|while|that|which|from|into|across))\s*$",
+        flags=re.IGNORECASE,
+    )
+
+    while i < len(blocks):
+        current = dict(blocks[i])
+        if current.get('is_list'):
+            text = str(current.get('text', '') or '').strip()
+            j = i + 1
+            while j < len(blocks):
+                nxt = blocks[j]
+                nxt_text = str(nxt.get('text', '') or '').strip()
+                next_after = blocks[j + 1] if j + 1 < len(blocks) else None
+
+                unfinished = bool(text) and not re.search(r"[.!?;:]\s*$", text)
+                between_list_items = bool(next_after and next_after.get('is_list'))
+                generic_docx_signal = bool(
+                    unfinished
+                    and between_list_items
+                    and str(current.get('style', '') or '').casefold() == 'list paragraph'
+                    and str(nxt.get('style', '') or '').casefold() in {'body text', 'normal', ''}
+                    and continuation_tail.search(text)
+                )
+                pdf_signal = bool(converted_from_pdf and unfinished and between_list_items)
+
+                plausible = bool(
+                    nxt_text
+                    and not nxt.get('is_list')
+                    and not _looks_like_section_heading(nxt_text)
+                    and (pdf_signal or generic_docx_signal)
+                )
+                if not plausible:
+                    break
+
+                text = f"{text} {nxt_text}".strip()
+                j += 1
+                if re.search(r"[.!?]\s*$", text):
+                    break
+
+            current['text'] = text
+            merged.append(current)
+            i = j
+        else:
+            merged.append(current)
+            i += 1
+    return merged
+
+
+def _extract_docx_source(file_path, converted_from_pdf=False):
+    doc = docx.Document(file_path)
+    blocks = []
+
+    # Include headers because candidate names/contact data are often stored there.
+    seen_header_text = set()
+    for section in doc.sections:
+        for header in [section.header, section.first_page_header, section.even_page_header]:
+            try:
+                for block in _iter_container_blocks(header, kind_prefix='HEADER'):
+                    key = _normalize_source_match(block['text'])
+                    if key and key not in seen_header_text:
+                        blocks.append(block)
+                        seen_header_text.add(key)
+            except Exception:
+                continue
+
+    blocks.extend(_iter_container_blocks(doc, kind_prefix='BODY'))
+    blocks = _merge_pdf_conversion_continuations(
+        blocks,
+        converted_from_pdf=converted_from_pdf,
+    )
+
+    for idx, block in enumerate(blocks):
+        block['index'] = idx
+        block['text'] = re.sub(r"\s+", " ", str(block.get('text', '') or '')).strip()
+
+    text = "\n".join(block['text'] for block in blocks if block.get('text'))
+    return text, blocks
+
+
+def _convert_legacy_doc_to_docx(file_path):
+    """Best-effort legacy .doc conversion; fail closed if conversion is unavailable."""
+    out_dir = tempfile.mkdtemp(prefix='resume_doc_convert_')
+    try:
+        result = subprocess.run(
+            ['libreoffice', '--headless', '--convert-to', 'docx', '--outdir', out_dir, file_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        candidate = os.path.join(out_dir, os.path.splitext(os.path.basename(file_path))[0] + '.docx')
+        if result.returncode != 0 or not os.path.exists(candidate):
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or 'legacy Word conversion failed')
+        return candidate
+    except Exception as exc:
+        raise RuntimeError(
+            "This legacy .doc resume could not be converted safely. Please upload a .docx or PDF version instead."
+        ) from exc
+
+
+def _convert_pdf_to_docx_for_source(file_path):
+    """Use the app's Adobe high-fidelity converter for authoritative PDF ingestion."""
+    try:
+        client_id = st.secrets['PDF_SERVICES_CLIENT_ID']
+        client_secret = st.secrets['PDF_SERVICES_CLIENT_SECRET']
+        from adobe_converter import convert_pdf_to_docx
+        with open(file_path, 'rb') as f:
+            docx_bytes = convert_pdf_to_docx(f.read(), client_id, client_secret)
+        tmp = tempfile.NamedTemporaryFile(prefix='resume_pdf_source_', suffix='.docx', delete=False)
+        tmp.write(docx_bytes)
+        tmp.close()
+        return tmp.name
+    except Exception as exc:
+        raise RuntimeError(
+            "High-fidelity PDF source extraction failed. To prevent silent resume-content changes, "
+            "the formatter stopped instead of falling back to flattened PDF text. Please retry or "
+            "use the built-in PDF to Word converter and upload the resulting DOCX."
+        ) from exc
+
+
 def extract_text(file_path):
-    text_parts = []
+    """
+    High-fidelity source ingestion shared by all clients.
+
+    DOCX is parsed in XML document order (paragraphs + tables). PDF is first
+    converted through Adobe PDF Services and then parsed structurally. Legacy .doc
+    is converted to DOCX when LibreOffice is available. No raw-binary UTF-8 fallback
+    is allowed because corrupted extraction must never be treated as candidate truth.
+    """
     ext = os.path.splitext(file_path)[1].lower()
+    temp_path = None
     try:
         if ext == '.pdf':
-            pdf = pypdf.PdfReader(file_path)
-            for page in pdf.pages:
-                content = page.extract_text()
-                if content:
-                    text_parts.append(content)
-        elif ext in ['.docx', '.doc']:
-            doc = docx.Document(file_path)
-            text_box_found = False
-            for node in doc.element.xpath('//w:txbxContent//w:t'):
-                if node.text and node.text.strip():
-                    text_parts.append(node.text.strip())
-                    text_box_found = True
-            if text_box_found:
-                text_parts.append("--- END OF TEXT BOXES ---")
-            for section in doc.sections:
-                headers = [section.header, section.first_page_header, section.even_page_header]
-                for hdr in headers:
-                    if hdr: 
-                        for p in hdr.paragraphs:
-                            if p.text.strip():
-                                text_parts.append(p.text)
-                        for table in hdr.tables:
-                            for row in table.rows:
-                                for cell in row.cells:
-                                    if cell.text.strip():
-                                        text_parts.append(cell.text)
-            for para in doc.paragraphs:
-                if para.text.strip():
-                    text_parts.append(para.text)
-            for table in doc.tables:
-                for row in table.rows:
-                    for cell in row.cells:
-                        if cell.text.strip():
-                            text_parts.append(cell.text)
-    except:
-        with open(file_path, 'rb') as f:
-            text_parts.append(f.read().decode('utf-8', errors='ignore'))
-    return "\n".join(text_parts)
+            temp_path = _convert_pdf_to_docx_for_source(file_path)
+            text, blocks = _extract_docx_source(temp_path, converted_from_pdf=True)
+            source_format = 'pdf_via_adobe_docx'
+        elif ext == '.docx':
+            text, blocks = _extract_docx_source(file_path, converted_from_pdf=False)
+            source_format = 'docx'
+        elif ext == '.doc':
+            temp_path = _convert_legacy_doc_to_docx(file_path)
+            text, blocks = _extract_docx_source(temp_path, converted_from_pdf=False)
+            source_format = 'doc_via_libreoffice_docx'
+        else:
+            raise RuntimeError(f"Unsupported resume format: {ext or 'unknown'}")
+
+        if not text.strip() or len(blocks) < 2:
+            raise RuntimeError(
+                "The uploaded resume did not yield enough reliable text to format safely."
+            )
+
+        _SOURCE_FIDELITY_REGISTRY[_source_key(text)] = {
+            'blocks': blocks,
+            'source_format': source_format,
+            'file_path': file_path,
+        }
+        # Bound process memory in long-lived Streamlit sessions.
+        while len(_SOURCE_FIDELITY_REGISTRY) > 20:
+            _SOURCE_FIDELITY_REGISTRY.pop(next(iter(_SOURCE_FIDELITY_REGISTRY)))
+        return text
+    finally:
+        if temp_path:
+            try:
+                parent_dir = os.path.dirname(temp_path)
+                os.remove(temp_path)
+                if os.path.basename(parent_dir).startswith('resume_doc_convert_'):
+                    try:
+                        os.rmdir(parent_dir)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+
+def _source_blocks_for_text(raw_text):
+    entry = _SOURCE_FIDELITY_REGISTRY.get(_source_key(raw_text), {})
+    return list(entry.get('blocks', []) or [])
+
+
+def _best_source_block_match(value, blocks, min_index=0, used=None):
+    """Return the best source block for a generated/extracted historical item."""
+    used = used or set()
+    target = _normalize_source_match(_strip_list_marker_only(value))
+    if not target:
+        return None, None
+
+    exact = []
+    fuzzy = []
+    for idx, block in enumerate(blocks):
+        if idx < min_index or idx in used:
+            continue
+        source_text = _strip_list_marker_only(block.get('text', ''))
+        source_norm = _normalize_source_match(source_text)
+        if not source_norm:
+            continue
+        if source_norm == target:
+            exact.append((idx, block))
+            continue
+        ratio = difflib.SequenceMatcher(None, target, source_norm).ratio()
+        # Only near-identical matches are eligible. The source text, not the model
+        # wording, is what will ultimately be emitted.
+        if ratio >= 0.985:
+            fuzzy.append((ratio, idx, block))
+
+    if exact:
+        return exact[0]
+    if fuzzy:
+        fuzzy.sort(key=lambda x: (-x[0], x[1]))
+        _, idx, block = fuzzy[0]
+        return idx, block
+    return None, None
+
+
+def _source_supports_display_value(value, blocks, allow_substring=True):
+    target = _normalize_source_match(value)
+    if not target:
+        return True
+    for block in blocks:
+        source = _normalize_source_match(block.get('text', ''))
+        if source == target:
+            return True
+        if allow_substring and len(target) >= 3 and target in source:
+            return True
+    return False
+
+
+def _certification_status_terms(text):
+    return set(re.findall(r"\b(?:in progress|pursuing|pending|expected|anticipated)\b", str(text or ''), flags=re.I))
+
+
+
+def _extract_years(value):
+    return re.findall(r"\b(?:19|20)\d{2}\b", str(value or ""))
+
+
+def _month_tokens(value):
+    text = str(value or "")
+    months = {
+        'jan': {'jan', 'january', '01', '1'},
+        'feb': {'feb', 'february', '02', '2'},
+        'mar': {'mar', 'march', '03', '3'},
+        'apr': {'apr', 'april', '04', '4'},
+        'may': {'may', '05', '5'},
+        'jun': {'jun', 'june', '06', '6'},
+        'jul': {'jul', 'july', '07', '7'},
+        'aug': {'aug', 'august', '08', '8'},
+        'sep': {'sep', 'sept', 'september', '09', '9'},
+        'oct': {'oct', 'october', '10'},
+        'nov': {'nov', 'november', '11'},
+        'dec': {'dec', 'december', '12'},
+    }
+    found = set()
+    low = text.casefold()
+    for key, aliases in months.items():
+        for alias in aliases:
+            if alias.isdigit():
+                if re.search(rf"(?<!\d){re.escape(alias)}\s*/\s*(?:19|20)\d{{2}}", low):
+                    found.add(key)
+                    break
+            elif re.search(rf"\b{re.escape(alias)}\b", low):
+                found.add(key)
+                break
+    return found
+
+
+
+def _initial_experience_search_start(blocks):
+    """Start role anchoring after an explicit professional-experience heading when present."""
+    for idx, block in enumerate(blocks):
+        text = str(block.get('text', '') or '').strip()
+        if _looks_like_section_heading(text) and re.search(
+            r"\b(?:professional experience|work experience|employment history|career history)\b",
+            text,
+            flags=re.I,
+        ):
+            return idx + 1
+    return 0
+
+
+def _find_role_anchor(role, blocks, start_index=0):
+    """Locate the START of a role in source order using company/title/date clues."""
+    title = _normalize_source_match(clean_job_title(role.get('Title', '')))
+    company = _normalize_source_match(clean_company_name(role.get('Company', '')))
+    years = set(_extract_years(role.get('Dates', '')))
+    start_index = max(0, start_index)
+
+    # Prefer an explicit company line when the corresponding title follows within
+    # the next few source blocks. This anchors the beginning of the role rather
+    # than the strongest individual metadata line and is important for condensed
+    # Additional Experience sections (Company on one line, Title on the next).
+    if company:
+        for idx in range(start_index, len(blocks)):
+            source = _normalize_source_match(blocks[idx].get('text', ''))
+            if not source or company not in source:
+                continue
+            lookahead_end = min(len(blocks), idx + 4)
+            if title and any(
+                title in _normalize_source_match(blocks[j].get('text', ''))
+                for j in range(idx, lookahead_end)
+            ):
+                return idx
+            if not title and years and any(
+                years & set(_extract_years(blocks[j].get('text', '')))
+                for j in range(idx, lookahead_end)
+            ):
+                return idx
+
+    candidates = []
+    for idx in range(start_index, len(blocks)):
+        source = _normalize_source_match(blocks[idx].get('text', ''))
+        if not source:
+            continue
+        score = 0
+        if title and title in source:
+            score += 8
+        if company and company in source:
+            score += 5
+        if years:
+            source_years = set(_extract_years(blocks[idx].get('text', '')))
+            score += 2 * len(years & source_years)
+        if score:
+            candidates.append((score, idx))
+
+    if not candidates:
+        return None
+    # When there is no explicit company+title start pair, use the strongest
+    # metadata evidence and break ties by source order.
+    candidates.sort(key=lambda x: (-x[0], x[1]))
+    best_score = candidates[0][0]
+    return min(idx for score, idx in candidates if score == best_score)
+
+
+def _likely_role_metadata_block(text, role):
+    source = _normalize_source_match(text)
+    if not source:
+        return True
+    company = _normalize_source_match(clean_company_name(role.get('Company', '')))
+    title = _normalize_source_match(clean_job_title(role.get('Title', '')))
+    dates = str(role.get('Dates', '') or '').strip()
+    if company and source == company:
+        return True
+    if title and (source == title or title in source and len(source) <= len(title) + 45):
+        return True
+    if dates and set(_extract_years(dates)) and set(_extract_years(dates)).issubset(set(_extract_years(text))):
+        # Date/title lines are metadata when they are short enough to be headers.
+        if len(str(text)) <= 160 and not re.search(r"[.!?]", str(text)):
+            return True
+    if re.match(r"^(?:environment|technologies)\s*:", str(text).strip(), flags=re.I):
+        return True
+    if _looks_like_section_heading(text):
+        return True
+    return False
+
+
+def _validate_role_date_precision(role, blocks, anchor_index, client_name, role_num):
+    dates = str(role.get('Dates', '') or '').strip()
+    if not dates or anchor_index is None:
+        return
+    nearby = ' '.join(
+        str(blocks[i].get('text', '') or '')
+        for i in range(max(0, anchor_index - 2), min(len(blocks), anchor_index + 4))
+    )
+    output_years = set(_extract_years(dates))
+    source_years = set(_extract_years(nearby))
+    if output_years and not output_years.issubset(source_years):
+        raise RuntimeError(
+            f"{client_name} source-fidelity check rejected unsupported date year(s) in role {role_num}: {dates}"
+        )
+    output_months = _month_tokens(dates)
+    source_months = _month_tokens(nearby)
+    if output_months and not output_months.issubset(source_months):
+        raise RuntimeError(
+            f"{client_name} source-fidelity check rejected increased date precision in role {role_num}: {dates}"
+        )
+
+
+
+def _source_certification_context(blocks):
+    """Return the certification section only, avoiding unrelated words like 'expected'."""
+    start = None
+    for idx, block in enumerate(blocks):
+        text = str(block.get('text', '') or '').strip()
+        if _looks_like_section_heading(text) and re.search(
+            r"\bcertifications?|certificates?\b", text, flags=re.I
+        ):
+            start = idx + 1
+            break
+    if start is None:
+        return ""
+
+    end = len(blocks)
+    for idx in range(start, len(blocks)):
+        text = str(blocks[idx].get('text', '') or '').strip()
+        if _looks_like_section_heading(text) and re.search(
+            r"\b(?:education|experience|skills|technical skills|awards?|references?)\b",
+            text,
+            flags=re.I,
+        ):
+            end = idx
+            break
+    return "\n".join(str(blocks[i].get('text', '') or '') for i in range(start, end))
+
+
+def _validate_certification_names(certs, raw_text, blocks, client_name):
+    if isinstance(certs, list):
+        items = [str(x).strip() for x in certs if str(x).strip()]
+    else:
+        # Certification extraction in the formatter intentionally emits a comma-separated
+        # display string. Validate each meaningful segment against source text.
+        items = [x.strip() for x in re.split(r"\s*[,;]\s*", str(certs or '')) if x.strip()]
+
+    for item in items:
+        base = re.sub(
+            r"\s*[-–—:]?\s*\b(?:in progress|pursuing|pending|expected|anticipated)\b.*$",
+            "",
+            item,
+            flags=re.I,
+        ).strip()
+        if len(_normalize_source_match(base)) < 3:
+            continue
+        if not _source_supports_display_value(base, blocks, allow_substring=True):
+            raise RuntimeError(
+                f"{client_name} source-fidelity check could not verify certification: {item}"
+            )
+
+
+
+def _experience_section_bounds(blocks, role_anchors):
+    """Return a conservative source interval containing professional experience."""
+    start = role_anchors[0] if role_anchors else 0
+    for idx, block in enumerate(blocks[: start + 1]):
+        text = str(block.get('text', '') or '').strip()
+        if _looks_like_section_heading(text) and re.search(
+            r"\b(?:professional experience|work experience|employment history|career history)\b",
+            text,
+            flags=re.I,
+        ):
+            start = idx + 1
+
+    end = len(blocks)
+    scan_from = (role_anchors[-1] + 1) if role_anchors else start
+    for idx in range(scan_from, len(blocks)):
+        text = str(blocks[idx].get('text', '') or '').strip()
+        if _looks_like_section_heading(text) and re.search(
+            r"\b(?:education|certifications?|skills|technical skills|awards?|references?)\b",
+            text,
+            flags=re.I,
+        ):
+            end = idx
+            break
+    return start, end
+
+
+def _validate_no_dated_roles_omitted(experience, blocks, role_anchors, client_name):
+    """
+    Detect obvious dated role headers in the professional-experience region that
+    were not represented by any extracted role. This catches whole-role omission,
+    including roles with no bullets.
+    """
+    if not experience or not role_anchors:
+        return
+    start, end = _experience_section_bounds(blocks, role_anchors)
+    represented = set()
+    for anchor in role_anchors:
+        represented.update(range(max(start, anchor - 2), min(end, anchor + 3)))
+
+    possible_missing = []
+    month = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|\d{1,2})"
+    endpoint = rf"(?:(?:{month})[ /-]+)?(?:19|20)\d{{2}}"
+    date_range = re.compile(
+        rf"{endpoint}\s*(?:[-–—]|\bto\b)\s*(?:{endpoint}|present|current)\s*$",
+        flags=re.I,
+    )
+    for idx in range(start, end):
+        block = blocks[idx]
+        text = str(block.get('text', '') or '').strip()
+        if not text or block.get('is_list') or len(text) > 220:
+            continue
+        if not date_range.search(text):
+            continue
+        if idx in represented:
+            continue
+        # Exclude lines that are clearly educational/certification context even if
+        # a nonstandard resume places them near experience.
+        if re.search(r"\b(?:degree|university|college|certified|certification)\b", text, flags=re.I):
+            continue
+        possible_missing.append(text)
+
+    if possible_missing:
+        raise RuntimeError(
+            f"{client_name} source-fidelity check detected dated experience role(s) "
+            f"that may have been omitted: " + ' | '.join(x[:150] for x in possible_missing[:3])
+        )
+
+
+
+def _additional_experience_ranges(blocks):
+    """Locate explicit undated/condensed experience sections for coverage checks."""
+    ranges = []
+    heading_re = re.compile(
+        r"\b(?:additional|earlier|prior|previous)\s+(?:professional\s+)?(?:experience|roles?|positions?)\b",
+        flags=re.I,
+    )
+    stop_re = re.compile(
+        r"\b(?:education|certifications?|certificates?|skills|technical skills|awards?|references?|projects?)\b",
+        flags=re.I,
+    )
+    for idx, block in enumerate(blocks):
+        text = str(block.get('text', '') or '').strip()
+        if not (_looks_like_section_heading(text) and heading_re.search(text)):
+            continue
+        end = len(blocks)
+        for j in range(idx + 1, len(blocks)):
+            nxt = str(blocks[j].get('text', '') or '').strip()
+            if _looks_like_section_heading(nxt) and stop_re.search(nxt):
+                end = j
+                break
+        ranges.append((idx + 1, end))
+    return ranges
+
+
+def _validate_additional_experience_coverage(experience, blocks, client_name):
+    """
+    Prevent silent omission of abbreviated/undated roles under explicit
+    Additional/Earlier Experience sections. Every substantive source block in
+    those sections must map to some extracted role field.
+    """
+    ranges = _additional_experience_ranges(blocks)
+    if not ranges:
+        return
+
+    represented = []
+    for role in experience:
+        if not isinstance(role, dict):
+            continue
+        for key in ('Company', 'Title', 'Dates', 'Environment', 'Responsible'):
+            value = str(role.get(key, '') or '').strip()
+            if value:
+                represented.append(_normalize_source_match(value))
+        bullets = role.get('Bullets', [])
+        if isinstance(bullets, str):
+            bullets = [x for x in bullets.split('\n') if str(x).strip()]
+        if isinstance(bullets, list):
+            represented.extend(
+                _normalize_source_match(_strip_list_marker_only(x))
+                for x in bullets
+                if str(x).strip()
+            )
+    represented = [x for x in represented if x]
+
+    missing = []
+    for start, end in ranges:
+        for idx in range(start, end):
+            text = str(blocks[idx].get('text', '') or '').strip()
+            if not text or _looks_like_section_heading(text):
+                continue
+            source_norm = _normalize_source_match(_strip_list_marker_only(text))
+            if len(source_norm) < 3:
+                continue
+            matched = any(
+                value == source_norm
+                or (len(value) >= 3 and value in source_norm)
+                or (len(source_norm) >= 8 and source_norm in value)
+                for value in represented
+            )
+            if not matched:
+                missing.append(text)
+
+    if missing:
+        raise RuntimeError(
+            f"{client_name} source-fidelity check detected Additional/Earlier Experience "
+            f"content that was not represented in the extracted work history: "
+            + ' | '.join(x[:150] for x in missing[:4])
+        )
+
+def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
+    """
+    Fail-closed historical-resume verification used by every client.
+
+    Historical source content is immutable. AI may classify/group it, but:
+    - Work-history bullets are restored from exact source blocks.
+    - Roles and bullets must remain in source order.
+    - High-confidence source bullet/paragraph coverage cannot be silently omitted.
+    - Company/title/school cleanup is retained but must remain source-supported.
+    - Certification names/status and employment-date precision cannot be invented.
+    """
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{client_name} extraction did not return a usable resume object.")
+
+    blocks = _source_blocks_for_text(raw_text)
+    if not blocks:
+        raise RuntimeError(
+            f"{client_name} source-fidelity verification could not access the parsed resume structure."
+        )
+
+    result = copy.deepcopy(data)
+
+    full_name = re.sub(r"\s+", " ", str(result.get('FullName', '') or '')).strip()
+    if full_name:
+        source_supported_name = _source_supports_display_value(
+            full_name,
+            blocks,
+            allow_substring=True,
+        )
+        if not source_supported_name:
+            registry_entry = _SOURCE_FIDELITY_REGISTRY.get(_source_key(raw_text), {})
+            source_filename = os.path.basename(str(registry_entry.get('file_path', '') or ''))
+            if _normalize_source_match(full_name) not in _normalize_source_match(source_filename):
+                raise RuntimeError(
+                    f"{client_name} source-fidelity check could not verify candidate name: {full_name}"
+                )
+        result['FullName'] = full_name
+
+    education = result.get('Education', [])
+    if isinstance(education, list):
+        for item in education:
+            if not isinstance(item, dict):
+                continue
+            school = clean_school(item.get('School', ''))
+            degree = str(item.get('Degree', '') or '').strip()
+            if school and not _source_supports_display_value(school, blocks):
+                raise RuntimeError(
+                    f"{client_name} source-fidelity check could not verify school name: {school}"
+                )
+            if degree and not _source_supports_display_value(degree, blocks):
+                # Degree text is sometimes split across adjacent Word runs/blocks. Allow
+                # near-exact support in the full raw text before failing.
+                if _normalize_source_match(degree) not in _normalize_source_match(raw_text):
+                    raise RuntimeError(
+                        f"{client_name} source-fidelity check could not verify degree: {degree}"
+                    )
+            item['School'] = school
+
+    experience = result.get('Experience', [])
+    if not isinstance(experience, list):
+        raise RuntimeError(f"{client_name} extraction returned an invalid Experience list.")
+
+    # Locate roles before bullet restoration so role order/date precision can be verified.
+    role_anchors = []
+    search_from = _initial_experience_search_start(blocks)
+    for role_num, role in enumerate(experience, start=1):
+        if not isinstance(role, dict):
+            raise RuntimeError(f"{client_name} extraction returned an invalid experience entry #{role_num}.")
+
+        company = clean_company_name(role.get('Company', ''))
+        title = clean_job_title(role.get('Title', ''))
+        if company and not _source_supports_display_value(company, blocks):
+            raise RuntimeError(
+                f"{client_name} source-fidelity check could not verify company for role {role_num}: {company}"
+            )
+        if title and not _source_supports_display_value(title, blocks):
+            raise RuntimeError(
+                f"{client_name} source-fidelity check could not verify job title for role {role_num}: {title}"
+            )
+        role['Company'] = company
+        role['Title'] = title
+
+        anchor = _find_role_anchor(role, blocks, start_index=search_from)
+        if anchor is None:
+            raise RuntimeError(
+                f"{client_name} source-fidelity check could not locate role {role_num} in source order "
+                f"({company} / {title})."
+            )
+        if role_anchors and anchor <= role_anchors[-1]:
+            raise RuntimeError(
+                f"{client_name} source-fidelity check detected work-history roles out of source order."
+            )
+        role_anchors.append(anchor)
+        search_from = anchor + 1
+        _validate_role_date_precision(role, blocks, anchor, client_name, role_num)
+
+    _validate_no_dated_roles_omitted(
+        experience,
+        blocks,
+        role_anchors,
+        client_name,
+    )
+    _validate_additional_experience_coverage(
+        experience,
+        blocks,
+        client_name,
+    )
+
+    global_min_index = 0
+    global_used = set()
+    matched_by_role = []
+
+    for role_num, role in enumerate(experience, start=1):
+        bullets = role.get('Bullets', [])
+        if isinstance(bullets, str):
+            bullets = [x for x in bullets.split('\n') if str(x).strip()]
+        if not isinstance(bullets, list):
+            bullets = []
+
+        restored = []
+        matched_indices = []
+        role_min = max(global_min_index, role_anchors[role_num - 1])
+        for bullet_num, bullet in enumerate(bullets, start=1):
+            candidate = _strip_list_marker_only(bullet)
+            if not candidate:
+                continue
+            idx, block = _best_source_block_match(
+                candidate,
+                blocks,
+                min_index=role_min,
+                used=global_used,
+            )
+            if block is None:
+                raise RuntimeError(
+                    f"{client_name} source-fidelity check rejected work-history bullet "
+                    f"{bullet_num} in role {role_num} because it was not a near-exact source item: "
+                    f"{candidate[:180]}"
+                )
+            exact_source = _strip_list_marker_only(block.get('text', ''))
+            restored.append(exact_source)
+            matched_indices.append(idx)
+            global_used.add(idx)
+            role_min = idx + 1
+            global_min_index = idx + 1
+
+        role['Bullets'] = restored
+
+        # Environment/Technologies is also historical source content. Restore it
+        # only from an explicit source line inside this role's source interval.
+        env_value = str(role.get('Environment', '') or '').strip()
+        if env_value:
+            env_clean = re.sub(
+                r"^(?:environment|technologies)\s*:\s*",
+                "",
+                env_value,
+                flags=re.I,
+            ).strip()
+            interval_end = (
+                role_anchors[role_num]
+                if role_num < len(role_anchors)
+                else len(blocks)
+            )
+            env_match = None
+            for env_idx in range(role_anchors[role_num - 1], interval_end):
+                source_env = str(blocks[env_idx].get('text', '') or '').strip()
+                match = re.match(
+                    r"^(?:environment|technologies)\s*:\s*(.+)$",
+                    source_env,
+                    flags=re.I,
+                )
+                if not match:
+                    continue
+                source_payload = match.group(1).strip()
+                if (
+                    _normalize_source_match(source_payload) == _normalize_source_match(env_clean)
+                    or difflib.SequenceMatcher(
+                        None,
+                        _normalize_source_match(source_payload),
+                        _normalize_source_match(env_clean),
+                    ).ratio() >= 0.985
+                ):
+                    env_match = source_payload
+                    break
+            if env_match is None:
+                raise RuntimeError(
+                    f"{client_name} source-fidelity check rejected unsupported Environment/Technologies "
+                    f"content in role {role_num}: {env_value[:180]}"
+                )
+            role['Environment'] = env_match
+        elif 'Environment' in role:
+            role['Environment'] = ''
+
+        # Peraton's template includes a derived "Responsible for" line. Keep it
+        # truthful by building it deterministically from the first exact source
+        # experience item instead of accepting AI-authored historical content.
+        if 'Responsible' in role:
+            role['Responsible'] = (
+                f"Responsible for: {restored[0]}" if restored else ""
+            )
+
+        matched_by_role.append(set(matched_indices))
+
+    # Coverage audit: within each detected role interval, every clearly structured
+    # list item must be represented. If the role has no list formatting at all,
+    # substantive body paragraphs are treated as the source items instead.
+    for role_idx, role in enumerate(experience):
+        start = role_anchors[role_idx] + 1
+        end = role_anchors[role_idx + 1] if role_idx + 1 < len(role_anchors) else len(blocks)
+
+        # Stop the last role at the next major non-experience section.
+        for idx in range(start, end):
+            text = blocks[idx].get('text', '')
+            if _looks_like_section_heading(text) and re.search(
+                r"\b(?:education|certifications?|skills|technical skills|awards?|references?|additional experience|earlier experience|professional experience)\b",
+                text,
+                flags=re.I,
+            ):
+                end = idx
+                break
+
+        interval = [
+            (idx, blocks[idx]) for idx in range(start, end)
+            if not _likely_role_metadata_block(blocks[idx].get('text', ''), role)
+        ]
+        list_items = [(idx, block) for idx, block in interval if block.get('is_list')]
+        expected = list_items
+
+        # When a role contains a narrative paragraph before list bullets, preserve it too.
+        if list_items:
+            first_list_idx = list_items[0][0]
+            narrative = [
+                (idx, block) for idx, block in interval
+                if idx < first_list_idx
+                and not block.get('is_list')
+                and len(str(block.get('text', '') or '').strip()) >= 25
+            ]
+            expected = narrative + list_items
+        else:
+            expected = [
+                (idx, block) for idx, block in interval
+                if len(str(block.get('text', '') or '').strip()) >= 25
+            ]
+
+        missing = [
+            _strip_list_marker_only(block.get('text', ''))
+            for idx, block in expected
+            if idx not in matched_by_role[role_idx]
+        ]
+        if missing:
+            preview = ' | '.join(x[:140] for x in missing[:3])
+            raise RuntimeError(
+                f"{client_name} source-fidelity check detected source work-history content "
+                f"that was omitted from role {role_idx + 1}: {preview}"
+            )
+
+    certs = result.get('Certifications', '')
+    cert_text = ', '.join(str(x) for x in certs) if isinstance(certs, list) else str(certs or '')
+    source_cert_context = _source_certification_context(blocks)
+    source_status_terms = _certification_status_terms(source_cert_context)
+    invented_status = _certification_status_terms(cert_text) - source_status_terms
+
+    # If the source has no unfinished-certification language at all, safely remove
+    # a model-added status rather than forcing the user to rerun. This directly
+    # prevents the Bette-style false "In Progress" regression.
+    if invented_status and not source_status_terms:
+        def strip_status(value):
+            return re.sub(
+                r"\s*[-–—:]?\s*\b(?:in progress|pursuing|pending|expected|anticipated)\b",
+                "",
+                str(value or ''),
+                flags=re.I,
+            ).strip(" ,-–—:")
+
+        if isinstance(certs, list):
+            certs = [strip_status(x) for x in certs if strip_status(x)]
+        else:
+            certs = ', '.join(
+                strip_status(x)
+                for x in re.split(r"\s*[,;]\s*", str(certs or ''))
+                if strip_status(x)
+            )
+        result['Certifications'] = certs
+        cert_text = ', '.join(str(x) for x in certs) if isinstance(certs, list) else str(certs or '')
+        invented_status = _certification_status_terms(cert_text) - source_status_terms
+
+    if invented_status:
+        raise RuntimeError(
+            f"{client_name} source-fidelity check rejected unsupported certification status: "
+            + ', '.join(sorted(invented_status))
+        )
+    _validate_certification_names(certs, raw_text, blocks, client_name)
+
+    result['Experience'] = experience
+    return result
 
 def repair_and_load_json(raw_text):
     text = raw_text.strip()
@@ -217,10 +1360,18 @@ AI_PROVIDER_OPENAI = "OpenAI / ChatGPT - GPT-6 Luna"
 OPENAI_MODEL_ID = "gpt-6-luna"
 OPENAI_REASONING_EFFORT = "medium"
 
+# Keep both provider implementations available, but hide provider selection from
+# end users for the current production build. Flip this to True later to restore
+# the Gemini/OpenAI A/B selector without rebuilding any provider logic.
+AI_PROVIDER_SELECTOR_ENABLED = False
+DEFAULT_AI_PROVIDER = AI_PROVIDER_OPENAI
+
 
 def get_selected_ai_provider():
-    """Return the globally selected AI provider, defaulting to v21 Gemini behavior."""
-    return st.session_state.get("global_ai_provider", AI_PROVIDER_GEMINI)
+    """Return the active AI provider, forcing the configured default when selection is hidden."""
+    if AI_PROVIDER_SELECTOR_ENABLED:
+        return st.session_state.get("global_ai_provider", DEFAULT_AI_PROVIDER)
+    return DEFAULT_AI_PROVIDER
 
 
 def using_openai_provider():
@@ -262,7 +1413,7 @@ def render_ai_api_configuration(scope_key):
             key=f"{scope_key}_gemini_api_key",
         )
         st.info("Paste your Gemini API key here to run the tool.")
-    st.caption("Primary model: Gemini 2.5 Flash (existing v21 retry path)")
+    st.caption("Primary model: Gemini 2.5 Flash | v23 source-fidelity safeguards enabled")
     return api_key
 
 
@@ -398,12 +1549,8 @@ def _ai_schema_from_template(value, path=()):
         if value:
             item_schema = _ai_schema_from_template(value[0], path + ("[]",))
         else:
-            # Existing prompts use empty arrays for either lists of strings
-            # (bullets/certifications) or Freddie BULLET_ORDER index lists.
-            if "BULLET_ORDER" in path:
-                item_schema = {"type": "integer"}
-            else:
-                item_schema = {"type": "string"}
+            # Existing formatter prompts use empty arrays for lists of strings.
+            item_schema = {"type": "string"}
         return {"type": "array", "items": item_schema}
 
     if isinstance(value, bool):
@@ -467,7 +1614,7 @@ class _AITextResponse:
 
 
 class _OpenAIModelsAdapter:
-    """Mimic the google-genai client.models.generate_content surface used in v21."""
+    """Mimic the google-genai client.models.generate_content surface used by client call sites."""
     def __init__(self, api_key):
         self.api_key = api_key
 
@@ -489,9 +1636,9 @@ def create_ai_client(api_key):
     """
     Return the original Gemini client or an OpenAI compatibility adapter.
 
-    Gemini behavior is intentionally unchanged from v21. OpenAI uses GPT-6 Luna
-    through Responses API Structured Outputs while preserving the exact same
-    client-specific prompts, validators, and downstream formatter logic.
+    Both providers share the same v23 source-fidelity ingestion, client-specific
+    prompts, validators, and downstream formatter logic. OpenAI uses GPT-6 Luna
+    through Responses API Structured Outputs.
     """
     if using_openai_provider():
         return _OpenAIClientAdapter(api_key)
@@ -1143,12 +2290,13 @@ def fannie_mae_app():
                     Return a valid JSON object ONLY.
 
                     RULES:
-                    1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
-                    2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line. (e.g., If the resume says "DUPONT, DELAWARE TCS", you must output exactly "DUPONT").
+                    1. Name: Pull from the top/header and preserve the source spelling/capitalization. If the name is completely missing or unreadable in the text, extract it from the provided FILENAME without inventing or correcting the name.
+                    2. Company Name Cleaning: Display only the primary end-client/employer name that is explicitly supported by the resume. Remove trailing location text. When the resume explicitly labels an End Client/Client separately from a staffing/vendor company, use that stated client name. Do NOT guess or invent an end-client when the source does not identify one.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - SOURCE FIDELITY: Bullets are extraction-only historical content. Preserve every substantive source bullet/experience paragraph in ORIGINAL ORDER. One source item must remain one output item. NEVER rewrite, improve grammar, summarize, merge, split, omit, add, or reorder work-history content. Return EVERY professional role shown in the source, including abbreviated or undated roles under Additional Experience, Earlier Experience, Prior Experience, or similar sections. If an abbreviated role has no source dates or bullets, keep Dates blank and Bullets empty rather than omitting the role.
                         - For 'Dates', preserve the date precision from the original resume. If a role lists only years, return only those years (for example, "2018 - 2020"). NEVER invent January, "01", or any other month. If month + year are present, preserve them; mixed-precision ranges must stay mixed.
-                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
+                        - For 'Title', preserve the actual job title wording. Remove only clearly extraneous employment-type suffixes (for example "- Contract", "(Contract)") or an explicit project/program/client qualifier (for example "Senior Developer - Starship Project" -> "Senior Developer"). Do NOT remove legitimate specialty/technology wording merely because the title contains a dash or parentheses.
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
 
@@ -1198,7 +2346,9 @@ def fannie_mae_app():
                             else:
                                 raise e
 
-                    name = data.get('FullName', '').title()
+                    data = enforce_source_fidelity(data, raw_text, 'Fannie Mae')
+
+                    name = str(data.get('FullName', '') or '').strip()
                     mapping = {
                         "FullName": name, "Location": Current_Location_City_ST, "Remote": Remote_or_Onsite,
                         "Certifications": data.get("Certifications", ""),
@@ -1217,10 +2367,8 @@ def fannie_mae_app():
                     exp = data.get('Experience', [])
                     for i in range(1, max(7, len(exp)) + 1):
                         if i <= len(exp):
-                            mapping[f"Company{i}"] = exp[i-1].get('Company', '')
-                            raw_title = exp[i-1].get('Title', '')
-                            clean_title = re.sub(r'\s*\(.*$', '', raw_title).strip()
-                            mapping[f"Title{i}"] = clean_title
+                            mapping[f"Company{i}"] = clean_company_name(exp[i-1].get('Company', ''))
+                            mapping[f"Title{i}"] = clean_job_title(exp[i-1].get('Title', ''))
                             mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
                             mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
                             mapping[f"Dates{i}"] = standardize_dates(exp[i-1].get('Dates', ''))
@@ -6169,11 +7317,6 @@ SKILLS TABLE:
   manager priority.
 - Prefer direct operational/repeated evidence over impressive but secondary work.
 
-BULLET ORDER:
-- Preserve the draft BULLET_ORDER unless a change is clearly needed for current
-  Freddie priorities.
-- Reorder only; never rewrite/omit/create work-history bullets.
-
 {error_section}
 
 STRUCTURED REQUISITION:
@@ -6218,10 +7361,7 @@ OUTPUT SCHEMA:
         {{"item": "", "evidence": ""}}
       ]
     }}
-  ],
-  "BULLET_ORDER": {{
-    "1": [], "2": [], "3": [], "4": [], "5": [], "6": [], "7": []
-  }}
+  ]
 }}
 """
 
@@ -6523,9 +7663,6 @@ def fred_finalize_grounded_tailoring(data):
     output = {
         "CANDIDATE_TITLE": fred_clean_generated_text((data or {}).get("CANDIDATE_TITLE", "")),
         "SUMMARY": "",
-        "BULLET_ORDER": (data or {}).get("BULLET_ORDER", {})
-        if isinstance((data or {}).get("BULLET_ORDER", {}), dict)
-        else {},
     }
 
     sentence_texts = []
@@ -7155,7 +8292,7 @@ def fred_clean_summary(summary, candidate_name):
     """
     Final deterministic cleanup for Freddie Mac summaries.
 
-    - Forces the candidate's name to use the same Title Case spelling
+    - Forces the candidate's name to use the same source spelling/capitalization
       extracted from the resume.
     - Removes/replaces recruiter-style phrases Gemini was explicitly
       instructed not to use.
@@ -7280,99 +8417,6 @@ def fred_ensure_secondary_jd_skill_coverage(
                 data[key] = ", ".join(details[:6])
 
     return data
-
-
-def fred_restore_source_bullet_boundaries(experience, raw_resume_text):
-    """Restore exact source bullet boundaries if extraction concatenates bullets."""
-    if not isinstance(experience, list):
-        return experience
-
-    source_lines = []
-    for line in str(raw_resume_text or "").splitlines():
-        clean = re.sub(r"\s+", " ", line).strip(" \t•·-*–—")
-        if len(clean) < 40:
-            continue
-        source_lines.append(clean)
-
-    def norm(value):
-        value = str(value or "").replace("‑", "-").replace("–", "-").replace("—", "-")
-        return re.sub(r"\s+", " ", value).strip().casefold()
-
-    normalized_sources = [(src, norm(src)) for src in source_lines]
-    restored = []
-    for role in experience:
-        role_copy = dict(role) if isinstance(role, dict) else role
-        if not isinstance(role_copy, dict):
-            restored.append(role_copy)
-            continue
-
-        new_bullets = []
-        for bullet in role_copy.get("Bullets", []) or []:
-            bullet_text = re.sub(r"\s+", " ", str(bullet or "")).strip()
-            bullet_norm = norm(bullet_text)
-            matches = []
-            for src, src_norm in normalized_sources:
-                pos = bullet_norm.find(src_norm)
-                if pos >= 0:
-                    matches.append((pos, src))
-            matches.sort(key=lambda x: x[0])
-
-            unique = []
-            seen_src = set()
-            for pos, src in matches:
-                k = norm(src)
-                if k not in seen_src:
-                    unique.append((pos, src))
-                    seen_src.add(k)
-
-            if len(unique) >= 2:
-                new_bullets.extend(src for _, src in unique)
-            else:
-                new_bullets.append(bullet_text)
-
-        role_copy["Bullets"] = new_bullets
-        restored.append(role_copy)
-
-    return restored
-
-
-def fred_safe_reorder_bullets(bullets, requested_order):
-    """
-    Reorder existing bullets ONLY.
-
-    Gemini returns zero-based indexes. This function refuses to manufacture,
-    delete, or rewrite any bullet. Invalid indexes are ignored and every
-    unranked original bullet is appended in its original order.
-    """
-    if not isinstance(bullets, list):
-        return bullets
-
-    if not isinstance(requested_order, list):
-        return bullets
-
-    valid_order = []
-    seen = set()
-
-    for value in requested_order:
-        try:
-            idx = int(value)
-        except (TypeError, ValueError):
-            continue
-
-        if 0 <= idx < len(bullets) and idx not in seen:
-            valid_order.append(idx)
-            seen.add(idx)
-
-    if not valid_order:
-        return bullets
-
-    # Preserve every original bullet.
-    valid_order.extend(
-        idx for idx in range(len(bullets))
-        if idx not in seen
-    )
-
-    return [bullets[idx] for idx in valid_order]
 
 
 def fred_remove_table(table):
@@ -8595,9 +9639,8 @@ CRITICAL:
 RULES:
 
 1. NAME
-- Pull from the resume header.
-- Title Case.
-- If completely missing/unreadable, use the filename if possible.
+- Pull from the resume header and preserve the source spelling/capitalization.
+- If completely missing/unreadable, use the filename if possible without inventing or correcting the name.
 
 2. COMPANY
 - Extract the primary END-CLIENT / employer name actually represented by the
@@ -8611,12 +9654,13 @@ RULES:
 - Extract school and degree exactly enough to preserve meaning.
 
 4. EXPERIENCE
-Return EVERY dated professional role shown anywhere in the resume, including
-condensed or abbreviated entries under headings such as "Earlier Experience",
-"Additional Experience", or similar sections. Do not stop after the first seven
-roles. Older abbreviated roles may have an empty Bullets array and blank
-Environment; they must still be returned when Company/Title/Dates are present so
-total career experience can be calculated correctly.
+Return EVERY professional role shown anywhere in the resume, including dated,
+undated, condensed, or abbreviated entries under headings such as "Earlier
+Experience", "Additional Experience", "Prior Experience", or similar sections.
+Do not stop after the first seven roles. Older abbreviated roles may have blank
+Dates, an empty Bullets array, and blank Environment; they must still be returned
+when the source identifies a Company and/or Title. Never invent missing dates or
+bullets.
 
 For each role return:
 - Company
@@ -8714,12 +9758,14 @@ ORIGINAL RESUME:
                     extraction_prompt,
                 )
 
+                data = enforce_source_fidelity(data, raw_text, 'Freddie Mac')
+
                 name = str(
                     data.get(
                         "FullName",
                         "",
                     )
-                ).strip().title()
+                ).strip()
 
                 certifications = str(
                     data.get(
@@ -8749,13 +9795,6 @@ ORIGINAL RESUME:
                     list,
                 ):
                     experience = []
-
-                # Deterministically undo accidental concatenation of separate
-                # original bullets before any relevance reordering occurs.
-                experience = fred_restore_source_bullet_boundaries(
-                    experience,
-                    raw_text,
-                )
 
                 # Normalize ALL extracted dated roles first. Older abbreviated
                 # "Earlier Experience" entries are retained here for accurate
@@ -8792,33 +9831,19 @@ ORIGINAL RESUME:
                         bullets = []
 
                     bullets = [
-                        re.sub(
-                            r"^[\s\-\•\*\d\.\)]+",
-                            "",
-                            str(x),
-                        ).strip()
+                        _strip_list_marker_only(x)
                         for x in bullets
                         if str(x).strip()
                     ]
 
                     normalized_experience.append(
                         {
-                            "Company": str(
-                                role.get(
-                                    "Company",
-                                    "",
-                                )
-                            ).strip(),
-                            "Title": re.sub(
-                                r"\s*\(.*$",
-                                "",
-                                str(
-                                    role.get(
-                                        "Title",
-                                        "",
-                                    )
-                                ),
-                            ).strip(),
+                            "Company": clean_company_name(
+                                role.get("Company", "")
+                            ),
+                            "Title": clean_job_title(
+                                role.get("Title", "")
+                            ),
                             "Bullets": bullets,
                             "Environment": str(
                                 role.get(
@@ -9828,33 +10853,14 @@ Avoid overweighting:
 - Impressive but irrelevant projects.
 
 ======================================================================
-SAFE WORK-HISTORY BULLET PRIORITIZATION
+WORK-HISTORY SOURCE FIDELITY
 ======================================================================
 
-You are NOT allowed to rewrite the work-history bullets.
+The historical work experience is immutable source content. Do NOT rank, reorder,
+rewrite, omit, merge, split, summarize, or create work-history bullets. Tailoring
+must occur only in CANDIDATE_TITLE, SUMMARY, and SKILLS.
 
-Instead, for each role, rank the EXISTING ORIGINAL BULLETS by relevance to
-this Freddie requisition.
-
-Return zero-based bullet indexes.
-
-Example:
-If a role has 4 bullets and bullets 2, 0, 3, 1 are the best order:
-[2, 0, 3, 1]
-
-Rules:
-- Do NOT omit bullets.
-- Do NOT create bullets.
-- Do NOT merge bullets.
-- Do NOT rewrite bullets.
-- Rank only the existing indexes.
-- Current hiring-manager priorities outrank merely de-emphasized JD artifacts.
-  A truthful de-emphasized item may remain visible for MSP/JD coverage, but do
-  not move that bullet ahead of stronger bullets proving current manager priorities.
-- If the original order is already best, return the original indexes.
-- If a role has no bullets, return [].
-
-STRUCTURED ORIGINAL EXPERIENCE:
+STRUCTURED ORIGINAL EXPERIENCE (READ-ONLY EVIDENCE):
 {structured_exp}
 
 ======================================================================
@@ -9873,16 +10879,7 @@ Return ONLY:
   "SKILL3": "",
   "SKILLDETAILS3": "",
   "SKILL4": "",
-  "SKILLDETAILS4": "",
-  "BULLET_ORDER": {{
-    "1": [],
-    "2": [],
-    "3": [],
-    "4": [],
-    "5": [],
-    "6": [],
-    "7": []
-  }}
+  "SKILLDETAILS4": ""
 }}
 
 ======================================================================
@@ -10061,41 +11058,8 @@ FULL ORIGINAL RESUME
                         "candidate Summary."
                     )
 
-                # ====================================================
-                # APPLY SAFE BULLET REORDERING
-                # ====================================================
-
-                bullet_orders = summary_data.get(
-                    "BULLET_ORDER",
-                    {},
-                )
-
-                if not isinstance(
-                    bullet_orders,
-                    dict,
-                ):
-                    bullet_orders = {}
-
-                for idx, role in enumerate(
-                    experience,
-                    start=1,
-                ):
-                    original_bullets = role.get(
-                        "Bullets",
-                        [],
-                    )
-
-                    requested_order = bullet_orders.get(
-                        str(idx),
-                        [],
-                    )
-
-                    role["Bullets"] = (
-                        fred_safe_reorder_bullets(
-                            original_bullets,
-                            requested_order,
-                        )
-                    )
+                # Work-history bullets remain in exact source order in v23.
+                # Tailoring is confined to Summary/Skills/VNDLY fields.
 
                 # ====================================================
                 # FREDDIE SKILLS TABLE
@@ -10278,18 +11242,12 @@ FULL ORIGINAL RESUME
                     if i <= len(experience):
                         role = experience[i - 1]
 
-                        mapping[f"Company{i}"] = (
-                            role.get(
-                                "Company",
-                                "",
-                            )
+                        mapping[f"Company{i}"] = clean_company_name(
+                            role.get("Company", "")
                         )
 
-                        mapping[f"Title{i}"] = (
-                            role.get(
-                                "Title",
-                                "",
-                            )
+                        mapping[f"Title{i}"] = clean_job_title(
+                            role.get("Title", "")
                         )
 
                         mapping[f"Bullets{i}"] = clean_bullets(
@@ -10560,12 +11518,13 @@ def peraton_app():
                     Return a valid JSON object ONLY.
 
                     RULES:
-                    1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
-                    2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
+                    1. Name: Pull from the top/header and preserve the source spelling/capitalization. If the name is completely missing or unreadable in the text, extract it from the provided FILENAME without inventing or correcting the name.
+                    2. Company Name Cleaning: Display only the primary end-client/employer name that is explicitly supported by the resume. Remove trailing location text. When the resume explicitly labels an End Client/Client separately from a staffing/vendor company, use that stated client name. Do NOT guess or invent an end-client when the source does not identify one.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Responsible, Bullets (LIST), Environment (String, optional), Dates.
-                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
-                        - For 'Responsible', write exactly 1 sentence summarizing what the candidate was responsible for at this specific job, based on their bullets. Do NOT use the candidate's name or pronouns (he/she). Start the sentence with the exact words "Responsible for ".
+                        - SOURCE FIDELITY: Bullets are extraction-only historical content. Preserve every substantive source bullet/experience paragraph in ORIGINAL ORDER. One source item must remain one output item. NEVER rewrite, improve grammar, summarize, merge, split, omit, add, or reorder work-history content. Return EVERY professional role shown in the source, including abbreviated or undated roles under Additional Experience, Earlier Experience, Prior Experience, or similar sections. If an abbreviated role has no source dates or bullets, keep Dates blank and Bullets empty rather than omitting the role.
+                        - For 'Title', preserve the actual job title wording. Remove only clearly extraneous employment-type suffixes or an explicit project/program/client qualifier. Do NOT remove legitimate specialty/technology wording merely because the title contains a dash or parentheses.
+                        - For 'Responsible', return "". v23 creates this template-specific line deterministically from verified source work-history content after extraction so no new historical claim can be invented.
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role.
                         - For 'Dates', preserve the date precision actually shown on the original resume. If month + year are shown, format as "MM/YYYY to MM/YYYY" (or "MM/YYYY to Present"). If ONLY years are shown, preserve them as "YYYY to YYYY" (or "YYYY to Present"). NEVER invent January, "01", or any other month when the source provides only a year. Mixed-precision dates must remain mixed rather than filling in a missing month.
                     5. Certifications: Extract active certifications into an ARRAY of strings. Do not include classes or courses taken. Keep it strictly to the certification name.
@@ -10616,7 +11575,9 @@ def peraton_app():
                             else:
                                 raise e
 
-                    name = data.get('FullName', '').title().strip()
+                    data = enforce_source_fidelity(data, raw_text, 'Peraton')
+
+                    name = str(data.get('FullName', '') or '').strip()
                     name_parts = name.split(' ', 1)
                     first_name = name_parts[0] if len(name_parts) > 0 else ""
                     last_name = name_parts[1] if len(name_parts) > 1 else ""
@@ -10646,10 +11607,8 @@ def peraton_app():
                     exp = data.get('Experience', [])
                     for i in range(1, max(7, len(exp)) + 1):
                         if i <= len(exp):
-                            mapping[f"Company{i}"] = exp[i-1].get('Company', '')
-                            raw_title = exp[i-1].get('Title', '')
-                            clean_title = re.sub(r'\s*\(.*$', '', raw_title).strip()
-                            mapping[f"Title{i}"] = clean_title
+                            mapping[f"Company{i}"] = clean_company_name(exp[i-1].get('Company', ''))
+                            mapping[f"Title{i}"] = clean_job_title(exp[i-1].get('Title', ''))
                             mapping[f"RESPONSIBLE{i}"] = exp[i-1].get('Responsible', '')
                             mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
                             mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
@@ -10922,12 +11881,13 @@ def capital_one_app():
                     Return a valid JSON object ONLY.
 
                     RULES:
-                    1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
-                    2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
+                    1. Name: Pull from the top/header and preserve the source spelling/capitalization. If the name is completely missing or unreadable in the text, extract it from the provided FILENAME without inventing or correcting the name.
+                    2. Company Name Cleaning: Display only the primary end-client/employer name that is explicitly supported by the resume. Remove trailing location text. When the resume explicitly labels an End Client/Client separately from a staffing/vendor company, use that stated client name. Do NOT guess or invent an end-client when the source does not identify one.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - SOURCE FIDELITY: Bullets are extraction-only historical content. Preserve every substantive source bullet/experience paragraph in ORIGINAL ORDER. One source item must remain one output item. NEVER rewrite, improve grammar, summarize, merge, split, omit, add, or reorder work-history content. Return EVERY professional role shown in the source, including abbreviated or undated roles under Additional Experience, Earlier Experience, Prior Experience, or similar sections. If an abbreviated role has no source dates or bullets, keep Dates blank and Bullets empty rather than omitting the role.
                         - For 'Dates', preserve the date precision from the original resume. If a role lists only years, return only those years (for example, "2018 - 2020"). NEVER invent January, "01", or any other month. If month + year are present, preserve them; mixed-precision ranges must stay mixed.
-                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
+                        - For 'Title', preserve the actual job title wording. Remove only clearly extraneous employment-type suffixes (for example "- Contract", "(Contract)") or an explicit project/program/client qualifier (for example "Senior Developer - Starship Project" -> "Senior Developer"). Do NOT remove legitimate specialty/technology wording merely because the title contains a dash or parentheses.
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
 
@@ -10977,7 +11937,9 @@ def capital_one_app():
                             else:
                                 raise e
 
-                    name = data.get('FullName', '').title()
+                    data = enforce_source_fidelity(data, raw_text, 'Capital One')
+
+                    name = str(data.get('FullName', '') or '').strip()
                     
                     mapping = {
                         "FullName": name, "Location": Current_Location_City_ST, "Remote": remote_val,
@@ -10999,10 +11961,8 @@ def capital_one_app():
                     exp = data.get('Experience', [])
                     for i in range(1, max(7, len(exp)) + 1):
                         if i <= len(exp):
-                            mapping[f"Company{i}"] = exp[i-1].get('Company', '')
-                            raw_title = exp[i-1].get('Title', '')
-                            clean_title = re.sub(r'\s*\(.*$', '', raw_title).strip()
-                            mapping[f"Title{i}"] = clean_title
+                            mapping[f"Company{i}"] = clean_company_name(exp[i-1].get('Company', ''))
+                            mapping[f"Title{i}"] = clean_job_title(exp[i-1].get('Title', ''))
                             mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
                             mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
                             mapping[f"Dates{i}"] = standardize_dates(exp[i-1].get('Dates', ''))
@@ -11294,12 +12254,13 @@ def adusa_app():
                     Return a valid JSON object ONLY.
 
                     RULES:
-                    1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
-                    2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
+                    1. Name: Pull from the top/header and preserve the source spelling/capitalization. If the name is completely missing or unreadable in the text, extract it from the provided FILENAME without inventing or correcting the name.
+                    2. Company Name Cleaning: Display only the primary end-client/employer name that is explicitly supported by the resume. Remove trailing location text. When the resume explicitly labels an End Client/Client separately from a staffing/vendor company, use that stated client name. Do NOT guess or invent an end-client when the source does not identify one.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - SOURCE FIDELITY: Bullets are extraction-only historical content. Preserve every substantive source bullet/experience paragraph in ORIGINAL ORDER. One source item must remain one output item. NEVER rewrite, improve grammar, summarize, merge, split, omit, add, or reorder work-history content. Return EVERY professional role shown in the source, including abbreviated or undated roles under Additional Experience, Earlier Experience, Prior Experience, or similar sections. If an abbreviated role has no source dates or bullets, keep Dates blank and Bullets empty rather than omitting the role.
                         - For 'Dates', preserve the date precision from the original resume. If a role lists only years, return only those years (for example, "2018 - 2020"). NEVER invent January, "01", or any other month. If month + year are present, preserve them; mixed-precision ranges must stay mixed.
-                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
+                        - For 'Title', preserve the actual job title wording. Remove only clearly extraneous employment-type suffixes (for example "- Contract", "(Contract)") or an explicit project/program/client qualifier (for example "Senior Developer - Starship Project" -> "Senior Developer"). Do NOT remove legitimate specialty/technology wording merely because the title contains a dash or parentheses.
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
 
@@ -11349,7 +12310,9 @@ def adusa_app():
                             else:
                                 raise e
 
-                    name = data.get('FullName', '').title()
+                    data = enforce_source_fidelity(data, raw_text, 'ADUSA')
+
+                    name = str(data.get('FullName', '') or '').strip()
                     
                     mapping = {
                         "FullName": name, "Location": Current_Location_City_ST, "Remote": remote_val,
@@ -11371,10 +12334,8 @@ def adusa_app():
                     exp = data.get('Experience', [])
                     for i in range(1, max(7, len(exp)) + 1):
                         if i <= len(exp):
-                            mapping[f"Company{i}"] = exp[i-1].get('Company', '')
-                            raw_title = exp[i-1].get('Title', '')
-                            clean_title = re.sub(r'\s*\(.*$', '', raw_title).strip()
-                            mapping[f"Title{i}"] = clean_title
+                            mapping[f"Company{i}"] = clean_company_name(exp[i-1].get('Company', ''))
+                            mapping[f"Title{i}"] = clean_job_title(exp[i-1].get('Title', ''))
                             mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
                             mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
                             mapping[f"Dates{i}"] = standardize_dates(exp[i-1].get('Dates', ''))
@@ -11641,12 +12602,13 @@ def cbre_app():
                     Return a valid JSON object ONLY.
 
                     RULES:
-                    1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
-                    2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
+                    1. Name: Pull from the top/header and preserve the source spelling/capitalization. If the name is completely missing or unreadable in the text, extract it from the provided FILENAME without inventing or correcting the name.
+                    2. Company Name Cleaning: Display only the primary end-client/employer name that is explicitly supported by the resume. Remove trailing location text. When the resume explicitly labels an End Client/Client separately from a staffing/vendor company, use that stated client name. Do NOT guess or invent an end-client when the source does not identify one.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - SOURCE FIDELITY: Bullets are extraction-only historical content. Preserve every substantive source bullet/experience paragraph in ORIGINAL ORDER. One source item must remain one output item. NEVER rewrite, improve grammar, summarize, merge, split, omit, add, or reorder work-history content. Return EVERY professional role shown in the source, including abbreviated or undated roles under Additional Experience, Earlier Experience, Prior Experience, or similar sections. If an abbreviated role has no source dates or bullets, keep Dates blank and Bullets empty rather than omitting the role.
                         - For 'Dates', preserve the date precision from the original resume. If a role lists only years, return only those years (for example, "2018 - 2020"). NEVER invent January, "01", or any other month. If month + year are present, preserve them; mixed-precision ranges must stay mixed.
-                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
+                        - For 'Title', preserve the actual job title wording. Remove only clearly extraneous employment-type suffixes (for example "- Contract", "(Contract)") or an explicit project/program/client qualifier (for example "Senior Developer - Starship Project" -> "Senior Developer"). Do NOT remove legitimate specialty/technology wording merely because the title contains a dash or parentheses.
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
 
@@ -11696,7 +12658,9 @@ def cbre_app():
                             else:
                                 raise e
 
-                    name = data.get('FullName', '').title()
+                    data = enforce_source_fidelity(data, raw_text, 'CBRE')
+
+                    name = str(data.get('FullName', '') or '').strip()
                     
                     mapping = {
                         "FullName": name, "Location": Current_Location_City_ST, "Remote": remote_val,
@@ -11718,10 +12682,8 @@ def cbre_app():
                     exp = data.get('Experience', [])
                     for i in range(1, max(7, len(exp)) + 1):
                         if i <= len(exp):
-                            mapping[f"Company{i}"] = exp[i-1].get('Company', '')
-                            raw_title = exp[i-1].get('Title', '')
-                            clean_title = re.sub(r'\s*\(.*$', '', raw_title).strip()
-                            mapping[f"Title{i}"] = clean_title
+                            mapping[f"Company{i}"] = clean_company_name(exp[i-1].get('Company', ''))
+                            mapping[f"Title{i}"] = clean_job_title(exp[i-1].get('Title', ''))
                             mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
                             mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
                             mapping[f"Dates{i}"] = standardize_dates(exp[i-1].get('Dates', ''))
@@ -11992,12 +12954,13 @@ def bnsf_app():
                     Return a valid JSON object ONLY.
 
                     RULES:
-                    1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
-                    2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
+                    1. Name: Pull from the top/header and preserve the source spelling/capitalization. If the name is completely missing or unreadable in the text, extract it from the provided FILENAME without inventing or correcting the name.
+                    2. Company Name Cleaning: Display only the primary end-client/employer name that is explicitly supported by the resume. Remove trailing location text. When the resume explicitly labels an End Client/Client separately from a staffing/vendor company, use that stated client name. Do NOT guess or invent an end-client when the source does not identify one.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - SOURCE FIDELITY: Bullets are extraction-only historical content. Preserve every substantive source bullet/experience paragraph in ORIGINAL ORDER. One source item must remain one output item. NEVER rewrite, improve grammar, summarize, merge, split, omit, add, or reorder work-history content. Return EVERY professional role shown in the source, including abbreviated or undated roles under Additional Experience, Earlier Experience, Prior Experience, or similar sections. If an abbreviated role has no source dates or bullets, keep Dates blank and Bullets empty rather than omitting the role.
                         - For 'Dates', preserve the date precision from the original resume. If a role lists only years, return only those years (for example, "2018 - 2020"). NEVER invent January, "01", or any other month. If month + year are present, preserve them; mixed-precision ranges must stay mixed.
-                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
+                        - For 'Title', preserve the actual job title wording. Remove only clearly extraneous employment-type suffixes (for example "- Contract", "(Contract)") or an explicit project/program/client qualifier (for example "Senior Developer - Starship Project" -> "Senior Developer"). Do NOT remove legitimate specialty/technology wording merely because the title contains a dash or parentheses.
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
 
@@ -12047,7 +13010,9 @@ def bnsf_app():
                             else:
                                 raise e
 
-                    name = data.get('FullName', '').title()
+                    data = enforce_source_fidelity(data, raw_text, 'BNSF')
+
+                    name = str(data.get('FullName', '') or '').strip()
                     
                     mapping = {
                         "FullName": name, "Location": Current_Location_City_ST, "Remote": remote_val,
@@ -12070,10 +13035,8 @@ def bnsf_app():
                     exp = data.get('Experience', [])
                     for i in range(1, max(7, len(exp)) + 1):
                         if i <= len(exp):
-                            mapping[f"Company{i}"] = exp[i-1].get('Company', '')
-                            raw_title = exp[i-1].get('Title', '')
-                            clean_title = re.sub(r'\s*\(.*$', '', raw_title).strip()
-                            mapping[f"Title{i}"] = clean_title
+                            mapping[f"Company{i}"] = clean_company_name(exp[i-1].get('Company', ''))
+                            mapping[f"Title{i}"] = clean_job_title(exp[i-1].get('Title', ''))
                             mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
                             mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
                             mapping[f"Dates{i}"] = standardize_dates(exp[i-1].get('Dates', ''))
@@ -12328,15 +13291,17 @@ def dallas_generic_app():
                     Return a valid JSON object ONLY.
 
                     RULES:
-                    1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
-                    2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors (e.g., "TCS", "Cognizant") that share the same line.
+                    1. Name: Pull from the top/header and preserve the source spelling/capitalization. If the name is completely missing or unreadable in the text, extract it from the provided FILENAME without inventing or correcting the name.
+                    2. Company Name Cleaning: Display only the primary end-client/employer name that is explicitly supported by the resume. Remove trailing location text. When the resume explicitly labels an End Client/Client separately from a staffing/vendor company, use that stated client name. Do NOT guess or invent an end-client when the source does not identify one.
                     3. Education: Extract School, Degree, and DegreeStatus.
                         - DegreeStatus: Evaluate if the degree is completed or in progress.
-                        - Return "Yes" if the resume indicates the degree is finished.
+                        - Return "Yes" ONLY if the resume explicitly indicates the degree is finished or gives a past graduation/completion date.
                         - Return "Pursuing" if the resume indicates ongoing study, contains the word "Pursuing", "In-progress", or lists a graduation date in the future (relative to October 2026).
+                        - If completion cannot be established from the resume, return "". Never guess completion.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - SOURCE FIDELITY: Bullets are extraction-only historical content. Preserve every substantive source bullet/experience paragraph in ORIGINAL ORDER. One source item must remain one output item. NEVER rewrite, improve grammar, summarize, merge, split, omit, add, or reorder work-history content. Return EVERY professional role shown in the source, including abbreviated or undated roles under Additional Experience, Earlier Experience, Prior Experience, or similar sections. If an abbreviated role has no source dates or bullets, keep Dates blank and Bullets empty rather than omitting the role.
                         - For 'Dates', preserve the date precision from the original resume. If a role lists only years, return only those years (for example, "2018 - 2020"). NEVER invent January, "01", or any other month. If month + year are present, preserve them; mixed-precision ranges must stay mixed.
-                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title (e.g., remove '- Contract', '(Contract)', or '- Consultant').
+                        - For 'Title', preserve the actual job title wording. Remove only clearly extraneous employment-type suffixes (for example "- Contract", "(Contract)") or an explicit project/program/client qualifier (for example "Senior Developer - Starship Project" -> "Senior Developer"). Do NOT remove legitimate specialty/technology wording merely because the title contains a dash or parentheses.
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
 
@@ -12344,7 +13309,7 @@ def dallas_generic_app():
                     {{
                         "FullName": "",
                         "Certifications": "",
-                        "Education": [{{"School": "", "Degree": "", "DegreeStatus": "Yes"}}],
+                        "Education": [{{"School": "", "Degree": "", "DegreeStatus": ""}}],
                         "Experience": [{{"Company": "", "Title": "", "Bullets": [], "Environment": "", "Dates": ""}}]
                     }}
 
@@ -12386,7 +13351,9 @@ def dallas_generic_app():
                             else:
                                 raise e
 
-                    name = data.get('FullName', '').title()
+                    data = enforce_source_fidelity(data, raw_text, 'Dallas Generic')
+
+                    name = str(data.get('FullName', '') or '').strip()
                     
                     mapping = {
                         "FullName": name, "Location": Current_Location_City_ST, "Remote": remote_val,
@@ -12404,15 +13371,13 @@ def dallas_generic_app():
                     for i in range(1, 4):
                         mapping[f"School{i}"] = clean_school(edu[i-1].get('School', '')) if i <= len(edu) else ""
                         mapping[f"Degree{i}"] = edu[i-1].get('Degree', '') if i <= len(edu) else ""
-                        mapping[f"DegreeStatus{i}"] = edu[i-1].get('DegreeStatus', 'Yes') if i <= len(edu) else ""
+                        mapping[f"DegreeStatus{i}"] = edu[i-1].get('DegreeStatus', '') if i <= len(edu) else ""
 
                     exp = data.get('Experience', [])
                     for i in range(1, max(7, len(exp)) + 1):
                         if i <= len(exp):
-                            mapping[f"Company{i}"] = exp[i-1].get('Company', '')
-                            raw_title = exp[i-1].get('Title', '')
-                            clean_title = re.sub(r'\s*\(.*$', '', raw_title).strip()
-                            mapping[f"Title{i}"] = clean_title
+                            mapping[f"Company{i}"] = clean_company_name(exp[i-1].get('Company', ''))
+                            mapping[f"Title{i}"] = clean_job_title(exp[i-1].get('Title', ''))
                             mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
                             mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
                             mapping[f"Dates{i}"] = standardize_dates(exp[i-1].get('Dates', ''))
@@ -12736,23 +13701,56 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
         return element
     # ----------------------------------
 
-    # 3. Extract the "Rest of Resume"
-    body_elements = orig_doc._body._body
-    start_copying = False
+    # 3. Extract the immutable "Rest of Resume" in original XML order.
+    # Prefer a known skills/experience section marker. If the source uses a
+    # different heading, fall back to the first verified Company1/Title1 anchor.
+    body_elements = list(orig_doc._body._body)
     elements_to_copy = []
+    start_index = None
 
-    for element in body_elements:
+    preferred_markers = [
+        "technical skills",
+        "core competencies",
+        "skills",
+        "professional experience",
+        "work experience",
+        "employment history",
+        "experience",
+    ]
+    company1 = _normalize_source_match(mapping.get("Company1", ""))
+    title1 = _normalize_source_match(mapping.get("Title1", ""))
+
+    for idx, element in enumerate(body_elements):
         try:
-            text = "".join(element.itertext())
+            text = " ".join(t.strip() for t in element.itertext() if str(t).strip())
         except Exception:
             text = ""
-            
-        if "Links:" in text or "Technical Skills" in text:
-            start_copying = True
-        
-        if start_copying:
-            clean_el = clean_xml_element(deepcopy(element))
-            elements_to_copy.append(clean_el)
+        normalized = _normalize_source_match(text)
+        if not normalized:
+            continue
+
+        if any(marker in normalized for marker in preferred_markers):
+            start_index = idx
+            break
+
+        if (company1 and company1 in normalized) or (title1 and title1 in normalized):
+            start_index = idx
+            break
+
+    if start_index is None:
+        raise RuntimeError(
+            "Deloitte source-fidelity check could not locate the beginning of the original "
+            "resume body. No document was created because silently omitting work history is unsafe."
+        )
+
+    for element in body_elements[start_index:]:
+        clean_el = clean_xml_element(deepcopy(element))
+        elements_to_copy.append(clean_el)
+
+    if not elements_to_copy:
+        raise RuntimeError(
+            "Deloitte source-fidelity check found no original resume body content to copy."
+        )
 
     # 4. Insert extracted elements perfectly at {{RESUME_BODY}}
     for p in doc.paragraphs:
@@ -12920,31 +13918,16 @@ def deloitte_app():
                     with open(resume_path, "wb") as f:
                         f.write(resume_file.getbuffer())
 
-                    # Deloitte later reopens the source resume with python-docx
-                    # so it can copy the original resume content/XML into the
-                    # Deloitte template. PDFs therefore need a temporary DOCX
-                    # version for that step.
+                    # Deloitte later reopens a Word-compatible source so it can copy
+                    # the candidate's original resume XML into the client template.
+                    # Use the same high-fidelity conversion policy as universal ingestion.
                     resume_docx_path = resume_path
+                    resume_ext = os.path.splitext(resume_path)[1].lower()
+                    if resume_ext == ".pdf":
+                        resume_docx_path = _convert_pdf_to_docx_for_source(resume_path)
+                    elif resume_ext == ".doc":
+                        resume_docx_path = _convert_legacy_doc_to_docx(resume_path)
 
-                    if os.path.splitext(resume_path)[1].lower() == ".pdf":
-                        resume_docx_path = (
-                            os.path.splitext(resume_path)[0] +
-                            "_converted.docx"
-                        )
-
-                        pdf_converter = Converter(resume_path)
-
-                        try:
-                            pdf_converter.convert(
-                                resume_docx_path,
-                                start=0,
-                                end=None
-                            )
-                        finally:
-                            pdf_converter.close()
-
-                    # Keep extracting text from the ORIGINAL uploaded file.
-                    # extract_text() already handles PDFs correctly.
                     raw_text = extract_text(resume_path)
                     client = create_ai_client(api_key=API_KEY)
 
@@ -12952,12 +13935,13 @@ def deloitte_app():
                     Return a valid JSON object ONLY.
 
                     RULES:
-                    1. Name: Pull from top/header (Title Case). If the name is completely missing or unreadable in the text, extract it from the provided FILENAME.
-                    2. Company Name Cleaning: Extract ONLY the primary end-client name. You MUST physically strip out any geographic locations (e.g., ", DELAWARE", ", MD") and strip out any contracting agencies/vendors.
+                    1. Name: Pull from the top/header and preserve the source spelling/capitalization. If the name is completely missing or unreadable in the text, extract it from the provided FILENAME without inventing or correcting the name.
+                    2. Company Name Cleaning: Display only the primary end-client/employer name that is explicitly supported by the resume. Remove trailing location text. When the resume explicitly labels an End Client/Client separately from a staffing/vendor company, use that stated client name. Do NOT guess or invent an end-client when the source does not identify one.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
+                        - SOURCE FIDELITY: Bullets are extraction-only historical content. Preserve every substantive source bullet/experience paragraph in ORIGINAL ORDER. One source item must remain one output item. NEVER rewrite, improve grammar, summarize, merge, split, omit, add, or reorder work-history content. Return EVERY professional role shown in the source, including abbreviated or undated roles under Additional Experience, Earlier Experience, Prior Experience, or similar sections. If an abbreviated role has no source dates or bullets, keep Dates blank and Bullets empty rather than omitting the role.
                         - For 'Dates', preserve the date precision from the original resume. If a role lists only years, return only those years (for example, "2018 - 2020"). NEVER invent January, "01", or any other month. If month + year are present, preserve them; mixed-precision ranges must stay mixed.
-                        - For 'Title', clean the string by physically stripping out any employment type modifiers, hyphens, or parentheses at the end of the title.
+                        - For 'Title', preserve the actual job title wording. Remove only clearly extraneous employment-type suffixes or an explicit project/program/client qualifier. Do NOT remove legitimate specialty/technology wording merely because the title contains a dash or parentheses.
                         - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
 
@@ -12992,7 +13976,9 @@ def deloitte_app():
                             else:
                                 raise e
 
-                    ai_name = data.get('FullName', '').title()
+                    data = enforce_source_fidelity(data, raw_text, 'Deloitte')
+
+                    ai_name = str(data.get('FullName', '') or '').strip()
                     final_name = Legal_Name.strip() if Legal_Name.strip() else ai_name
 
                     # --- UPDATED MAPPING TO SUPPORT 8 SKILLS + COMPANIES + 5 SUMMARIES ---
@@ -13018,10 +14004,8 @@ def deloitte_app():
                     exp = data.get('Experience', [])
                     for i in range(1, max(7, len(exp)) + 1):
                         if i <= len(exp):
-                            mapping[f"Company{i}"] = exp[i-1].get('Company', '')
-                            raw_title = exp[i-1].get('Title', '')
-                            clean_title = re.sub(r'\s*\(.*$', '', raw_title).strip()
-                            mapping[f"Title{i}"] = clean_title
+                            mapping[f"Company{i}"] = clean_company_name(exp[i-1].get('Company', ''))
+                            mapping[f"Title{i}"] = clean_job_title(exp[i-1].get('Title', ''))
                             mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
                             mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
                             mapping[f"Dates{i}"] = standardize_dates(exp[i-1].get('Dates', ''))
@@ -13076,8 +14060,8 @@ def deloitte_app():
                             SKILLS SECTION (INTELLIGENT SEMANTIC MATCHING)
                             ========================
                             - You are evaluating the candidate against the exact skills listed in the "Skills Matrix:" input.
-                            - INTELLIGENT MATCHING: You MUST look for semantic equivalents, synonyms, or related frameworks in the resume (e.g., if the matrix asks for "React.js", you MUST credit the candidate if they have "React Native", "React", etc.).
-                            - Output the EXACT skill name as it is written in the Skills Matrix input, but calculate the Years and Companies based on your intelligent matching of their resume.
+                            - EVIDENCE-SAFE MATCHING: Credit an exact skill or a truly equivalent naming alias only when the resume clearly proves the same technology/competency. Do NOT treat related-but-distinct frameworks/products as interchangeable (for example, React Native alone does not prove React.js).
+                            - Output the EXACT skill name as it is written in the Skills Matrix input only when the resume evidence supports that exact skill or a defensible alias. Calculate Years and Companies only from roles where that evidence is actually present.
                             - If the provided Skills Matrix only lists 4 skills, you MUST ONLY output those 4 skills and leave SKILL5 through SKILL8 completely empty ("").
                             - You MUST extract and populate the 'Years' and 'Companies' fields for EVERY single skill you evaluate. Do not leave 'Years' or 'Companies' blank if the candidate has experience with the tool/concept.
 
@@ -15293,9 +16277,12 @@ COMPLETION RULES:
   guessing Yes.
 
 4. EXPERIENCE
-Return EVERY dated professional role shown anywhere in the resume, including
-condensed/abbreviated entries under Earlier Experience or similar sections.
-Do not stop after seven roles.
+Return EVERY professional role shown anywhere in the resume, including dated,
+undated, condensed, or abbreviated entries under Earlier Experience, Additional
+Experience, Prior Experience, or similar sections. Do not stop after seven roles.
+If an abbreviated source role has no dates or bullets, return blank Dates and an
+empty Bullets array rather than omitting the role. Never invent missing dates or
+bullets.
 
 For every role return:
 - Company
@@ -15358,6 +16345,8 @@ ORIGINAL RESUME:
                     extraction_prompt,
                 )
 
+                data = enforce_source_fidelity(data, raw_text, 'Navy Federal')
+
                 certifications = str(
                     data.get("Certifications", "") or ""
                 ).strip()
@@ -15387,19 +16376,10 @@ ORIGINAL RESUME:
                         bullets = []
 
                     clean_role = {
-                        "Company": str(role.get("Company", "") or "").strip(),
-                        "Title": re.sub(
-                            r"\s*(?:\(|-|–|—)\s*(?:contract|consultant|contractor)\b.*$",
-                            "",
-                            str(role.get("Title", "") or "").strip(),
-                            flags=re.IGNORECASE,
-                        ).strip(),
+                        "Company": clean_company_name(role.get("Company", "")),
+                        "Title": clean_job_title(role.get("Title", "")),
                         "Bullets": [
-                            re.sub(
-                                r"^[\s\-\•\*\d\.\)]+",
-                                "",
-                                str(item),
-                            ).strip()
+                            _strip_list_marker_only(item)
                             for item in bullets
                             if str(item).strip()
                         ],
@@ -15875,12 +16855,12 @@ FULL ORIGINAL RESUME:
                 for i in range(1, max(7, len(experience)) + 1):
                     if i <= len(experience):
                         role = experience[i - 1]
-                        mapping[f"Company{i}"] = str(
-                            role.get("Company", "") or ""
-                        ).strip()
-                        mapping[f"Title{i}"] = str(
-                            role.get("Title", "") or ""
-                        ).strip()
+                        mapping[f"Company{i}"] = clean_company_name(
+                            role.get("Company", "")
+                        )
+                        mapping[f"Title{i}"] = clean_job_title(
+                            role.get("Title", "")
+                        )
                         mapping[f"Bullets{i}"] = clean_bullets(
                             role.get("Bullets", [])
                         )
@@ -15944,23 +16924,29 @@ FULL ORIGINAL RESUME:
 st.title("Resume Formatter")
 st.markdown("Please select your client account below to access the customized formatter.")
 
-with st.sidebar:
-    st.header("🤖 AI Provider / Model")
-    st.selectbox(
-        "Choose the AI engine for this run:",
-        [AI_PROVIDER_GEMINI, AI_PROVIDER_OPENAI],
-        index=0,
-        key="global_ai_provider",
-        help=(
-            "A/B testing mode. Gemini preserves the existing v21 path. "
-            "OpenAI routes the same formatter prompts through GPT-6 Luna "
-            "with medium reasoning and strict Structured Outputs."
-        ),
-    )
-    if using_openai_provider():
-        st.caption("OpenAI mode: GPT-6 Luna, medium reasoning")
-    else:
-        st.caption("Gemini mode: Gemini 2.5 Flash primary")
+# Provider selection is intentionally hidden in the current production build.
+# Gemini remains fully implemented above. To restore the A/B selector later, set
+# AI_PROVIDER_SELECTOR_ENABLED = True.
+if AI_PROVIDER_SELECTOR_ENABLED:
+    with st.sidebar:
+        st.header("🤖 AI Provider / Model")
+        st.selectbox(
+            "Choose the AI engine for this run:",
+            [AI_PROVIDER_GEMINI, AI_PROVIDER_OPENAI],
+            index=(
+                1 if DEFAULT_AI_PROVIDER == AI_PROVIDER_OPENAI else 0
+            ),
+            key="global_ai_provider",
+            help=(
+                "A/B testing mode. Both engines use the same v23 source-fidelity "
+                "ingestion, verification, client prompts, and Word formatting. "
+                "OpenAI uses GPT-6 Luna with medium reasoning and strict Structured Outputs."
+            ),
+        )
+        if using_openai_provider():
+            st.caption("OpenAI mode: GPT-6 Luna, medium reasoning")
+        else:
+            st.caption("Gemini mode: Gemini 2.5 Flash primary")
 
 client_selection = st.selectbox(
     "Select Client Account or Tool:", 
