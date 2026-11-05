@@ -1,4 +1,4 @@
-# v26 SOURCE FIDELITY BUILD - LONG ROLE METADATA FIX / OPENAI DEFAULT
+# v27 SOURCE FIDELITY BUILD - DELOITTE SUMMARY BODY FIX / OPENAI DEFAULT
 # Preserves the v23 Gemini vs OpenAI GPT-6 Luna routing while forcing OpenAI in production and hardening
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
@@ -13663,6 +13663,14 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
     doc = docx.Document(template_path)
     orig_doc = docx.Document(resume_path)
 
+    # Deloitte template already supplies the visible bullet formatting for exactly
+    # five tailored summary lines. Strip only an accidental AI/list marker from
+    # the generated text so the output cannot show a doubled bullet (for example
+    # "• • Configured..."). Do not otherwise rewrite the generated summary.
+    for summary_idx in range(1, 6):
+        summary_key = f"SUMMARY{summary_idx}"
+        mapping[summary_key] = _strip_list_marker_only(mapping.get(summary_key, ""))
+
     # 1. Delete empty skill rows BEFORE replacing text
     for tbl in doc.tables:
         rows_to_delete = []
@@ -13759,37 +13767,70 @@ def process_deloitte_doc(template_path, mapping, resume_path, output_path):
     # ----------------------------------
 
     # 3. Extract the immutable "Rest of Resume" in original XML order.
-    # Prefer a known skills/experience section marker. If the source uses a
-    # different heading, fall back to the first verified Company1/Title1 anchor.
+    # The Deloitte template has its own five-line tailored Summary, so the copied
+    # source body must begin at a REAL section heading after the original summary.
+    # Never use substring matching here: a sentence such as "8 years of experience"
+    # is resume content, not an Experience heading, and copying from it would
+    # duplicate the candidate's entire original Professional Summary under the
+    # five Deloitte summary bullets.
     body_elements = list(orig_doc._body._body)
     elements_to_copy = []
     start_index = None
 
-    preferred_markers = [
+    # These are the source sections Deloitte should preserve below its generated
+    # five-bullet Summary. Matching is exact after harmless heading punctuation
+    # normalization, so ordinary sentences containing "skills" or "experience"
+    # can never trigger the boundary.
+    deloitte_body_headings = {
         "technical skills",
-        "core competencies",
         "skills",
+        "core competencies",
+        "competencies",
+        "certifications",
+        "certification",
+        "certificates",
+        "education",
         "professional experience",
         "work experience",
         "employment history",
+        "career history",
         "experience",
-    ]
+        "professional projects",
+        "projects",
+    }
+
+    def deloitte_section_heading_key(value):
+        heading = unicodedata.normalize("NFKC", str(value or ""))
+        heading = heading.replace("\u00a0", " ")
+        heading = _strip_list_marker_only(heading)
+        heading = re.sub(r"\s+", " ", heading).strip()
+        heading = re.sub(r"\s*[:：]\s*$", "", heading).strip()
+        return heading.casefold()
+
     company1 = _normalize_source_match(mapping.get("Company1", ""))
     title1 = _normalize_source_match(mapping.get("Title1", ""))
 
     for idx, element in enumerate(body_elements):
         try:
-            text = " ".join(t.strip() for t in element.itertext() if str(t).strip())
+            # Use the same visible-text extractor as source-fidelity ingestion.
+            # lxml.itertext() can repeat Word run text several times, which makes
+            # an actual heading such as "Technical Skills:" look like a long
+            # duplicated sentence and defeats exact heading detection.
+            element_text = _xml_text(element)
         except Exception:
-            text = ""
-        normalized = _normalize_source_match(text)
+            element_text = ""
+        normalized = _normalize_source_match(element_text)
         if not normalized:
             continue
 
-        if any(marker in normalized for marker in preferred_markers):
+        # Primary boundary: an exact, standalone body section heading.
+        if deloitte_section_heading_key(element_text) in deloitte_body_headings:
             start_index = idx
             break
 
+        # Conservative fallback for resumes without any recognized section heading.
+        # This remains source-anchored to the first verified role metadata and is
+        # evaluated only after exact heading detection fails up to this point.
         if (company1 and company1 in normalized) or (title1 and title1 in normalized):
             start_index = idx
             break
