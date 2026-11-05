@@ -1,4 +1,4 @@
-# v25 SOURCE FIDELITY BUILD - ROLE METADATA COVERAGE FIX / OPENAI DEFAULT
+# v26 SOURCE FIDELITY BUILD - LONG ROLE METADATA FIX / OPENAI DEFAULT
 # Preserves the v23 Gemini vs OpenAI GPT-6 Luna routing while forcing OpenAI in production and hardening
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
@@ -803,17 +803,19 @@ def _looks_like_role_metadata_label(text):
       "Project: Global S/4HANA Transformation"
       "Location: Reston, VA"
       "Role: SAP Functional Consultant"
+      "Environment: SAP S/4HANA, SAP FI/CO, ..."
 
     Keep this deliberately narrow: only an explicit label followed by a colon is
-    treated as metadata. Substantive paragraphs remain subject to the fail-closed
-    source-fidelity coverage audit.
+    treated as metadata. Environment/Technologies lines are often intentionally long,
+    so they must not be rejected merely because they exceed a generic header length.
+    Substantive paragraphs remain subject to the fail-closed source-fidelity audit.
     """
-    value = str(text or "").strip()
-    if not value or len(value) > 240:
+    value = _strip_list_marker_only(str(text or "").strip())
+    if not value:
         return False
 
-    return bool(re.match(
-        r"^(?:"
+    match = re.match(
+        r"^(?P<label>"
         r"client|employer|company|"
         r"role|position|job\s+title|"
         r"project(?:\s+name)?|program(?:\s+name)?|initiative|workstream|engagement|assignment|"
@@ -822,7 +824,19 @@ def _looks_like_role_metadata_label(text):
         r")\s*:\s*\S",
         value,
         flags=re.I,
-    ))
+    )
+    if not match:
+        return False
+
+    label = match.group("label").casefold()
+    if label in {"environment", "technologies"}:
+        # Environment inventories commonly run several hundred characters. They are
+        # metadata when explicitly labeled, regardless of length.
+        return True
+
+    # Other role headers should remain reasonably concise so a long narrative that
+    # happens to begin with a label is not silently removed from coverage auditing.
+    return len(value) <= 500
 
 
 def _likely_role_metadata_block(text, role):
@@ -1228,10 +1242,11 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
         # only from an explicit source line inside this role's source interval.
         env_value = str(role.get('Environment', '') or '').strip()
         if env_value:
+            env_clean = _strip_list_marker_only(env_value)
             env_clean = re.sub(
                 r"^(?:environment|technologies)\s*:\s*",
                 "",
-                env_value,
+                env_clean,
                 flags=re.I,
             ).strip()
             interval_end = (
@@ -1241,7 +1256,9 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
             )
             env_match = None
             for env_idx in range(role_anchors[role_num - 1], interval_end):
-                source_env = str(blocks[env_idx].get('text', '') or '').strip()
+                source_env = _strip_list_marker_only(
+                    str(blocks[env_idx].get('text', '') or '').strip()
+                )
                 match = re.match(
                     r"^(?:environment|technologies)\s*:\s*(.+)$",
                     source_env,
