@@ -1,5 +1,5 @@
-# v27 SOURCE FIDELITY BUILD - DELOITTE SUMMARY BODY FIX / OPENAI DEFAULT
-# Preserves the v23 Gemini vs OpenAI GPT-6 Luna routing while forcing OpenAI in production and hardening
+# v28 SOURCE FIDELITY BUILD - DELOITTE EVIDENCE-FIRST SUMMARY
+# Preserves v27 source-fidelity/body fixes while tightening Deloitte summary style and factual precision.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -13651,6 +13651,216 @@ def pdf_to_word_app():
 
 
 # ====================================================================
+# --- DELOITTE SUMMARY STYLE / FACTUALITY GUARDRAILS (v28) ---
+# ====================================================================
+_DELOITTE_SUMMARY_PROHIBITED_PATTERNS = [
+    (r"\bprogressive\b", "progressive"),
+    (r"\bbrings\b", "brings"),
+    (r"\bpossesses\b", "possesses"),
+    (r"\bwill\s+deliver\s+(?:immediate\s+)?value\b", "will deliver immediate value"),
+    (r"\bimmediate\s+value\b", "immediate value"),
+    (r"\bproven\s+track\s+record\b", "proven track record"),
+    (r"\bproven\b", "proven"),
+    (r"\bresults[- ]driven\b", "results-driven"),
+    (r"\bseasoned\b", "seasoned"),
+    (r"\badept\s+at\b", "adept at"),
+    (r"\buniquely\s+qualified\b", "uniquely qualified"),
+    (r"\bstrong\s+background\b", "strong background"),
+    (r"\bhighly\s+experienced\b", "highly experienced"),
+    (r"\bexcellent\s+fit\b", "excellent fit"),
+    (r"\bpositions?\s+(?:him|her|them|the\s+candidate)\s+uniquely\b", "positions them uniquely"),
+]
+
+
+def deloitte_extract_source_total_experience_claim(raw_text):
+    """
+    Return an explicitly stated total-experience phrase from the candidate's
+    summary/profile, such as "8 years" or "10+ years".
+
+    Deloitte summaries must never independently recalculate total career years.
+    If the source does not state a total, the generated summary should omit it.
+    """
+    text_value = unicodedata.normalize("NFKC", str(raw_text or ""))
+    text_value = text_value.replace("\u00a0", " ")
+
+    # Restrict the search to the pre-experience/profile portion when possible so
+    # individual role durations cannot be mistaken for a total-career statement.
+    boundary = re.search(
+        r"(?im)^\s*(?:technical\s+skills|skills|professional\s+experience|work\s+experience|employment\s+history|career\s+history)\s*:?\s*$",
+        text_value,
+    )
+    profile_text = text_value[:boundary.start()] if boundary else text_value[:6000]
+
+    match = re.search(
+        r"\b(?P<num>\d{1,2})(?P<plus>\+)?\s+(?:years?|yrs?)\s+(?:of\s+)?(?:total\s+|overall\s+|professional\s+)?experience\b",
+        profile_text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return ""
+
+    number = match.group("num")
+    plus = "+" if match.group("plus") else ""
+    return f"{number}{plus} years"
+
+
+def deloitte_clean_summary_style(value):
+    """Apply only safe presentation cleanup to a generated Deloitte summary bullet."""
+    value = _strip_list_marker_only(value)
+    value = re.sub(r"\s+", " ", str(value or "")).strip()
+    return value
+
+
+def deloitte_summary_style_issues(summary_data, raw_text):
+    """
+    Deterministically enforce the v28 Deloitte summary rules without rewriting
+    candidate facts. These checks are intentionally about style/years precision;
+    the resume remains the factual source of truth in the generation prompt.
+    """
+    issues = []
+    source_years_claim = deloitte_extract_source_total_experience_claim(raw_text)
+
+    for idx in range(1, 6):
+        key = f"SUMMARY{idx}"
+        value = deloitte_clean_summary_style(summary_data.get(key, ""))
+        summary_data[key] = value
+
+        if not value:
+            issues.append(f"{key} is blank")
+            continue
+
+        for pattern, label in _DELOITTE_SUMMARY_PROHIBITED_PATTERNS:
+            if re.search(pattern, value, flags=re.IGNORECASE):
+                issues.append(f"{key} contains prohibited phrasing: {label}")
+
+        # Deloitte summary bullets must describe demonstrated history, not make
+        # future-tense sales promises about what the candidate "will" do.
+        if re.match(r"^\s*will\b", value, flags=re.IGNORECASE):
+            issues.append(f"{key} starts with future-tense sales language")
+
+        # Total career-years claims are permitted only in SUMMARY1 and only when
+        # the source resume explicitly states the same total-years phrase.
+        total_years_matches = re.findall(
+            r"\b(\d{1,2}\+?\s+years?)\s+(?:of\s+)?(?:total\s+|overall\s+|professional\s+|progressive\s+|progressive\s+professional\s+)?experience\b",
+            value,
+            flags=re.IGNORECASE,
+        )
+        # Any years phrase in SUMMARY1 is treated as a career-total claim because
+        # that bullet is the only Deloitte bullet allowed to state overall tenure.
+        # This catches formulations such as "6+ years as an SAP consultant" too.
+        summary1_years_matches = (
+            re.findall(r"\b(\d{1,2}\+?\s+years?)\b", value, flags=re.IGNORECASE)
+            if idx == 1 else []
+        )
+        years_matches = summary1_years_matches or total_years_matches
+        if years_matches:
+            if idx != 1:
+                issues.append(f"{key} contains a total-years experience claim outside SUMMARY1")
+            elif not source_years_claim:
+                issues.append(f"{key} invents/recalculates total career years not explicitly stated in the resume")
+            else:
+                normalized_source = re.sub(r"\s+", " ", source_years_claim.casefold()).strip()
+                for claim in years_matches:
+                    normalized_claim = re.sub(r"\s+", " ", claim.casefold()).strip()
+                    if normalized_claim != normalized_source:
+                        issues.append(
+                            f"{key} changes the source-stated total experience from "
+                            f"'{source_years_claim}' to '{claim}'"
+                        )
+
+    return issues
+
+
+def deloitte_repair_summary_style(client, models_to_try, summary_data, raw_text, job_description, notes):
+    """
+    Repair only the five generated Deloitte summary bullets when deterministic
+    style/years checks fail. Skills Matrix values are intentionally left untouched.
+    """
+    issues = deloitte_summary_style_issues(summary_data, raw_text)
+    if not issues:
+        return summary_data
+
+    source_years_claim = deloitte_extract_source_total_experience_claim(raw_text)
+    years_instruction = (
+        f'The resume explicitly states total experience as "{source_years_claim}". '
+        f'If SUMMARY1 uses a total-years claim, use exactly "{source_years_claim}" and do not alter it.'
+        if source_years_claim
+        else 'The resume does NOT explicitly state a total career-years figure. Omit any total-years claim from SUMMARY1.'
+    )
+
+    draft = {f"SUMMARY{i}": summary_data.get(f"SUMMARY{i}", "") for i in range(1, 6)}
+    repair_prompt = f"""
+You are revising five Deloitte submission-summary bullets for style and factual precision only.
+Do NOT change the Skills Matrix. Do NOT add candidate facts that are not supported by the resume.
+
+The previous draft failed these deterministic checks:
+- """ + "\n- ".join(issues) + f"""
+
+STRICT RULES:
+- Return EXACTLY five non-empty strings: SUMMARY1 through SUMMARY5.
+- One concise sentence per bullet.
+- SUMMARY1 may use the candidate's first name. SUMMARY2-SUMMARY5 should not use the candidate's name or pronouns.
+- Use factual, evidence-first recruiter language. Prefer concrete technologies, implementations, responsibilities, and delivery stages over adjectives or sales copy.
+- NEVER use: progressive, brings, possesses, proven, proven track record, results-driven, seasoned, adept at, uniquely qualified, strong background, highly experienced, excellent fit, immediate value, or "will deliver" language.
+- Do not use future-tense promises about what the candidate will do.
+- Do not claim complexity, scale, leadership, architecture, business impact, or authority unless the resume directly supports it.
+- {years_instruction}
+- Do not independently calculate total career years from employment dates.
+- Exact Job Description terminology may be used only when the resume independently supports the same candidate skill/experience.
+- Keep the bullets tightly aligned to the role, but never turn a JD requirement into a candidate claim unless the resume proves it.
+
+Previous draft:
+{json.dumps(draft, ensure_ascii=False)}
+
+Official Job Description:
+{job_description}
+
+Notes:
+{notes}
+
+Resume:
+{raw_text}
+
+Return ONLY valid JSON in this exact structure:
+{{
+  "SUMMARY1": "",
+  "SUMMARY2": "",
+  "SUMMARY3": "",
+  "SUMMARY4": "",
+  "SUMMARY5": ""
+}}
+"""
+
+    last_error = None
+    for attempt in range(3):
+        current_model = models_to_try[min(attempt, len(models_to_try) - 1)]
+        try:
+            response = client.models.generate_content(
+                model=current_model,
+                contents=repair_prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json")
+            )
+            repaired = repair_and_load_json(response.text)
+            for idx in range(1, 6):
+                key = f"SUMMARY{idx}"
+                summary_data[key] = deloitte_clean_summary_style(repaired.get(key, ""))
+
+            remaining = deloitte_summary_style_issues(summary_data, raw_text)
+            if not remaining:
+                return summary_data
+            last_error = RuntimeError("; ".join(remaining))
+        except Exception as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(1 + attempt)
+
+    raise RuntimeError(
+        "Deloitte summary style guardrail could not produce a safe five-bullet summary: "
+        + str(last_error or "unknown validation error")
+    )
+
+
+# ====================================================================
 # --- 🔵 CLIENT APP 8: DELOITTE 🔵 ---
 # ====================================================================
 def process_deloitte_doc(template_path, mapping, resume_path, output_path):
@@ -14116,43 +14326,59 @@ def deloitte_app():
 
                     if Job_Description.strip():
                         try:
-                            # --- UPDATED SUMMARY PROMPT FOR DELOITTE ---
+                            # --- v28 EVIDENCE-FIRST SUMMARY PROMPT FOR DELOITTE ---
+                            source_total_experience = deloitte_extract_source_total_experience_claim(raw_text)
+                            source_years_instruction = (
+                                f'The resume explicitly states total experience as "{source_total_experience}". '
+                                f'If SUMMARY1 uses a total-years statement, use exactly "{source_total_experience}". '
+                                'Do not convert it to a different number or add/remove a plus sign.'
+                                if source_total_experience
+                                else 'The resume does not explicitly state a total career-years figure. '
+                                     'Do NOT calculate one from employment dates and do NOT include a total-years claim in SUMMARY1.'
+                            )
+
                             summary_prompt = f"""
-                            You are an elite, no-nonsense Senior Technical Recruiter writing an executive submission summary for a Fieldglass portal. 
-                            The Hiring Manager has 30 seconds to read this. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed, optimized for both human reading and ATS exact-match parsing.
+                            You are a precise Senior Technical Recruiter writing a Deloitte Fieldglass submission summary.
+                            The hiring manager should be able to understand the candidate's fit quickly, but every statement must remain factual, source-supported, and natural enough that a recruiter could have written it.
 
                             ========================
-                            🚨 HIERARCHY OF TRUTH: JD vs. MANAGER NOTES (CRITICAL)
+                            HIERARCHY OF ROLE INFORMATION
                             ========================
-                            You are receiving two primary sources of information for this role:
+                            You are receiving:
                             1. Notes (HIGH PRIORITY)
                             2. Official Job Description (BASELINE)
 
-                            - OVERRIDE RULE: The Notes represent the Hiring Manager's actual, immediate needs. They are the ABSOLUTE SOURCE OF TRUTH. If they contradict or update the official Job Description, you MUST strictly follow the Notes.
-                            - ATS COMPROMISE: To satisfy the Fieldglass parsing algorithm, you must still weave in high-level, generalized keywords from the baseline Job Description where applicable, but NEVER highlight technical skills or responsibilities that the manager explicitly negated in their notes.
+                            - Notes represent the manager's latest role priorities. If Notes update or contradict the baseline JD, follow Notes.
+                            - The Resume is the ONLY source of truth for what the candidate has actually done.
+                            - Never convert a JD requirement into a candidate claim unless the resume independently supports the same skill/experience.
+                            - Use exact JD terminology only when the resume supports that exact term or a defensible equivalent.
 
                             ========================
-                            THE NARRATIVE BLUEPRINT (5 Bullet Points)
+                            SUMMARY BLUEPRINT - EXACTLY 5 BULLETS
                             ========================
-                            Follow this exact structure for the SUMMARY. Generate exactly 5 distinct bullet points mapped to SUMMARY1 through SUMMARY5. Every point MUST sell the candidate's fit for the role:
-                            - SUMMARY1 (The Anchor): Use their FIRST NAME. State their total progressive professional experience, their core title, and dominant expertise solving the PRIMARY technical "must-have" of the Job Description. (Format years strictly rounded DOWN to the nearest whole year as 'X+ years').
-                            - SUMMARY2 (The Alignment): NO PRONOUNS. Start directly with an action verb or adverb (e.g., "Recently architected..."). Explicitly name their CURRENT or most recent employer and frame their most relevant project as a 1:1 match for the manager's challenge.
-                            - SUMMARY3 (The Execution): NO PRONOUNS. Start directly with an action verb (e.g., "Engineered..."). Weave the specific tools/methodologies into an "Execution Statement" highlighting complexity, scale, or business impact.
-                            - SUMMARY4 (Secondary Expertise): NO PRONOUNS. Start directly with a verb (e.g., "Possesses secondary expertise in..."). Highlight a secondary skill, architecture, or methodology requested in the JD that they possess.
-                            - SUMMARY5 (The Closer): NO PRONOUNS. Start directly with a verb (e.g., "Will deliver immediate value by..."). State what specific value they will deliver on Day 1 based on their past execution track record.
+                            Return exactly five distinct summary strings mapped to SUMMARY1 through SUMMARY5.
 
-                            CRITICAL ATS HACK: Across these 5 bullets, you MUST seamlessly embed exact phrases from the Job Description to maximize the Fieldglass match score.
+                            - SUMMARY1 (Anchor): Use the candidate's FIRST NAME. State their actual role/expertise and the strongest resume-supported match to the primary requirement. {source_years_instruction}
+                            - SUMMARY2 (Most Relevant Evidence): No pronouns or candidate name. Start with a concrete factual verb. Name the current/most recent employer only when useful and describe the most directly relevant implementation/configuration work from the resume.
+                            - SUMMARY3 (Execution): No pronouns or candidate name. Use concrete evidence such as requirements, configuration, integrations, testing, migration, cutover, go-live, hypercare, troubleshooting, or other delivery stages actually shown in the resume. Do not add vague claims of complexity, scale, or impact unless the resume states them.
+                            - SUMMARY4 (Secondary Expertise): No pronouns or candidate name. Highlight another role-relevant technology, process, architecture, or methodology using factual resume evidence. Do NOT start with "Possesses".
+                            - SUMMARY5 (Additional Differentiator): No pronouns or candidate name. Use another concrete, resume-supported differentiator relevant to the JD, such as banking/payment integration, production support, documentation, testing, reconciliation, or another clearly evidenced capability. Do NOT make a Day 1 promise or predict future value.
 
                             ========================
-                            STYLE & TONE RULES (STRICT)
+                            SUMMARY STYLE RULES - STRICT
                             ========================
-                            - TELEGRAPHIC STYLE: Bullet 1 MUST use the candidate's name. Bullets 2, 3, 4, and 5 MUST strictly drop all pronouns (he/she/they) and names, starting directly with an action verb.
-                            - Write like a human pitching to a colleague. Confident, direct, and factual.
-                            - TECH MATCHING: Strictly align the tools you highlight with the JD. 
-                            - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
-                            - LEADERSHIP VERBS: Use high-authority active verbs (e.g., 'Engineered', 'Optimized', 'Architected').
-                            - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely."
-                            - Do NOT repeat or restate the job description.
+                            - One concise sentence per bullet.
+                            - Evidence first. Prefer specific technologies, implementations, responsibilities, clients, and delivery stages over adjectives or marketing language.
+                            - NEVER use the word "progressive".
+                            - NEVER use "brings", "possesses", "proven", "proven track record", "results-driven", "seasoned", "adept at", "uniquely qualified", "strong background", "highly experienced", "excellent fit", "immediate value", or "will deliver" language.
+                            - Do not use future-tense sales promises.
+                            - Do not say the candidate is a perfect/1:1 match.
+                            - Do not independently calculate total career years from dated work history. Use an explicitly stated source total exactly as written, or omit the total-years claim.
+                            - Do not inflate verbs or authority. Use "architected", "led", "owned", "managed", "expert", "advanced", or similar high-authority wording only when the resume directly supports it.
+                            - Avoid vague adjectives such as "complex", "extensive", "deep", or "strong" unless the resume itself makes and supports that characterization.
+                            - Never mention physical location, onsite/hybrid status, visa status, or other logistics in the summary.
+                            - Do not repeat or paraphrase the JD as though it were candidate history.
+                            - Do not include bullet symbols in SUMMARY1-SUMMARY5. The Deloitte template supplies the bullets.
 
                             ========================
                             SKILLS SECTION (INTELLIGENT SEMANTIC MATCHING)
@@ -14168,22 +14394,23 @@ def deloitte_app():
                             Companies format: "Company A, Company B" (Extract exact company names from the resume where the skill was used)
 
                             ========================
-                            🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
+                            ZERO-TOLERANCE HALLUCINATION RULES
                             ========================
-                            1. THE RESUME IS THE ONLY SOURCE OF TRUTH. You are strictly forbidden from copying a skill, tool, or technology from the Job Description and assigning it to the candidate unless it physically appears in their Resume.
-                            2. DO NOT INFER OR ASSUME. 
+                            1. THE RESUME IS THE ONLY SOURCE OF TRUTH for candidate experience.
+                            2. DO NOT INFER OR ASSUME candidate skills from the JD.
                             3. DO NOT INFLATE TO MATCH THE JD. If the candidate lacks a requested skill, omit it completely.
 
                             ========================
-                            YEARS ACCURACY RULES (REALISTIC RECRUITER MODE)
+                            SKILLS MATRIX YEARS ACCURACY RULES
                             ========================
+                            - These rules apply ONLY to YEARS1 through YEARS8 in the Skills Matrix, not to SUMMARY1-SUMMARY5.
                             - Use October 2026 as the current date.
                             - STRICT MATH (DATE-DRIVEN ONLY): Calculate years strictly based on the earliest chronological date provided in the 'Professional Experience'. Round DOWN to the nearest whole year.
 
                             ========================
                             OUTPUT FORMAT (STRICT)
                             ========================
-                            Return ONLY valid JSON. If less than 8 skills are found, leave the remaining skill strings empty ("").
+                            Return ONLY valid JSON. If fewer than 8 skills are supported, leave the remaining skill strings empty ("").
 
                             {{
                               "SUMMARY1": "Bullet 1...",
@@ -14244,6 +14471,16 @@ def deloitte_app():
                                         config=types.GenerateContentConfig(response_mime_type="application/json")
                                     )
                                     summary_data = repair_and_load_json(summary_response.text)
+                                    # v28: Repair/validate only the five Deloitte summary bullets.
+                                    # Skills Matrix fields from this original response remain untouched.
+                                    summary_data = deloitte_repair_summary_style(
+                                        client=client,
+                                        models_to_try=models_to_try,
+                                        summary_data=summary_data,
+                                        raw_text=raw_text,
+                                        job_description=Job_Description,
+                                        notes=Chat_Notes,
+                                    )
                                     break
                                 except Exception as api_e:
                                     if "503" in str(api_e) and attempt < 5:
