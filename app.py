@@ -1,4 +1,4 @@
-# v24 SOURCE FIDELITY BUILD - OPENAI DEFAULT / PROVIDER SELECTOR HIDDEN
+# v25 SOURCE FIDELITY BUILD - ROLE METADATA COVERAGE FIX / OPENAI DEFAULT
 # Preserves the v23 Gemini vs OpenAI GPT-6 Luna routing while forcing OpenAI in production and hardening
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
@@ -794,10 +794,48 @@ def _find_role_anchor(role, blocks, start_index=0):
     return min(idx for score, idx in candidates if score == best_score)
 
 
+def _looks_like_role_metadata_label(text):
+    """
+    Recognize explicit role-level metadata/header lines that the formatter templates
+    intentionally do not render as work-history bullets.
+
+    These lines are structural context, not narrative accomplishments. For example:
+      "Project: Global S/4HANA Transformation"
+      "Location: Reston, VA"
+      "Role: SAP Functional Consultant"
+
+    Keep this deliberately narrow: only an explicit label followed by a colon is
+    treated as metadata. Substantive paragraphs remain subject to the fail-closed
+    source-fidelity coverage audit.
+    """
+    value = str(text or "").strip()
+    if not value or len(value) > 240:
+        return False
+
+    return bool(re.match(
+        r"^(?:"
+        r"client|employer|company|"
+        r"role|position|job\s+title|"
+        r"project(?:\s+name)?|program(?:\s+name)?|initiative|workstream|engagement|assignment|"
+        r"location|dates?|duration|"
+        r"environment|technologies"
+        r")\s*:\s*\S",
+        value,
+        flags=re.I,
+    ))
+
+
 def _likely_role_metadata_block(text, role):
     source = _normalize_source_match(text)
     if not source:
         return True
+
+    # Explicit role headers such as "Project: ..." are metadata even when the
+    # output schema has no dedicated Project field. They must not be mistaken for
+    # omitted work-history bullets.
+    if _looks_like_role_metadata_label(text):
+        return True
+
     company = _normalize_source_match(clean_company_name(role.get('Company', '')))
     title = _normalize_source_match(clean_job_title(role.get('Title', '')))
     dates = str(role.get('Dates', '') or '').strip()
@@ -809,8 +847,6 @@ def _likely_role_metadata_block(text, role):
         # Date/title lines are metadata when they are short enough to be headers.
         if len(str(text)) <= 160 and not re.search(r"[.!?]", str(text)):
             return True
-    if re.match(r"^(?:environment|technologies)\s*:", str(text).strip(), flags=re.I):
-        return True
     if _looks_like_section_heading(text):
         return True
     return False
@@ -1016,7 +1052,11 @@ def _validate_additional_experience_coverage(experience, blocks, client_name):
     for start, end in ranges:
         for idx in range(start, end):
             text = str(blocks[idx].get('text', '') or '').strip()
-            if not text or _looks_like_section_heading(text):
+            if (
+                not text
+                or _looks_like_section_heading(text)
+                or _looks_like_role_metadata_label(text)
+            ):
                 continue
             source_norm = _normalize_source_match(_strip_list_marker_only(text))
             if len(source_norm) < 3:
@@ -2516,7 +2556,7 @@ def fannie_mae_app():
                             ========================
                             YEARS ACCURACY RULES (REALISTIC RECRUITER MODE)
                             ========================
-                            - Use November 2026 as the current date.
+                            - Use October 2026 as the current date.
                             - STRICT MATH (DATE-DRIVEN ONLY): Calculate years strictly based on the earliest chronological date provided in the 'Professional Experience' or 'Work History' section. You MUST completely IGNORE any self-reported years of experience in the candidate's summary blurb (e.g., if their summary claims "12+ years" but their listed jobs only go back to 2019, you must calculate from 2019). Round DOWN to the nearest whole year and use the exact format "X+ years". Do not use phrases like "nearly X years". (e.g., If the job history calculates to 7 years and 10 months, output "7+ years". NEVER round up to 8+). 
                             - Foundational skills (e.g., Python, SQL, general engineering) should get their maximum calculated years.
                             - Advanced/Specialized tools (e.g., SageMaker, Kubernetes, Cloud Architecture) should realistically be calculated at 1-2 years less than their maximum total experience unless the resume explicitly proves Day 1 usage. 
@@ -13296,7 +13336,7 @@ def dallas_generic_app():
                     3. Education: Extract School, Degree, and DegreeStatus.
                         - DegreeStatus: Evaluate if the degree is completed or in progress.
                         - Return "Yes" ONLY if the resume explicitly indicates the degree is finished or gives a past graduation/completion date.
-                        - Return "Pursuing" if the resume indicates ongoing study, contains the word "Pursuing", "In-progress", or lists a graduation date in the future (relative to November 2026).
+                        - Return "Pursuing" if the resume indicates ongoing study, contains the word "Pursuing", "In-progress", or lists a graduation date in the future (relative to October 2026).
                         - If completion cannot be established from the resume, return "". Never guess completion.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
                         - SOURCE FIDELITY: Bullets are extraction-only historical content. Preserve every substantive source bullet/experience paragraph in ORIGINAL ORDER. One source item must remain one output item. NEVER rewrite, improve grammar, summarize, merge, split, omit, add, or reorder work-history content. Return EVERY professional role shown in the source, including abbreviated or undated roles under Additional Experience, Earlier Experience, Prior Experience, or similar sections. If an abbreviated role has no source dates or bullets, keep Dates blank and Bullets empty rather than omitting the role.
@@ -14079,7 +14119,7 @@ def deloitte_app():
                             ========================
                             YEARS ACCURACY RULES (REALISTIC RECRUITER MODE)
                             ========================
-                            - Use November 2026 as the current date.
+                            - Use October 2026 as the current date.
                             - STRICT MATH (DATE-DRIVEN ONLY): Calculate years strictly based on the earliest chronological date provided in the 'Professional Experience'. Round DOWN to the nearest whole year.
 
                             ========================
