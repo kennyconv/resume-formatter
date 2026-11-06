@@ -1,5 +1,5 @@
-# v34 SOURCE FIDELITY BUILD - DELOITTE RFP POLISH / DYNAMIC TABLE FIXES
-# Preserves all v33 behavior while tightening Deloitte RFP narrative consistency and dynamic table formatting.
+# v35 SOURCE FIDELITY BUILD - DELOITTE RFP PROFESSIONAL EXPERIENCE FORMATTING
+# Preserves all v34 behavior while restoring true Word bullets, hanging indents, and clean role spacing in Deloitte RFP Professional Experience.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -14476,6 +14476,7 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
     from copy import deepcopy
     from docx.table import Table
     from docx.text.paragraph import Paragraph
+    from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
 
     doc = docx.Document(template_path)
@@ -14550,23 +14551,25 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
         fmt_nodes = levels[0].xpath('./*[local-name()="numFmt"]')
         return fmt_nodes[0].get(w_ns + 'val') if fmt_nodes else ""
 
-    def clean_xml_element(element):
+    def clean_xml_element(element, materialize_source_bullet=True):
         # Numbering definitions live in numbering.xml and do not automatically
-        # travel when a paragraph is copied between Word documents. Materialize
-        # source bullet lists as a literal Unicode bullet before insertion so
-        # resume bullets cannot turn into 1., 2., 3. in the Deloitte template.
+        # travel when a paragraph is copied between Word documents. Most copied
+        # sections still materialize source bullets as a literal glyph. The RFP
+        # Professional Experience path opts out and recreates true Word numbering
+        # in the target document so wrapped lines use a real hanging indent.
         if source_list_format(element) == 'bullet':
             num_pr_nodes = element.xpath('./w:pPr/w:numPr')
             for num_pr in num_pr_nodes:
                 parent = num_pr.getparent()
                 if parent is not None:
                     parent.remove(num_pr)
-            text_nodes = element.xpath('.//w:t')
-            if text_nodes:
-                current = text_nodes[0].text or ''
-                if not re.match(r'^\s*[•·▪◦●○■□►▸*]', current):
-                    text_nodes[0].text = '• ' + current
-                    text_nodes[0].set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+            if materialize_source_bullet:
+                text_nodes = element.xpath('.//w:t')
+                if text_nodes:
+                    current = text_nodes[0].text or ''
+                    if not re.match(r'^\s*[•·▪◦●○■□►▸*]', current):
+                        text_nodes[0].text = '• ' + current
+                        text_nodes[0].set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
 
         for hl in element.xpath('.//w:hyperlink'):
             parent = hl.getparent()
@@ -14804,6 +14807,221 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
                     copied.append(clean_xml_element(deepcopy(element)))
         return copied
 
+    def target_bullet_num_id():
+        """Return a bullet numbering definition that belongs to the RFP target DOCX."""
+        numbering_root = doc.part.numbering_part.element
+        w_ns = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+        for num in numbering_root.xpath('.//*[local-name()="num"]'):
+            num_id = num.get(w_ns + 'numId')
+            abs_nodes = num.xpath('./*[local-name()="abstractNumId"]')
+            if not abs_nodes:
+                continue
+            abs_id = abs_nodes[0].get(w_ns + 'val')
+            abstract_defs = [
+                node for node in numbering_root.xpath('.//*[local-name()="abstractNum"]')
+                if node.get(w_ns + 'abstractNumId') == str(abs_id)
+            ]
+            if not abstract_defs:
+                continue
+            level_zero = [
+                node for node in abstract_defs[0].xpath('./*[local-name()="lvl"]')
+                if node.get(w_ns + 'ilvl') == '0'
+            ]
+            if not level_zero:
+                continue
+            fmt_nodes = level_zero[0].xpath('./*[local-name()="numFmt"]')
+            if fmt_nodes and fmt_nodes[0].get(w_ns + 'val') == 'bullet':
+                return int(num_id)
+
+        # Extremely defensive fallback for a stripped-down custom template.
+        # Create one simple bullet definition rather than ever reverting to a
+        # literal bullet character with broken wrapped-line alignment.
+        existing_abs = [
+            int(node.get(w_ns + 'abstractNumId'))
+            for node in numbering_root.xpath('.//*[local-name()="abstractNum"]')
+            if str(node.get(w_ns + 'abstractNumId') or '').isdigit()
+        ]
+        existing_num = [
+            int(node.get(w_ns + 'numId'))
+            for node in numbering_root.xpath('.//*[local-name()="num"]')
+            if str(node.get(w_ns + 'numId') or '').isdigit()
+        ]
+        abstract_id = max(existing_abs or [0]) + 1
+        num_id = max(existing_num or [0]) + 1
+
+        abstract = OxmlElement('w:abstractNum')
+        abstract.set(qn('w:abstractNumId'), str(abstract_id))
+        multi = OxmlElement('w:multiLevelType')
+        multi.set(qn('w:val'), 'singleLevel')
+        abstract.append(multi)
+        lvl = OxmlElement('w:lvl')
+        lvl.set(qn('w:ilvl'), '0')
+        start = OxmlElement('w:start')
+        start.set(qn('w:val'), '1')
+        lvl.append(start)
+        num_fmt = OxmlElement('w:numFmt')
+        num_fmt.set(qn('w:val'), 'bullet')
+        lvl.append(num_fmt)
+        lvl_text = OxmlElement('w:lvlText')
+        lvl_text.set(qn('w:val'), '•')
+        lvl.append(lvl_text)
+        abstract.append(lvl)
+        numbering_root.append(abstract)
+
+        num = OxmlElement('w:num')
+        num.set(qn('w:numId'), str(num_id))
+        abs_ref = OxmlElement('w:abstractNumId')
+        abs_ref.set(qn('w:val'), str(abstract_id))
+        num.append(abs_ref)
+        numbering_root.append(num)
+        return num_id
+
+    rfp_experience_bullet_num_id = target_bullet_num_id()
+
+    def _set_p_spacing(element, before_twips=None, after_twips=None):
+        p_pr = element.get_or_add_pPr()
+        spacing = p_pr.find(qn('w:spacing'))
+        if spacing is None:
+            spacing = OxmlElement('w:spacing')
+            p_pr.append(spacing)
+        if before_twips is not None:
+            spacing.set(qn('w:before'), str(before_twips))
+        if after_twips is not None:
+            spacing.set(qn('w:after'), str(after_twips))
+        spacing.set(qn('w:line'), '240')
+        spacing.set(qn('w:lineRule'), 'auto')
+
+    def _set_keep_with_next(element, enabled=True):
+        p_pr = element.get_or_add_pPr()
+        keep_next = p_pr.find(qn('w:keepNext'))
+        if enabled and keep_next is None:
+            p_pr.append(OxmlElement('w:keepNext'))
+        elif not enabled and keep_next is not None:
+            p_pr.remove(keep_next)
+
+    def _strip_literal_list_marker_from_xml(element):
+        text_nodes = element.xpath('.//w:t')
+        for node in text_nodes:
+            current = node.text or ''
+            if not current:
+                continue
+            cleaned = re.sub(r'^\\s*(?:[•·▪◦●○■□►▸*]|[-–—])\\s*', '', current)
+            if cleaned != current:
+                node.text = cleaned
+                return
+            if current.strip():
+                return
+
+    def _apply_target_experience_bullet(element):
+        """Create a true Word bullet with compact hanging indentation."""
+        p_pr = element.get_or_add_pPr()
+        for old_num_pr in list(p_pr.findall(qn('w:numPr'))):
+            p_pr.remove(old_num_pr)
+
+        num_pr = OxmlElement('w:numPr')
+        ilvl = OxmlElement('w:ilvl')
+        ilvl.set(qn('w:val'), '0')
+        num_id = OxmlElement('w:numId')
+        num_id.set(qn('w:val'), str(rfp_experience_bullet_num_id))
+        num_pr.append(ilvl)
+        num_pr.append(num_id)
+        p_pr.append(num_pr)
+
+        # Text starts at 0.375" and the bullet sits 0.1875" to its left. This
+        # preserves useful page width while ensuring all wrapped lines align with
+        # the first word instead of with a literal bullet glyph.
+        ind = p_pr.find(qn('w:ind'))
+        if ind is None:
+            ind = OxmlElement('w:ind')
+            p_pr.append(ind)
+        ind.set(qn('w:left'), '540')
+        ind.set(qn('w:hanging'), '270')
+        _set_p_spacing(element, before_twips=0, after_twips=0)
+
+    def _source_paragraph_style_id(element):
+        if element_tag(element) != 'p':
+            return ''
+        style_nodes = element.xpath('./w:pPr/w:pStyle')
+        if not style_nodes:
+            return ''
+        return str(style_nodes[0].get(qn('w:val')) or '')
+
+    def _source_is_experience_bullet(element, text_value):
+        if element_tag(element) != 'p':
+            return False
+        if source_list_format(element) == 'bullet':
+            return True
+        if re.match(r'^\\s*(?:[•·▪◦●○■□►▸*]|[-–—])\\s+', str(text_value or '')):
+            return True
+        return _source_paragraph_style_id(element).casefold() in {'listparagraph', 'listbullet'}
+
+    def _looks_like_experience_role_header(text_value):
+        value = re.sub(r'\\s+', ' ', str(text_value or '')).strip()
+        if not value or len(value) > 280:
+            return False
+        if re.match(r'^(?:client|company|employer|organization)\\s*:', value, flags=re.I):
+            return True
+        month = r'(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|\\d{1,2})'
+        endpoint = rf'(?:(?:{month})[ /-]+)?(?:19|20)\\d{{2}}'
+        return bool(re.search(
+            rf'{endpoint}\\s*(?:[-–—]|\\bto\\b)\\s*(?:{endpoint}|present|current)\\s*$',
+            value,
+            flags=re.I,
+        ))
+
+    def _looks_like_experience_role_metadata(text_value):
+        return bool(re.match(
+            r'^(?:role|position|job\\s+title|project(?:\\s+name)?|program(?:\\s+name)?)\\s*:',
+            re.sub(r'\\s+', ' ', str(text_value or '')).strip(),
+            flags=re.I,
+        ))
+
+    def copy_professional_experience_elements(ranges):
+        """
+        Preserve exact source experience wording/run formatting while rebuilding
+        paragraph mechanics for the Deloitte RFP layout.
+
+        - True target-document Word bullets replace literal bullet characters.
+        - Wrapped lines use a hanging indent.
+        - Each new role receives 6 pt of space before its company/client header.
+        - Header/Role/Project lines stay with the first following bullet where Word allows.
+        """
+        copied = []
+        first_role_header = True
+        for start, end in ranges:
+            for element in body_elements[start:end]:
+                text_value = re.sub(r'\\s+', ' ', visible_text(element)).strip()
+                if element_tag(element) != 'tbl' and not text_value:
+                    continue
+
+                if element_tag(element) == 'tbl':
+                    copied.append(clean_xml_element(deepcopy(element)))
+                    continue
+
+                is_bullet = _source_is_experience_bullet(element, text_value)
+                cloned = clean_xml_element(
+                    deepcopy(element),
+                    materialize_source_bullet=False if is_bullet else True,
+                )
+
+                if is_bullet:
+                    _strip_literal_list_marker_from_xml(cloned)
+                    _apply_target_experience_bullet(cloned)
+                elif _looks_like_experience_role_header(text_value):
+                    _set_p_spacing(
+                        cloned,
+                        before_twips=0 if first_role_header else 120,
+                        after_twips=0,
+                    )
+                    _set_keep_with_next(cloned, True)
+                    first_role_header = False
+                elif _looks_like_experience_role_metadata(text_value):
+                    _set_p_spacing(cloned, before_twips=0, after_twips=20)
+                    _set_keep_with_next(cloned, True)
+
+                copied.append(cloned)
+        return copied
+
     def insert_elements_at_placeholder(placeholder, elements):
         for paragraph in list(doc.paragraphs):
             if placeholder not in paragraph.text:
@@ -14931,7 +15149,7 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
     if experience_ranges:
         # Preserve the main history plus any explicit Additional/Earlier/Prior
         # Experience sections. Ranges are already returned in source order.
-        experience_elements = copy_elements_for_ranges(experience_ranges)
+        experience_elements = copy_professional_experience_elements(experience_ranges)
     else:
         # Fallback to the first verified role header and stop at the next major
         # non-experience section. This mirrors the standard Deloitte fail-closed logic.
@@ -14956,7 +15174,7 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
                 }:
                     end_idx = j
                     break
-            experience_elements = copy_elements_for_ranges([(start_idx, end_idx)])
+            experience_elements = copy_professional_experience_elements([(start_idx, end_idx)])
 
     if not experience_elements:
         raise RuntimeError(
