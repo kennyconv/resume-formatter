@@ -1,5 +1,5 @@
-# v33 SOURCE FIDELITY BUILD - CAPITAL ONE SUMMARY / EMPTY Q&A FIX
-# Preserves all v32 behavior while hardening Capital One summary style/factuality and removing empty trailing Q&A sections.
+# v34 SOURCE FIDELITY BUILD - DELOITTE RFP POLISH / DYNAMIC TABLE FIXES
+# Preserves all v33 behavior while tightening Deloitte RFP narrative consistency and dynamic table formatting.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -14297,7 +14297,7 @@ def deloitte_rfp_narrative_style_issues(rfp_data, raw_text):
 
     fields = ["PROFESSIONAL_SUMMARY"]
     fields += [f"KEY_STRENGTH{i}" for i in range(1, 6)]
-    fields += [f"KEY_HIGHLIGHT{i}" for i in range(1, 7)]
+    fields += [f"KEY_HIGHLIGHT{i}" for i in range(1, 6)]
 
     for key in fields:
         value = deloitte_clean_summary_style(rfp_data.get(key, ""))
@@ -14330,14 +14330,20 @@ def deloitte_rfp_narrative_style_issues(rfp_data, raw_text):
                             f"'{source_years_claim}' to '{claim}'"
                         )
 
+    professional_summary = str(rfp_data.get("PROFESSIONAL_SUMMARY", "") or "").strip()
+    if professional_summary and re.search(r"\bresume\b", professional_summary, flags=re.I):
+        issues.append(
+            "PROFESSIONAL_SUMMARY uses meta resume language; describe the candidate directly instead"
+        )
+
     strength_count = sum(bool(str(rfp_data.get(f"KEY_STRENGTH{i}", "") or "").strip()) for i in range(1, 6))
-    highlight_count = sum(bool(str(rfp_data.get(f"KEY_HIGHLIGHT{i}", "") or "").strip()) for i in range(1, 7))
-    if not str(rfp_data.get("PROFESSIONAL_SUMMARY", "") or "").strip():
+    highlight_count = sum(bool(str(rfp_data.get(f"KEY_HIGHLIGHT{i}", "") or "").strip()) for i in range(1, 6))
+    if not professional_summary:
         issues.append("PROFESSIONAL_SUMMARY is blank")
-    if strength_count < 3:
-        issues.append("fewer than 3 KEY_STRENGTH bullets were generated")
-    if highlight_count < 4:
-        issues.append("fewer than 4 KEY_HIGHLIGHT bullets were generated")
+    if strength_count != 5:
+        issues.append(f"exactly 5 KEY_STRENGTH bullets are required; generated {strength_count}")
+    if highlight_count != 5:
+        issues.append(f"exactly 5 KEY_HIGHLIGHT bullets are required; generated {highlight_count}")
 
     return issues
 
@@ -14370,7 +14376,7 @@ def deloitte_rfp_repair_narrative_style(
     narrative_draft = {
         "PROFESSIONAL_SUMMARY": rfp_data.get("PROFESSIONAL_SUMMARY", ""),
         **{f"KEY_STRENGTH{i}": rfp_data.get(f"KEY_STRENGTH{i}", "") for i in range(1, 6)},
-        **{f"KEY_HIGHLIGHT{i}": rfp_data.get(f"KEY_HIGHLIGHT{i}", "") for i in range(1, 7)},
+        **{f"KEY_HIGHLIGHT{i}": rfp_data.get(f"KEY_HIGHLIGHT{i}", "") for i in range(1, 6)},
     }
 
     repair_prompt = f"""
@@ -14381,15 +14387,16 @@ The previous draft failed these checks:
 - """ + "\n- ".join(issues) + f"""
 
 STRICT RULES:
-- PROFESSIONAL_SUMMARY: one concise paragraph of 2-4 sentences.
-- KEY_STRENGTH1 through KEY_STRENGTH5: provide 3-5 concise evidence-backed bullets; leave unused fields blank.
-- KEY_HIGHLIGHT1 through KEY_HIGHLIGHT6: provide 4-6 concise evidence-backed bullets; leave unused fields blank.
+- PROFESSIONAL_SUMMARY: one concise paragraph of 2-3 sentences. Start directly with the candidate's role/expertise rather than the candidate's name. Never refer to "the resume", "his resume", "her resume", or similar source-document language.
+- KEY_STRENGTH1 through KEY_STRENGTH5: provide EXACTLY 5 distinct, concise, evidence-backed bullets. Do not leave any field blank.
+- KEY_HIGHLIGHT1 through KEY_HIGHLIGHT5: provide EXACTLY 5 distinct, concise, evidence-backed bullets. Do not leave any field blank.
 - Strengths should emphasize the strongest proof against the role and exact Skills Matrix inputs.
 - Highlights should add useful resume-backed evidence without merely repeating the Strengths.
 - Use factual, evidence-first recruiter language.
 - NEVER use: progressive, brings, possesses, proven, proven track record, results-driven, seasoned, adept at,
   uniquely qualified, strong background, highly experienced, excellent fit, immediate value, or "will deliver" language.
 - No future-tense promises.
+- Never use meta phrases such as "the resume shows", "the resume includes", "the resume documents", "his resume", or "her resume". Describe the candidate directly.
 - Do not claim scale, leadership, architecture, impact, or authority unless the resume directly supports it.
 - {years_instruction}
 - Do not independently calculate total career years from employment dates.
@@ -14425,8 +14432,7 @@ Return ONLY valid JSON in this exact structure:
   "KEY_HIGHLIGHT2": "",
   "KEY_HIGHLIGHT3": "",
   "KEY_HIGHLIGHT4": "",
-  "KEY_HIGHLIGHT5": "",
-  "KEY_HIGHLIGHT6": ""
+  "KEY_HIGHLIGHT5": ""
 }}
 """
 
@@ -14634,6 +14640,15 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
         "{{EDUCATION_CERTIFICATIONS}}",
         "{{PROFESSIONAL_EXPERIENCE}}",
     }
+    # The RFP Skill Matrix is rebuilt dynamically after ordinary placeholder
+    # replacement. Preserve its template tokens until that structural pass so
+    # unused template rows can be removed cleanly.
+    for i in range(1, 9):
+        structural_placeholders.update({
+            f"{{{{SKILL{i}}}}}",
+            f"{{{{YEARS{i}}}}}",
+            f"{{{{SKILL{i}COMPANIES}}}}",
+        })
     for paragraph in doc.paragraphs:
         for key, value in mapping.items():
             placeholder = f"{{{{{key}}}}}"
@@ -14666,6 +14681,12 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
             for node in text_nodes[1:]:
                 node.text = ""
 
+    def set_row_content_driven_height(row):
+        """Remove inherited Word row height so actual cell content determines height."""
+        tr_pr = row._tr.get_or_add_trPr()
+        for tr_height in list(tr_pr.findall(qn("w:trHeight"))):
+            tr_pr.remove(tr_height)
+
     # Dynamic RFP Skill Matrix. Skill names are deterministic and come directly
     # from Deloitte box 3; only years/companies are AI-evaluated.
     skill_values = []
@@ -14680,29 +14701,36 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
 
     skill_table = None
     for table in doc.tables:
-        if any("{{SKILL" in cell.text for row in table.rows for cell in row.cells):
+        table_text = " ".join(
+            re.sub(r"\s+", " ", cell.text or "").strip()
+            for row in table.rows
+            for cell in row.cells
+        )
+        if "{{SKILL" in table_text or (
+            "Required Skills" in table_text
+            and "Years of Experience" in table_text
+            and "Companies Where Evidenced" in table_text
+        ):
             skill_table = table
             break
 
     if skill_table is not None and len(skill_table.rows) >= 2:
         template_row_xml = deepcopy(skill_table.rows[-1]._tr)
-        # Remove all body rows, preserving the header.
+        # Remove every template body row, preserving only the header. Re-add
+        # exactly the number of nonblank skills entered in Deloitte box 3.
         for row in list(skill_table.rows[1:]):
             row._element.getparent().remove(row._element)
-        for row_idx, (skill, years, companies) in enumerate(skill_values, start=1):
+        for skill, years, companies in skill_values:
             new_tr = deepcopy(template_row_xml)
             skill_table._tbl.append(new_tr)
             new_row = skill_table.rows[-1]
+            set_row_content_driven_height(new_row)
             values = [skill, years, companies]
             for cell_idx, value in enumerate(values):
                 cell = new_row.cells[cell_idx]
                 cell.text = value
-        if not skill_values:
-            # Keep one clean blank body row if box 3 is empty.
-            new_tr = deepcopy(template_row_xml)
-            skill_table._tbl.append(new_tr)
-            for cell in skill_table.rows[-1].cells:
-                cell.text = ""
+        # If box 3 is empty, keep the header only. Do not preserve decorative
+        # blank body rows from the supplied template.
 
     def replace_anchor_with_cloned_paragraphs(placeholder, values):
         values = [deloitte_clean_summary_style(v) for v in values if str(v or "").strip()]
@@ -14731,7 +14759,7 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
     )
     replace_anchor_with_cloned_paragraphs(
         "{{KEY_HIGHLIGHTS}}",
-        [mapping.get(f"KEY_HIGHLIGHT{i}", "") for i in range(1, 7)],
+        [mapping.get(f"KEY_HIGHLIGHT{i}", "") for i in range(1, 6)],
     )
 
     # Professional Summary is one generated paragraph, not a list.
@@ -14847,6 +14875,7 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
                 new_tr = deepcopy(template_row_xml)
                 technical_table._tbl.append(new_tr)
                 row = technical_table.rows[-1]
+                set_row_content_driven_height(row)
                 row.cells[0].text = left
                 row.cells[1].text = right
         else:
@@ -15383,7 +15412,7 @@ def deloitte_app():
                         "Certifications": str(data.get("Certifications", "") or "").strip(),
                         "PROFESSIONAL_SUMMARY": "",
                         "KEY_STRENGTH1": "", "KEY_STRENGTH2": "", "KEY_STRENGTH3": "", "KEY_STRENGTH4": "", "KEY_STRENGTH5": "",
-                        "KEY_HIGHLIGHT1": "", "KEY_HIGHLIGHT2": "", "KEY_HIGHLIGHT3": "", "KEY_HIGHLIGHT4": "", "KEY_HIGHLIGHT5": "", "KEY_HIGHLIGHT6": "",
+                        "KEY_HIGHLIGHT1": "", "KEY_HIGHLIGHT2": "", "KEY_HIGHLIGHT3": "", "KEY_HIGHLIGHT4": "", "KEY_HIGHLIGHT5": "",
                         "SUMMARY1": "", "SUMMARY2": "", "SUMMARY3": "", "SUMMARY4": "", "SUMMARY5": "",
                         "SKILL1": "", "YEARS1": "", "SKILL1COMPANIES": "",
                         "SKILL2": "", "YEARS2": "", "SKILL2COMPANIES": "",
@@ -15448,27 +15477,28 @@ def deloitte_app():
                             ========================
                             PROFESSIONAL SUMMARY
                             ========================
-                            - Write one concise paragraph of 2-4 sentences.
-                            - Explain the candidate's actual background and strongest resume-supported alignment to this role.
-                            - Use the candidate's first name naturally at most once.
+                            - Write one concise paragraph of 2-3 sentences.
+                            - Start directly with the candidate's role/expertise (for example, "SAP FICO and Treasury Consultant..."), not with the candidate's name or "[Name] is...".
+                            - Explain the candidate's actual background and strongest source-supported alignment to this role.
+                            - Never refer to "the resume", "his resume", "her resume", "their resume", or say the resume "shows", "includes", or "documents" something. Describe the candidate directly.
                             - {source_years_instruction}
                             - Do not independently calculate total career years from dates.
 
                             ========================
                             KEY STRENGTHS (STRONGLY PROVEN)
                             ========================
-                            - Produce 3-5 concise bullets in KEY_STRENGTH1 through KEY_STRENGTH5.
+                            - Produce EXACTLY 5 concise bullets in KEY_STRENGTH1 through KEY_STRENGTH5.
                             - Focus on the strongest direct evidence against the role and exact Skills Matrix items.
-                            - Every bullet must identify concrete resume-backed technologies, implementations, responsibilities, or delivery work.
-                            - Leave unused fields blank.
+                            - Every bullet must identify concrete source-backed technologies, implementations, responsibilities, or delivery work.
+                            - All five bullets must be distinct. If direct evidence for one requirement is limited, use another clearly relevant source-backed strength rather than inventing or overstating experience.
 
                             ========================
                             KEY HIGHLIGHTS
                             ========================
-                            - Produce 4-6 concise bullets in KEY_HIGHLIGHT1 through KEY_HIGHLIGHT6.
+                            - Produce EXACTLY 5 concise bullets in KEY_HIGHLIGHT1 through KEY_HIGHLIGHT5.
                             - Add useful candidate evidence beyond the Strengths without simply repeating them.
-                            - Prioritize concrete technical work, implementations, integrations, automation, testing, migrations, security, cloud, delivery, or other role-relevant evidence actually shown in the resume.
-                            - Leave unused fields blank.
+                            - Prioritize concrete technical work, implementations, integrations, automation, testing, migrations, security, cloud, delivery, or other role-relevant evidence actually shown in the source.
+                            - All five bullets must be distinct and complementary to the five Key Strengths.
 
                             ========================
                             STYLE / FACTUALITY RULES
@@ -15476,6 +15506,7 @@ def deloitte_app():
                             - Use direct recruiter language, not marketing copy.
                             - NEVER use: progressive, brings, possesses, proven, proven track record, results-driven, seasoned, adept at, uniquely qualified, strong background, highly experienced, excellent fit, immediate value, or "will deliver" language.
                             - Do not use future-tense promises.
+                            - Never use meta phrases such as "the resume shows", "the resume includes", "the resume documents", "his resume", or "her resume". Describe the candidate directly.
                             - Do not claim scale, leadership, architecture, impact, or authority unless the resume directly supports it.
                             - Do not use numeric years claims in Key Strengths or Key Highlights.
                             - Do not mention rate, location, remote/onsite status, visa status, or other logistics in generated narrative.
@@ -15510,7 +15541,6 @@ def deloitte_app():
                               "KEY_HIGHLIGHT3": "",
                               "KEY_HIGHLIGHT4": "",
                               "KEY_HIGHLIGHT5": "",
-                              "KEY_HIGHLIGHT6": "",
                               "YEARS1": "",
                               "SKILL1COMPANIES": "",
                               "YEARS2": "",
@@ -15575,7 +15605,7 @@ def deloitte_app():
                             mapping["PROFESSIONAL_SUMMARY"] = rfp_data.get("PROFESSIONAL_SUMMARY", "")
                             for i in range(1, 6):
                                 mapping[f"KEY_STRENGTH{i}"] = rfp_data.get(f"KEY_STRENGTH{i}", "")
-                            for i in range(1, 7):
+                            for i in range(1, 6):
                                 mapping[f"KEY_HIGHLIGHT{i}"] = rfp_data.get(f"KEY_HIGHLIGHT{i}", "")
                             for i in range(1, 9):
                                 if mapping.get(f"SKILL{i}", ""):
