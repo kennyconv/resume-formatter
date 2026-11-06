@@ -1,5 +1,5 @@
-# v32 SOURCE FIDELITY BUILD - PDF PAGINATION ARTIFACT FIX
-# Preserves all v31 behavior while excluding obvious PDF page header/footer artifacts from source-coverage auditing.
+# v33 SOURCE FIDELITY BUILD - CAPITAL ONE SUMMARY / EMPTY Q&A FIX
+# Preserves all v32 behavior while hardening Capital One summary style/factuality and removing empty trailing Q&A sections.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -2154,6 +2154,42 @@ def expand_experience_placeholders(doc, mapping):
             cloned_elements.append(new_p)
 
 
+def _remove_trailing_document_section(doc, heading_text):
+    """
+    Remove a trailing Word section beginning at a visible heading, regardless of
+    whether that heading lives in a paragraph, table, or text-bearing shape.
+
+    Capital One's Supplier Technical Interview section is the final section of
+    its template. Removing from the heading through the end also removes the
+    decorative horizontal lines when no Q&A was supplied.
+    """
+    body = doc._element.body
+    children = list(body)
+    target = re.sub(r"\s+", " ", str(heading_text or "")).strip().casefold()
+    start_index = None
+
+    for idx, child in enumerate(children):
+        if child.tag.rsplit('}', 1)[-1] == 'sectPr':
+            continue
+        pieces = [node.text or "" for node in child.xpath('.//w:t')]
+        visible = re.sub(r"\s+", " ", "".join(pieces)).strip().casefold()
+        if target and target in visible:
+            start_index = idx
+            break
+
+    if start_index is None:
+        return False
+
+    for child in list(body)[start_index:]:
+        if child.tag.rsplit('}', 1)[-1] == 'sectPr':
+            continue
+        try:
+            body.remove(child)
+        except Exception:
+            pass
+    return True
+
+
 def process_word_doc(temp_path, mapping, out_path):
     doc = docx.Document(temp_path)
     expand_experience_placeholders(doc, mapping)
@@ -2201,6 +2237,16 @@ def process_word_doc(temp_path, mapping, out_path):
     has_qa = any(mapping.get(k) and str(mapping.get(k)).strip() for k in ["Q1", "A1", "Q2", "A2", "Q3", "A3", "Q4", "A4", "Q5", "A5"])
 
     if not has_qa:
+        # Capital One places this section at the very end of the template. Its
+        # heading/decorative rules may live in tables/shapes rather than normal
+        # paragraphs, so remove the entire trailing section from the heading onward.
+        capital_one_qa_removed = False
+        if "FormerCapitalOne" in mapping:
+            capital_one_qa_removed = _remove_trailing_document_section(
+                doc,
+                "SUPPLIER TECHNICAL INTERVIEW RESULTS",
+            )
+
         paras = list(doc.paragraphs)
         for i, p in enumerate(paras):
             if "SUPPLIER TECHNICAL INTERVIEW RESULTS" in p.text.upper():
@@ -11977,6 +12023,195 @@ def peraton_app():
 
 
 # ====================================================================
+# --- CAPITAL ONE SUMMARY STYLE / FACTUALITY GUARDRAILS (v33) ---
+# ====================================================================
+_CAPITAL_ONE_SUMMARY_PROHIBITED_PATTERNS = [
+    (r"\bprogressive\b", "progressive"),
+    (r"^\s*brings?\b", "Bring/Brings opener"),
+    (r"\bpossesses\b", "possesses"),
+    (r"\bproven\s+track\s+record\b", "proven track record"),
+    (r"\bproven\b", "proven"),
+    (r"\bday\s*1\b", "Day 1"),
+    (r"\bwill\s+deliver\b", "will deliver"),
+    (r"\bdeliver\s+(?:immediate\s+)?value\b", "deliver value"),
+    (r"\bimmediate\s+(?:value|asset)\b", "immediate value/asset"),
+    (r"\bresults[- ]driven\b", "results-driven"),
+    (r"\bseasoned\b", "seasoned"),
+    (r"\badept\s+at\b", "adept at"),
+    (r"\bhighly\s+experienced\b", "highly experienced"),
+    (r"\bstrong\s+background\b", "strong background"),
+    (r"\bperfect\s+fit\b", "perfect fit"),
+    (r"\bexcellent\s+fit\b", "excellent fit"),
+    (r"\baligned\s+to\s+the\s+role(?:'s|’s)?\s+(?:core\s+)?needs\b", "aligned to the role's needs"),
+]
+
+
+def capital_one_extract_source_total_experience_claim(raw_text):
+    """Return only an explicitly stated total-experience claim from the resume profile."""
+    text_value = unicodedata.normalize("NFKC", str(raw_text or "")).replace("\u00a0", " ")
+
+    boundary = re.search(
+        r"(?im)^\s*(?:technical\s+skills|skills|professional\s+experience|work\s+experience|employment\s+history|career\s+history)\s*:?\s*$",
+        text_value,
+    )
+    profile_text = text_value[:boundary.start()] if boundary else text_value[:6000]
+
+    match = re.search(
+        r"\b(?P<num>\d{1,2})(?P<plus>\+)?\s+(?:years?|yrs?)\s+(?:of\s+)?(?:total\s+|overall\s+|professional\s+)?experience\b",
+        profile_text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    return f"{match.group('num')}{'+' if match.group('plus') else ''} years"
+
+
+def capital_one_clean_summary_style(value):
+    """Strip model-added list markers because the Capital One template owns bullet formatting."""
+    value = _strip_list_marker_only(value)
+    value = re.sub(r"\s+", " ", str(value or "")).strip()
+    return value
+
+
+def capital_one_summary_style_issues(summary_data, raw_text):
+    """Deterministically enforce Capital One summary style and total-years precision."""
+    issues = []
+    source_years_claim = capital_one_extract_source_total_experience_claim(raw_text)
+
+    for idx in range(1, 5):
+        key = f"SUMMARY{idx}"
+        value = capital_one_clean_summary_style(summary_data.get(key, ""))
+        summary_data[key] = value
+
+        if not value:
+            issues.append(f"{key} is blank")
+            continue
+
+        for pattern, label in _CAPITAL_ONE_SUMMARY_PROHIBITED_PATTERNS:
+            if re.search(pattern, value, flags=re.IGNORECASE):
+                issues.append(f"{key} contains prohibited phrasing: {label}")
+
+        if re.match(r"^\s*will\b", value, flags=re.IGNORECASE):
+            issues.append(f"{key} starts with future-tense sales language")
+
+        total_years_matches = re.findall(
+            r"\b(\d{1,2}\+?\s+years?)\s+(?:of\s+)?(?:total\s+|overall\s+|professional\s+|progressive\s+)?(?:technology\s+|technical\s+|industry\s+)?experience\b",
+            value,
+            flags=re.IGNORECASE,
+        )
+        summary1_years_matches = (
+            re.findall(r"\b(\d{1,2}\+?\s+years?)\b", value, flags=re.IGNORECASE)
+            if idx == 1 else []
+        )
+        years_matches = summary1_years_matches or total_years_matches
+        if years_matches:
+            if idx != 1:
+                issues.append(f"{key} contains a total-years claim outside SUMMARY1")
+            elif not source_years_claim:
+                issues.append(f"{key} invents/recalculates total career years not explicitly stated in the resume")
+            else:
+                expected = re.sub(r"\s+", " ", source_years_claim.casefold()).strip()
+                for claim in years_matches:
+                    actual = re.sub(r"\s+", " ", claim.casefold()).strip()
+                    if actual != expected:
+                        issues.append(
+                            f"{key} changes the source-stated total experience from '{source_years_claim}' to '{claim}'"
+                        )
+
+    return issues
+
+
+def capital_one_repair_summary_style(
+    client,
+    models_to_try,
+    summary_data,
+    raw_text,
+    job_description,
+    qa_text,
+):
+    """Repair only Capital One's four generated summary bullets when deterministic checks fail."""
+    issues = capital_one_summary_style_issues(summary_data, raw_text)
+    if not issues:
+        return summary_data
+
+    source_years_claim = capital_one_extract_source_total_experience_claim(raw_text)
+    years_instruction = (
+        f'The resume explicitly states total experience as "{source_years_claim}". '
+        f'If SUMMARY1 states total experience, use exactly "{source_years_claim}".'
+        if source_years_claim
+        else 'The resume does not explicitly state a total career-years figure. Omit any total-years claim.'
+    )
+    draft = {f"SUMMARY{i}": summary_data.get(f"SUMMARY{i}", "") for i in range(1, 5)}
+
+    repair_prompt = f"""
+You are revising four Capital One submission-summary bullets for style and factual precision only.
+Do not add candidate facts that are not supported by the resume or supplied interview Q&A.
+
+The previous draft failed these deterministic checks:
+- """ + "\n- ".join(issues) + f"""
+
+STRICT RULES:
+- Return exactly four non-empty strings: SUMMARY1 through SUMMARY4.
+- One concise sentence per bullet.
+- Do NOT include bullet symbols, numbering, hyphens, or list markers. The Word template supplies the bullets.
+- Do NOT use the candidate's name or he/she/they.
+- Write evidence-first statements about demonstrated experience, not future promises.
+- Never use: progressive, Bring, Brings, possesses, proven, Day 1, immediate value, results-driven, seasoned, adept at, highly experienced, strong background, perfect fit, excellent fit.
+- Do not say what the candidate "will deliver" or predict future value.
+- SUMMARY1 should start directly with a factual experience/expertise statement. {years_instruction}
+- SUMMARY2 should use recent employer/project evidence when useful.
+- SUMMARY3 should use concrete execution/impact evidence supported by the resume.
+- SUMMARY4 should add another demonstrated role-relevant capability, not a salesy closer.
+- Preserve factual metrics only when they are supported by the resume/Q&A.
+
+CURRENT DRAFT:
+{json.dumps(draft, ensure_ascii=False, indent=2)}
+
+JOB DESCRIPTION / NOTES:
+{job_description}
+
+TECHNICAL INTERVIEW Q&A:
+{qa_text}
+
+RESUME:
+{raw_text}
+
+Return JSON only:
+{{
+  "SUMMARY1": "",
+  "SUMMARY2": "",
+  "SUMMARY3": "",
+  "SUMMARY4": ""
+}}
+"""
+
+    last_error = None
+    for attempt in range(3):
+        current_model = models_to_try[min(attempt, len(models_to_try) - 1)]
+        try:
+            response = client.models.generate_content(
+                model=current_model,
+                contents=repair_prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            repaired = repair_and_load_json(response.text)
+            for idx in range(1, 5):
+                key = f"SUMMARY{idx}"
+                summary_data[key] = capital_one_clean_summary_style(repaired.get(key, ""))
+
+            remaining = capital_one_summary_style_issues(summary_data, raw_text)
+            if not remaining:
+                return summary_data
+            last_error = RuntimeError("; ".join(remaining))
+        except Exception as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(1 + attempt)
+
+    raise RuntimeError(f"Capital One summary style repair failed: {last_error}")
+
+
+# ====================================================================
 # --- 🟢 CLIENT APP 3: CAPITAL ONE 🟢 ---
 # ====================================================================
 def capital_one_app():
@@ -12178,21 +12413,23 @@ def capital_one_app():
                             ========================
                             THE NARRATIVE BLUEPRINT (4 Bullet Points)
                             ========================
-                            Generate exactly 4 distinct bullet points mapped to SUMMARY1 through SUMMARY4. 
-                            CRITICAL RULE: DO NOT use the candidate's name or 3rd person pronouns (he/she/they) in ANY of the bullet points. Start each bullet with a strong action verb or direct statement.
-                            
-                            - SUMMARY1 (The Anchor): What is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
-                            - SUMMARY2 (The Alignment): Explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
-                            - SUMMARY3 (The Execution & Impact): How did they build it, and why does it matter? Weave specific tools/methodologies into an "Execution Statement" that highlights complexity, scale, or business impact.
-                            - SUMMARY4 (The Closer): Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
+                            Generate exactly 4 distinct strings mapped to SUMMARY1 through SUMMARY4.
+                            CRITICAL RULE: DO NOT use the candidate's name or 3rd person pronouns (he/she/they).
+                            CRITICAL FORMATTING RULE: DO NOT include bullet symbols, numbering, hyphens, or list markers in SUMMARY1-SUMMARY4. The Capital One Word template supplies the bullets.
+
+                            - SUMMARY1 (The Anchor): Start directly with a factual experience/expertise statement tied to the primary must-have. If the resume explicitly states a total-years figure, use that exact figure or omit total years. NEVER calculate total career years from employment dates. Do NOT start with Bring, Brings, Offers, or Possesses. Do NOT use the word "progressive".
+                            - SUMMARY2 (The Alignment): Name the CURRENT or most recent employer when useful and describe the strongest recent resume-supported evidence relevant to this role.
+                            - SUMMARY3 (The Execution & Impact): Use concrete tools/methodologies and factual impact or scale only when explicitly supported by the resume/Q&A.
+                            - SUMMARY4 (Additional Evidence): Highlight another demonstrated, role-relevant capability from past execution. Do NOT make a Day 1 promise or predict future value.
 
                             ========================
                             STYLE & TONE RULES (STRICT)
                             ========================
-                            - Write like a human pitching to a colleague. Confident, direct, and factual.
-                            - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
-                            - LEADERSHIP VERBS: Use high-authority active verbs (e.g., 'Engineered', 'Optimized', 'Architected', 'Spearheaded').
-                            - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely."
+                            - Write like a human colleague: concise, direct, factual, and evidence-first.
+                            - LOCATION NEUTRAL: Never mention physical location, onsite, hybrid, or remote status in the summary.
+                            - Prefer concrete verbs and direct factual statements over resume-sales language.
+                            - NEVER use: progressive, Bring, Brings, possesses, proven, proven track record, Day 1, immediate value, results-driven, seasoned, adept at, highly experienced, strong background, perfect fit, excellent fit.
+                            - Do NOT say what the candidate "will deliver" or predict future value.
                             - Do NOT repeat or restate the job description.
 
                             ========================
@@ -12290,10 +12527,26 @@ def capital_one_app():
                                     else:
                                         raise api_e
 
-                            mapping["SUMMARY1"] = summary_data.get("SUMMARY1", "")
-                            mapping["SUMMARY2"] = summary_data.get("SUMMARY2", "")
-                            mapping["SUMMARY3"] = summary_data.get("SUMMARY3", "")
-                            mapping["SUMMARY4"] = summary_data.get("SUMMARY4", "")
+                            qa_text = "\n".join([
+                                f"Q1: {Question_1}\nA1: {Answer_1}",
+                                f"Q2: {Question_2}\nA2: {Answer_2}",
+                                f"Q3: {Question_3}\nA3: {Answer_3}",
+                                f"Q4: {Question_4}\nA4: {Answer_4}",
+                                f"Q5: {Question_5}\nA5: {Answer_5}",
+                            ])
+                            summary_data = capital_one_repair_summary_style(
+                                client=client,
+                                models_to_try=models_to_try,
+                                summary_data=summary_data,
+                                raw_text=raw_text,
+                                job_description=Job_Description_Notes_etc,
+                                qa_text=qa_text,
+                            )
+
+                            mapping["SUMMARY1"] = capital_one_clean_summary_style(summary_data.get("SUMMARY1", ""))
+                            mapping["SUMMARY2"] = capital_one_clean_summary_style(summary_data.get("SUMMARY2", ""))
+                            mapping["SUMMARY3"] = capital_one_clean_summary_style(summary_data.get("SUMMARY3", ""))
+                            mapping["SUMMARY4"] = capital_one_clean_summary_style(summary_data.get("SUMMARY4", ""))
                             mapping["SKILL1"] = summary_data.get("SKILL1", "")
                             mapping["YEARS1"] = summary_data.get("YEARS1", "")
                             mapping["SKILL2"] = summary_data.get("SKILL2", "")
