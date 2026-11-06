@@ -1,5 +1,5 @@
-# v35 SOURCE FIDELITY BUILD - DELOITTE RFP PROFESSIONAL EXPERIENCE FORMATTING
-# Preserves all v34 behavior while restoring true Word bullets, hanging indents, and clean role spacing in Deloitte RFP Professional Experience.
+# v36 SOURCE FIDELITY BUILD - DELOITTE RFP STRICT MAPPING / ROLE SPACING
+# Preserves all v35 behavior while adding Deloitte RFP requirement-to-resume strict mapping and clearer role separation.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -14290,6 +14290,253 @@ def deloitte_rfp_skill_inputs(skills_matrix_text):
     return skills[:8]
 
 
+def deloitte_rfp_evidence_catalog(experience):
+    """Build a source-verified evidence catalog from immutable work-history content."""
+    catalog = []
+    seq = 1
+    for role in experience or []:
+        if not isinstance(role, dict):
+            continue
+        company = clean_company_name(role.get("Company", ""))
+        title = clean_job_title(role.get("Title", ""))
+        bullets = role.get("Bullets", [])
+        if isinstance(bullets, str):
+            bullets = [line for line in bullets.splitlines() if str(line).strip()]
+        if not isinstance(bullets, list):
+            bullets = []
+        for bullet in bullets:
+            source_text = _strip_list_marker_only(bullet)
+            if not source_text:
+                continue
+            catalog.append({
+                "id": f"E{seq}",
+                "company": company,
+                "title": title,
+                "text": source_text,
+                "kind": "work_history",
+            })
+            seq += 1
+
+        environment = str(role.get("Environment", "") or "").strip()
+        if environment:
+            env_text = re.sub(
+                r"^(?:environment|technologies)\s*:\s*",
+                "",
+                _strip_list_marker_only(environment),
+                flags=re.I,
+            ).strip()
+            if env_text:
+                catalog.append({
+                    "id": f"E{seq}",
+                    "company": company,
+                    "title": title,
+                    "text": f"Environment: {env_text}",
+                    "kind": "environment",
+                })
+                seq += 1
+    return catalog
+
+
+def _deloitte_rfp_evidence_excerpt(text, max_chars=260):
+    """Create a compact excerpt from verified source wording without paraphrasing it."""
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(value) <= max_chars:
+        return value
+    cut = value[: max_chars - 3]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut.rstrip(" ,;:") + "..."
+
+
+def deloitte_rfp_generate_evaluation_rows(
+    client,
+    models_to_try,
+    job_description,
+    notes,
+    experience,
+):
+    """
+    Generate Deloitte's Strict Mapping rows.
+
+    Requirement text must come verbatim from the official JD. Candidate evidence is
+    never AI-authored: the model selects IDs from a catalog of source-verified
+    historical bullets, and the formatter renders those exact source excerpts.
+    """
+    job_description = str(job_description or "").strip()
+    if not job_description:
+        raise RuntimeError(
+            "Deloitte RFP Evaluation Table requires an Official Job Description."
+        )
+
+    catalog = deloitte_rfp_evidence_catalog(experience)
+    if not catalog:
+        raise RuntimeError(
+            "Deloitte RFP Evaluation Table could not build a verified work-history evidence catalog."
+        )
+
+    catalog_for_prompt = [
+        {
+            "id": item["id"],
+            "company": item["company"],
+            "title": item["title"],
+            "kind": item["kind"],
+            "text": item["text"],
+        }
+        for item in catalog
+    ]
+    catalog_by_id = {item["id"]: item for item in catalog}
+
+    prompt = f"""
+You are completing Section 3, "Evaluation Table (Strict Mapping)", in Deloitte's RFP Candidate Evaluation Report.
+Deloitte's instruction is: use the JD requirement, then enter evidence from the candidate's resume that shows the match, and the level at which the candidate matches it.
+
+STRICT REQUIREMENT SELECTION RULES:
+- Select the major MANDATORY/core requirements from the Official Job Description, in JD priority/order.
+- Prefer explicit requirement headings, numbered Required Qualifications, and named must-have skills.
+- Include all distinct major mandatory requirement areas when practical, with a maximum of 8 rows.
+- Do NOT use Preferred Qualifications unless the JD has no explicit mandatory requirement section.
+- Do NOT use rate, location, remote/onsite status, visa status, end date, assessment logistics, or other administrative details.
+- REQUIREMENT must be copied VERBATIM as a contiguous phrase from the Official Job Description. Do not paraphrase or rename it.
+- If the same requirement appears more than once, include it only once.
+
+STRICT CANDIDATE EVIDENCE RULES:
+- You may NOT write or paraphrase candidate evidence.
+- Choose up to 2 evidence IDs from the SOURCE-VERIFIED EVIDENCE CATALOG for each requirement.
+- Prefer direct work-history evidence over Environment lines.
+- Use an Environment line only when it materially supports a technology requirement and no stronger work-history bullet exists.
+- Never infer candidate experience from the JD.
+- If no catalog item directly or partially supports the requirement, return an empty evidence_ids list and Match Level "No Evidence".
+
+MATCH LEVEL DEFINITIONS:
+- Strong: direct, hands-on resume evidence closely matches the requirement, including its key technology/capability.
+- Moderate: relevant evidence covers a meaningful portion of the requirement but is not a complete/direct match.
+- Limited: only adjacent, partial, or weakly related evidence is present.
+- No Evidence: no defensible resume evidence is present.
+
+CONSISTENCY RULES:
+- A row with evidence_ids may be Strong, Moderate, or Limited, but not No Evidence.
+- A row with no evidence_ids MUST be No Evidence.
+- Do not inflate Match Level because a requirement is important.
+- Notes may help prioritize requirements, but REQUIREMENT text must still be copied from the Official Job Description.
+
+Official Job Description:
+{job_description}
+
+Notes:
+{notes}
+
+SOURCE-VERIFIED EVIDENCE CATALOG:
+{json.dumps(catalog_for_prompt, ensure_ascii=False)}
+
+Return ONLY valid JSON in this exact structure:
+{{
+  "EVALUATION_ROWS": [
+    {{
+      "requirement": "",
+      "evidence_ids": ["E1"],
+      "match_level": "Strong"
+    }}
+  ]
+}}
+"""
+
+    allowed_levels = {"Strong", "Moderate", "Limited", "No Evidence"}
+    jd_norm = _normalize_source_match(job_description)
+    last_error = None
+
+    for attempt in range(4):
+        current_model = models_to_try[min(attempt, len(models_to_try) - 1)]
+        try:
+            response = client.models.generate_content(
+                model=current_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json")
+            )
+            payload = repair_and_load_json(response.text)
+            raw_rows = payload.get("EVALUATION_ROWS", [])
+            if not isinstance(raw_rows, list) or not raw_rows:
+                raise RuntimeError("no Evaluation Table rows were generated")
+            if len(raw_rows) > 8:
+                raise RuntimeError("more than 8 Evaluation Table rows were generated")
+
+            rendered_rows = []
+            seen_requirements = set()
+            for row_num, row in enumerate(raw_rows, start=1):
+                if not isinstance(row, dict):
+                    raise RuntimeError(f"Evaluation row {row_num} is not an object")
+
+                requirement = re.sub(r"\s+", " ", str(row.get("requirement", "") or "")).strip()
+                req_norm = _normalize_source_match(requirement)
+                if not requirement or not req_norm or req_norm not in jd_norm:
+                    raise RuntimeError(
+                        f"Evaluation row {row_num} requirement is not copied verbatim from the Official JD: {requirement}"
+                    )
+                if req_norm in seen_requirements:
+                    continue
+                seen_requirements.add(req_norm)
+
+                evidence_ids = row.get("evidence_ids", [])
+                if isinstance(evidence_ids, str):
+                    evidence_ids = [evidence_ids]
+                if not isinstance(evidence_ids, list):
+                    evidence_ids = []
+                clean_ids = []
+                for evidence_id in evidence_ids:
+                    evidence_id = str(evidence_id or "").strip()
+                    if evidence_id in catalog_by_id and evidence_id not in clean_ids:
+                        clean_ids.append(evidence_id)
+                    if len(clean_ids) >= 2:
+                        break
+
+                match_level = str(row.get("match_level", "") or "").strip().title()
+                if match_level == "No Evidence":
+                    match_level = "No Evidence"
+                if match_level not in allowed_levels:
+                    raise RuntimeError(
+                        f"Evaluation row {row_num} has invalid Match Level: {match_level}"
+                    )
+                if clean_ids and match_level == "No Evidence":
+                    raise RuntimeError(
+                        f"Evaluation row {row_num} has source evidence but is labeled No Evidence"
+                    )
+                if not clean_ids and match_level != "No Evidence":
+                    raise RuntimeError(
+                        f"Evaluation row {row_num} has no source evidence but is labeled {match_level}"
+                    )
+
+                evidence_lines = []
+                for evidence_id in clean_ids:
+                    source_item = catalog_by_id[evidence_id]
+                    excerpt = _deloitte_rfp_evidence_excerpt(source_item["text"])
+                    company = str(source_item.get("company", "") or "").strip()
+                    prefix = f"{company}: " if company else ""
+                    evidence_lines.append(f'{prefix}"{excerpt}"')
+
+                candidate_evidence = (
+                    "\n".join(evidence_lines)
+                    if evidence_lines
+                    else "No direct evidence identified in the resume."
+                )
+                rendered_rows.append({
+                    "requirement": requirement,
+                    "candidate_evidence": candidate_evidence,
+                    "match_level": match_level,
+                })
+
+            if not rendered_rows:
+                raise RuntimeError("all Evaluation Table rows were invalid or duplicates")
+            return rendered_rows
+        except Exception as exc:
+            last_error = exc
+            if attempt < 3:
+                time.sleep(1 + attempt)
+
+    raise RuntimeError(
+        "Deloitte RFP Strict Mapping could not produce a safe requirement-to-resume evaluation: "
+        + str(last_error or "unknown validation error")
+    )
+
+
 def deloitte_rfp_narrative_style_issues(rfp_data, raw_text):
     """Deterministic style guardrails for generated RFP narrative fields only."""
     issues = []
@@ -14735,6 +14982,67 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
         # If box 3 is empty, keep the header only. Do not preserve decorative
         # blank body rows from the supplied template.
 
+    # Dynamic Strict Mapping Evaluation Table. Sofia/Deloitte confirmed that each
+    # row should map an actual JD requirement to resume evidence and a Match Level.
+    evaluation_rows = mapping.get("EVALUATION_ROWS", [])
+    if not isinstance(evaluation_rows, list):
+        evaluation_rows = []
+
+    evaluation_table = None
+    for table in doc.tables:
+        if not table.rows:
+            continue
+        header_values = [
+            re.sub(r"\s+", " ", cell.text or "").strip().casefold()
+            for cell in table.rows[0].cells
+        ]
+        if len(header_values) >= 3 and (
+            "requirement" in header_values[0]
+            and "candidate evidence" in header_values[1]
+            and "match level" in header_values[2]
+        ):
+            evaluation_table = table
+            break
+
+    if evaluation_table is not None:
+        # Future-proof the supplied template: remove any decorative/example body
+        # rows before inserting the current candidate's strict mappings.
+        for row in list(evaluation_table.rows[1:]):
+            row._element.getparent().remove(row._element)
+
+        for item in evaluation_rows:
+            if not isinstance(item, dict):
+                continue
+            requirement = str(item.get("requirement", "") or "").strip()
+            candidate_evidence = str(item.get("candidate_evidence", "") or "").strip()
+            match_level = str(item.get("match_level", "") or "").strip()
+            if not requirement:
+                continue
+
+            row = evaluation_table.add_row()
+            set_row_content_driven_height(row)
+            values = [requirement, candidate_evidence, match_level]
+            for cell_idx, value in enumerate(values):
+                cell = row.cells[cell_idx]
+                cell.text = value
+                try:
+                    cell.vertical_alignment = 0  # TOP
+                except Exception:
+                    pass
+                for paragraph in cell.paragraphs:
+                    paragraph.paragraph_format.space_before = Pt(0)
+                    paragraph.paragraph_format.space_after = Pt(0)
+                    if cell_idx == 2:
+                        paragraph.alignment = 1  # CENTER
+                        for run in paragraph.runs:
+                            run.bold = True
+
+            # Keep a single mapping row together when possible rather than
+            # splitting Requirement/Evidence/Match Level across pages.
+            tr_pr = row._tr.get_or_add_trPr()
+            if tr_pr.find(qn("w:cantSplit")) is None:
+                tr_pr.append(OxmlElement("w:cantSplit"))
+
     def replace_anchor_with_cloned_paragraphs(placeholder, values):
         values = [deloitte_clean_summary_style(v) for v in values if str(v or "").strip()]
         for paragraph in list(doc.paragraphs):
@@ -14983,7 +15291,7 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
 
         - True target-document Word bullets replace literal bullet characters.
         - Wrapped lines use a hanging indent.
-        - Each new role receives 6 pt of space before its company/client header.
+        - Each new role receives 10 pt of space before its company/client header.
         - Header/Role/Project lines stay with the first following bullet where Word allows.
         """
         copied = []
@@ -15010,7 +15318,7 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
                 elif _looks_like_experience_role_header(text_value):
                     _set_p_spacing(
                         cloned,
-                        before_twips=0 if first_role_header else 120,
+                        before_twips=0 if first_role_header else 200,
                         after_twips=0,
                     )
                     _set_keep_with_next(cloned, True)
@@ -15629,6 +15937,7 @@ def deloitte_app():
                         "ROLE": str(selected_req_data.get("title", "") or "").strip(),
                         "Certifications": str(data.get("Certifications", "") or "").strip(),
                         "PROFESSIONAL_SUMMARY": "",
+                        "EVALUATION_ROWS": [],
                         "KEY_STRENGTH1": "", "KEY_STRENGTH2": "", "KEY_STRENGTH3": "", "KEY_STRENGTH4": "", "KEY_STRENGTH5": "",
                         "KEY_HIGHLIGHT1": "", "KEY_HIGHLIGHT2": "", "KEY_HIGHLIGHT3": "", "KEY_HIGHLIGHT4": "", "KEY_HIGHLIGHT5": "",
                         "SUMMARY1": "", "SUMMARY2": "", "SUMMARY3": "", "SUMMARY4": "", "SUMMARY5": "",
@@ -15829,6 +16138,14 @@ def deloitte_app():
                                 if mapping.get(f"SKILL{i}", ""):
                                     mapping[f"YEARS{i}"] = str(rfp_data.get(f"YEARS{i}", "") or "").strip()
                                     mapping[f"SKILL{i}COMPANIES"] = str(rfp_data.get(f"SKILL{i}COMPANIES", "") or "").strip()
+
+                            mapping["EVALUATION_ROWS"] = deloitte_rfp_generate_evaluation_rows(
+                                client=client,
+                                models_to_try=models_to_try,
+                                job_description=Job_Description,
+                                notes=Chat_Notes,
+                                experience=data.get("Experience", []),
+                            )
 
                         except Exception as e:
                             raise RuntimeError(f"Deloitte RFP evaluation generation failed: {e}") from e
