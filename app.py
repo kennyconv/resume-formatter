@@ -1,5 +1,5 @@
-# v31 SOURCE FIDELITY BUILD - CAPITAL ONE SPLIT-BULLET VERIFICATION FIX
-# Preserves all v30 behavior while fixing false work-history bullet failures when one source bullet is split across adjacent parsed Word/PDF blocks.
+# v32 SOURCE FIDELITY BUILD - PDF PAGINATION ARTIFACT FIX
+# Preserves all v31 behavior while excluding obvious PDF page header/footer artifacts from source-coverage auditing.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -929,9 +929,47 @@ def _looks_like_role_metadata_label(text):
     return len(value) <= 500
 
 
+def _looks_like_pagination_artifact(text):
+    """
+    Recognize obvious page-number/header-footer artifacts introduced by PDF-to-DOCX conversion.
+
+    Examples intentionally ignored by source-coverage auditing:
+      "Page 2"
+      "Page 2 of 3"
+      "Edward Jokoh | Page 2"
+      "Edward Jokoh I Page 2"  # PDF conversion may turn a vertical bar into capital I
+
+    Keep this deliberately narrow so real resume content is never discarded merely
+    because it happens to contain the word "page".
+    """
+    value = _strip_list_marker_only(str(text or "").strip())
+    if not value or len(value) > 120:
+        return False
+
+    # Standalone page counter.
+    if re.fullmatch(r"page\s+\d{1,4}(?:\s+of\s+\d{1,4})?", value, flags=re.I):
+        return True
+
+    # Name/header followed by a page counter. Accept common conversion variants for
+    # the visual separator: |, capital I, lowercase l, hyphen, en dash, or em dash.
+    if re.fullmatch(
+        r"[A-Za-z][A-Za-z .,'’\-]{1,80}\s+(?:\||I|l|[-–—])\s+page\s+\d{1,4}(?:\s+of\s+\d{1,4})?",
+        value,
+        flags=re.I,
+    ):
+        return True
+
+    return False
+
+
 def _likely_role_metadata_block(text, role):
     source = _normalize_source_match(text)
     if not source:
+        return True
+
+    # PDF conversion can place visible page headers/footers into the body stream.
+    # They are structural noise, not historical work content.
+    if _looks_like_pagination_artifact(text):
         return True
 
     # Explicit role headers such as "Project: ..." are metadata even when the
@@ -1159,6 +1197,7 @@ def _validate_additional_experience_coverage(experience, blocks, client_name):
             if (
                 not text
                 or _looks_like_section_heading(text)
+                or _looks_like_pagination_artifact(text)
                 or _looks_like_role_metadata_label(text)
             ):
                 continue
