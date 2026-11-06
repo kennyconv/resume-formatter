@@ -1,5 +1,5 @@
-# v30 SOURCE FIDELITY BUILD - CAPITAL ONE SPLIT-TITLE VERIFICATION FIX
-# Preserves all v29 Deloitte RFP behavior while fixing false job-title verification failures when a source title is split across adjacent parsed Word/PDF blocks.
+# v31 SOURCE FIDELITY BUILD - CAPITAL ONE SPLIT-BULLET VERIFICATION FIX
+# Preserves all v30 behavior while fixing false work-history bullet failures when one source bullet is split across adjacent parsed Word/PDF blocks.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -642,7 +642,22 @@ def _source_blocks_for_text(raw_text):
 
 
 def _best_source_block_match(value, blocks, min_index=0, used=None):
-    """Return the best source block for a generated/extracted historical item."""
+    """
+    Return the best source match for a generated/extracted historical item.
+
+    Most resume bullets live in one parsed Word block, but PDF-to-DOCX conversion
+    can split one visible bullet across adjacent paragraphs. In that case, allow a
+    small continuation span only when the preceding fragment is visibly unfinished.
+
+    Safety constraints:
+    - Single-block exact/near-exact matching remains the first choice.
+    - Continuation spans are limited to three adjacent blocks.
+    - A span may continue only while the prior fragment does NOT end in terminal
+      punctuation, preventing two complete source bullets from being merged.
+    - Every block in the span must be unused and in source order.
+    - The combined wording still has to be exact or >= 0.985 near-identical to the
+      candidate text, and the exact combined source text is what gets emitted.
+    """
     used = used or set()
     target = _normalize_source_match(_strip_list_marker_only(value))
     if not target:
@@ -650,23 +665,56 @@ def _best_source_block_match(value, blocks, min_index=0, used=None):
 
     exact = []
     fuzzy = []
+
+    def consider(candidate_text, start_idx, source_indices, base_block):
+        source_norm = _normalize_source_match(candidate_text)
+        if not source_norm:
+            return
+        synthetic = dict(base_block)
+        synthetic['text'] = candidate_text
+        synthetic['_source_indices'] = list(source_indices)
+        if source_norm == target:
+            exact.append((start_idx, synthetic))
+            return
+        ratio = difflib.SequenceMatcher(None, target, source_norm).ratio()
+        if ratio >= 0.985:
+            fuzzy.append((ratio, start_idx, synthetic))
+
     for idx, block in enumerate(blocks):
         if idx < min_index or idx in used:
             continue
+
         source_text = _strip_list_marker_only(block.get('text', ''))
-        source_norm = _normalize_source_match(source_text)
-        if not source_norm:
+        if not source_text:
             continue
-        if source_norm == target:
-            exact.append((idx, block))
-            continue
-        ratio = difflib.SequenceMatcher(None, target, source_norm).ratio()
-        # Only near-identical matches are eligible. The source text, not the model
-        # wording, is what will ultimately be emitted.
-        if ratio >= 0.985:
-            fuzzy.append((ratio, idx, block))
+
+        # Normal case: one parsed block contains the whole historical item.
+        consider(source_text, idx, [idx], block)
+
+        # PDF/Word continuation case: one visible bullet was split across adjacent
+        # parsed blocks. Never cross a completed sentence/bullet boundary.
+        pieces = [source_text]
+        source_indices = [idx]
+        previous_piece = source_text
+        for next_idx in range(idx + 1, min(len(blocks), idx + 3)):
+            if next_idx in used:
+                break
+            if re.search(r'[.!?;]\s*$', previous_piece):
+                break
+
+            next_block = blocks[next_idx]
+            next_text = _strip_list_marker_only(next_block.get('text', ''))
+            if not next_text or _looks_like_section_heading(next_text):
+                break
+
+            pieces.append(next_text)
+            source_indices.append(next_idx)
+            combined = re.sub(r'\s+', ' ', ' '.join(pieces)).strip()
+            consider(combined, idx, source_indices, block)
+            previous_piece = next_text
 
     if exact:
+        exact.sort(key=lambda x: x[0])
         return exact[0]
     if fuzzy:
         fuzzy.sort(key=lambda x: (-x[0], x[1]))
@@ -1277,10 +1325,16 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
                 )
             exact_source = _strip_list_marker_only(block.get('text', ''))
             restored.append(exact_source)
-            matched_indices.append(idx)
-            global_used.add(idx)
-            role_min = idx + 1
-            global_min_index = idx + 1
+
+            # A single visible source bullet may have been reconstructed from a
+            # small adjacent-block continuation span. Mark every contributing
+            # source block as represented so the later coverage audit does not
+            # falsely report the continuation line as omitted.
+            source_indices = list(block.get('_source_indices', [idx]) or [idx])
+            matched_indices.extend(source_indices)
+            global_used.update(source_indices)
+            role_min = max(source_indices) + 1
+            global_min_index = max(source_indices) + 1
 
         role['Bullets'] = restored
 
