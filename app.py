@@ -1,5 +1,5 @@
-# v28 SOURCE FIDELITY BUILD - DELOITTE EVIDENCE-FIRST SUMMARY
-# Preserves v27 source-fidelity/body fixes while tightening Deloitte summary style and factual precision.
+# v30 SOURCE FIDELITY BUILD - CAPITAL ONE SPLIT-TITLE VERIFICATION FIX
+# Preserves all v29 Deloitte RFP behavior while fixing false job-title verification failures when a source title is split across adjacent parsed Word/PDF blocks.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -688,6 +688,48 @@ def _source_supports_display_value(value, blocks, allow_substring=True):
     return False
 
 
+def _source_supports_split_job_title(value, blocks, max_window=3):
+    """
+    Verify an exact source job title even when Word/PDF parsing splits the visible
+    title across adjacent structural blocks.
+
+    This is intentionally narrower than fuzzy/semantic title matching:
+    - The normalized title must still appear verbatim in the source.
+    - Only adjacent blocks are joined.
+    - At most a small 3-block window is considered.
+    - No abbreviations are expanded and no title wording is rewritten.
+
+    Example:
+        source block 1 = "Site Reliability"
+        source block 2 = "Engineer"
+        extracted title = "Site Reliability Engineer"
+
+    The older validator checked each block independently and falsely rejected the
+    title even though the exact wording was present in the original resume.
+    """
+    target = _normalize_source_match(value)
+    if not target:
+        return True
+
+    usable = [
+        str(block.get("text", "") or "").strip()
+        for block in (blocks or [])
+    ]
+
+    for start in range(len(usable)):
+        pieces = []
+        for end in range(start, min(len(usable), start + max(1, int(max_window)))):
+            piece = usable[end]
+            if not piece:
+                continue
+            pieces.append(piece)
+            combined = _normalize_source_match(" ".join(pieces))
+            if combined == target or target in combined:
+                return True
+
+    return False
+
+
 def _certification_status_terms(text):
     return set(re.findall(r"\b(?:in progress|pursuing|pending|expected|anticipated)\b", str(text or ''), flags=re.I))
 
@@ -1166,7 +1208,11 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
             raise RuntimeError(
                 f"{client_name} source-fidelity check could not verify company for role {role_num}: {company}"
             )
-        if title and not _source_supports_display_value(title, blocks):
+        if (
+            title
+            and not _source_supports_display_value(title, blocks)
+            and not _source_supports_split_job_title(title, blocks)
+        ):
             raise RuntimeError(
                 f"{client_name} source-fidelity check could not verify job title for role {role_num}: {title}"
             )
@@ -13863,6 +13909,690 @@ Return ONLY valid JSON in this exact structure:
 # ====================================================================
 # --- 🔵 CLIENT APP 8: DELOITTE 🔵 ---
 # ====================================================================
+
+# Deloitte RFP routing is intentionally deterministic. Only these four requisitions
+# use the alternate Candidate Evaluation Report template. All other Deloitte jobs
+# continue through the standard v28 Deloitte workflow unchanged.
+DELOITTE_RFP_REQ_IDS = {"73130", "73129", "73128", "73127"}
+DELOITTE_RFP_VMS_IDS = {
+    "DLTJP00064227",
+    "DLTJP00064234",
+    "DLTJP00063250",
+    "DLTJP00064230",
+}
+DELOITTE_RFP_TEMPLATE_FILENAME = "Deloitte_RFP_Evaluation_Template.docx"
+
+
+def deloitte_is_rfp_requisition(req_data):
+    req_data = req_data or {}
+    req_id = str(req_data.get("req_id", "") or "").strip()
+    vms_id = str(req_data.get("vms_id", "") or "").strip().upper()
+    return req_id in DELOITTE_RFP_REQ_IDS or vms_id in DELOITTE_RFP_VMS_IDS
+
+
+def deloitte_rfp_skill_inputs(skills_matrix_text):
+    """Return the exact nonblank skill lines entered in Deloitte box 3, in order."""
+    skills = []
+    for raw_line in str(skills_matrix_text or "").splitlines():
+        line = _strip_list_marker_only(raw_line)
+        line = re.sub(r"^skills\s+matrix\s*:\s*", "", line, flags=re.I).strip()
+        if not line:
+            continue
+        # Preserve the user's exact skill wording except harmless surrounding whitespace.
+        if line not in skills:
+            skills.append(line)
+    return skills[:8]
+
+
+def deloitte_rfp_narrative_style_issues(rfp_data, raw_text):
+    """Deterministic style guardrails for generated RFP narrative fields only."""
+    issues = []
+    source_years_claim = deloitte_extract_source_total_experience_claim(raw_text)
+
+    fields = ["PROFESSIONAL_SUMMARY"]
+    fields += [f"KEY_STRENGTH{i}" for i in range(1, 6)]
+    fields += [f"KEY_HIGHLIGHT{i}" for i in range(1, 7)]
+
+    for key in fields:
+        value = deloitte_clean_summary_style(rfp_data.get(key, ""))
+        rfp_data[key] = value
+        if not value:
+            continue
+
+        for pattern, label in _DELOITTE_SUMMARY_PROHIBITED_PATTERNS:
+            if re.search(pattern, value, flags=re.I):
+                issues.append(f"{key} contains prohibited phrasing: {label}")
+
+        if re.match(r"^\s*will\b", value, flags=re.I):
+            issues.append(f"{key} starts with future-tense sales language")
+
+        years_matches = re.findall(r"\b(\d{1,2}\+?\s+years?)\b", value, flags=re.I)
+        if years_matches:
+            if key != "PROFESSIONAL_SUMMARY":
+                issues.append(f"{key} contains a numeric years claim; keep years claims out of RFP bullets")
+            elif not source_years_claim:
+                issues.append(
+                    "PROFESSIONAL_SUMMARY invents/recalculates total career years not explicitly stated in the resume"
+                )
+            else:
+                normalized_source = re.sub(r"\s+", " ", source_years_claim.casefold()).strip()
+                for claim in years_matches:
+                    normalized_claim = re.sub(r"\s+", " ", claim.casefold()).strip()
+                    if normalized_claim != normalized_source:
+                        issues.append(
+                            "PROFESSIONAL_SUMMARY changes the source-stated total experience from "
+                            f"'{source_years_claim}' to '{claim}'"
+                        )
+
+    strength_count = sum(bool(str(rfp_data.get(f"KEY_STRENGTH{i}", "") or "").strip()) for i in range(1, 6))
+    highlight_count = sum(bool(str(rfp_data.get(f"KEY_HIGHLIGHT{i}", "") or "").strip()) for i in range(1, 7))
+    if not str(rfp_data.get("PROFESSIONAL_SUMMARY", "") or "").strip():
+        issues.append("PROFESSIONAL_SUMMARY is blank")
+    if strength_count < 3:
+        issues.append("fewer than 3 KEY_STRENGTH bullets were generated")
+    if highlight_count < 4:
+        issues.append("fewer than 4 KEY_HIGHLIGHT bullets were generated")
+
+    return issues
+
+
+def deloitte_rfp_repair_narrative_style(
+    client,
+    models_to_try,
+    rfp_data,
+    raw_text,
+    job_description,
+    notes,
+    skills_matrix,
+):
+    """
+    Repair only generated RFP narrative fields when deterministic style checks fail.
+    Skill Matrix years/companies are intentionally left untouched.
+    """
+    issues = deloitte_rfp_narrative_style_issues(rfp_data, raw_text)
+    if not issues:
+        return rfp_data
+
+    source_years_claim = deloitte_extract_source_total_experience_claim(raw_text)
+    years_instruction = (
+        f'The resume explicitly states total experience as "{source_years_claim}". '
+        f'If the Professional Summary uses a total-years statement, use exactly "{source_years_claim}".'
+        if source_years_claim
+        else "The resume does not explicitly state a total career-years figure. Omit total career years."
+    )
+
+    narrative_draft = {
+        "PROFESSIONAL_SUMMARY": rfp_data.get("PROFESSIONAL_SUMMARY", ""),
+        **{f"KEY_STRENGTH{i}": rfp_data.get(f"KEY_STRENGTH{i}", "") for i in range(1, 6)},
+        **{f"KEY_HIGHLIGHT{i}": rfp_data.get(f"KEY_HIGHLIGHT{i}", "") for i in range(1, 7)},
+    }
+
+    repair_prompt = f"""
+You are revising generated Deloitte RFP candidate-evaluation narrative for style and factual precision only.
+Do NOT change the Skill Matrix analysis. Do NOT add candidate facts not supported by the resume.
+
+The previous draft failed these checks:
+- """ + "\n- ".join(issues) + f"""
+
+STRICT RULES:
+- PROFESSIONAL_SUMMARY: one concise paragraph of 2-4 sentences.
+- KEY_STRENGTH1 through KEY_STRENGTH5: provide 3-5 concise evidence-backed bullets; leave unused fields blank.
+- KEY_HIGHLIGHT1 through KEY_HIGHLIGHT6: provide 4-6 concise evidence-backed bullets; leave unused fields blank.
+- Strengths should emphasize the strongest proof against the role and exact Skills Matrix inputs.
+- Highlights should add useful resume-backed evidence without merely repeating the Strengths.
+- Use factual, evidence-first recruiter language.
+- NEVER use: progressive, brings, possesses, proven, proven track record, results-driven, seasoned, adept at,
+  uniquely qualified, strong background, highly experienced, excellent fit, immediate value, or "will deliver" language.
+- No future-tense promises.
+- Do not claim scale, leadership, architecture, impact, or authority unless the resume directly supports it.
+- {years_instruction}
+- Do not independently calculate total career years from employment dates.
+- Do not use numeric years claims in Key Strengths or Key Highlights.
+- The resume is the only source of truth for candidate history.
+- Notes may refine role priorities, but cannot create candidate experience.
+- Do not mention rate, location, onsite/remote status, visa status, or other logistics in the narrative.
+
+Previous narrative:
+{json.dumps(narrative_draft, ensure_ascii=False)}
+
+Official Job Description:
+{job_description}
+
+Notes:
+{notes}
+
+Skills Matrix:
+{skills_matrix}
+
+Resume:
+{raw_text}
+
+Return ONLY valid JSON in this exact structure:
+{{
+  "PROFESSIONAL_SUMMARY": "",
+  "KEY_STRENGTH1": "",
+  "KEY_STRENGTH2": "",
+  "KEY_STRENGTH3": "",
+  "KEY_STRENGTH4": "",
+  "KEY_STRENGTH5": "",
+  "KEY_HIGHLIGHT1": "",
+  "KEY_HIGHLIGHT2": "",
+  "KEY_HIGHLIGHT3": "",
+  "KEY_HIGHLIGHT4": "",
+  "KEY_HIGHLIGHT5": "",
+  "KEY_HIGHLIGHT6": ""
+}}
+"""
+
+    last_error = None
+    for attempt in range(3):
+        current_model = models_to_try[min(attempt, len(models_to_try) - 1)]
+        try:
+            response = client.models.generate_content(
+                model=current_model,
+                contents=repair_prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json")
+            )
+            repaired = repair_and_load_json(response.text)
+            for key in narrative_draft:
+                rfp_data[key] = deloitte_clean_summary_style(repaired.get(key, ""))
+
+            remaining = deloitte_rfp_narrative_style_issues(rfp_data, raw_text)
+            if not remaining:
+                return rfp_data
+            last_error = RuntimeError("; ".join(remaining))
+        except Exception as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(1 + attempt)
+
+    raise RuntimeError(
+        "Deloitte RFP narrative guardrail could not produce safe evaluation content: "
+        + str(last_error or "unknown validation error")
+    )
+
+
+def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
+    """
+    Build Deloitte's RFP Candidate Evaluation Report while preserving historical
+    resume content. Generated content is limited to the evaluation narrative and
+    Skill Matrix analysis; Technical Skills, Education/Certifications, and
+    Professional Experience come from the uploaded resume.
+    """
+    import docx
+    import re
+    from copy import deepcopy
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+    from docx.oxml.ns import qn
+
+    doc = docx.Document(template_path)
+    orig_doc = docx.Document(resume_path)
+
+    def visible_text(element):
+        try:
+            return _xml_text(element)
+        except Exception:
+            return ""
+
+    def heading_key(value):
+        value = unicodedata.normalize("NFKC", str(value or ""))
+        value = value.replace("\u00a0", " ")
+        value = _strip_list_marker_only(value)
+        value = re.sub(r"\s+", " ", value).strip()
+        value = re.sub(r"\s*[:：]\s*$", "", value).strip()
+        return value.casefold()
+
+    all_section_headings = {
+        "professional summary", "summary", "profile",
+        "technical skills", "skills", "core competencies", "competencies",
+        "education", "certifications", "certification", "certificates",
+        "professional experience", "work experience", "employment history", "career history", "experience",
+        "additional experience", "earlier experience", "prior experience",
+        "professional projects", "projects", "awards", "references",
+    }
+
+    def element_tag(element):
+        return element.tag.rsplit('}', 1)[-1]
+
+    def source_list_format(element):
+        """Resolve a source paragraph's numbering format from the uploaded resume."""
+        if element_tag(element) != 'p':
+            return ""
+        num_pr_nodes = element.xpath('./w:pPr/w:numPr')
+        if not num_pr_nodes:
+            return ""
+        num_id_nodes = num_pr_nodes[0].xpath('./w:numId')
+        ilvl_nodes = num_pr_nodes[0].xpath('./w:ilvl')
+        if not num_id_nodes:
+            return ""
+        w_ns = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+        num_id = num_id_nodes[0].get(w_ns + 'val')
+        ilvl = ilvl_nodes[0].get(w_ns + 'val') if ilvl_nodes else '0'
+        try:
+            numbering_root = orig_doc.part.numbering_part.element
+        except Exception:
+            return ""
+        nums = [
+            node for node in numbering_root.xpath('.//*[local-name()="num"]')
+            if node.get(w_ns + 'numId') == str(num_id)
+        ]
+        if not nums:
+            return ""
+        abs_nodes = nums[0].xpath('./*[local-name()="abstractNumId"]')
+        if not abs_nodes:
+            return ""
+        abs_id = abs_nodes[0].get(w_ns + 'val')
+        abstract_nums = [
+            node for node in numbering_root.xpath('.//*[local-name()="abstractNum"]')
+            if node.get(w_ns + 'abstractNumId') == str(abs_id)
+        ]
+        if not abstract_nums:
+            return ""
+        levels = [
+            node for node in abstract_nums[0].xpath('./*[local-name()="lvl"]')
+            if node.get(w_ns + 'ilvl') == str(ilvl)
+        ]
+        if not levels:
+            return ""
+        fmt_nodes = levels[0].xpath('./*[local-name()="numFmt"]')
+        return fmt_nodes[0].get(w_ns + 'val') if fmt_nodes else ""
+
+    def clean_xml_element(element):
+        # Numbering definitions live in numbering.xml and do not automatically
+        # travel when a paragraph is copied between Word documents. Materialize
+        # source bullet lists as a literal Unicode bullet before insertion so
+        # resume bullets cannot turn into 1., 2., 3. in the Deloitte template.
+        if source_list_format(element) == 'bullet':
+            num_pr_nodes = element.xpath('./w:pPr/w:numPr')
+            for num_pr in num_pr_nodes:
+                parent = num_pr.getparent()
+                if parent is not None:
+                    parent.remove(num_pr)
+            text_nodes = element.xpath('.//w:t')
+            if text_nodes:
+                current = text_nodes[0].text or ''
+                if not re.match(r'^\s*[•·▪◦●○■□►▸*]', current):
+                    text_nodes[0].text = '• ' + current
+                    text_nodes[0].set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+
+        for hl in element.xpath('.//w:hyperlink'):
+            parent = hl.getparent()
+            if parent is not None:
+                idx = parent.index(hl)
+                for child in list(hl):
+                    parent.insert(idx, child)
+                    idx += 1
+                parent.remove(hl)
+        for drawing in element.xpath('.//w:drawing | .//w:pict | .//w:object'):
+            parent = drawing.getparent()
+            if parent is not None:
+                parent.remove(drawing)
+        for bm in element.xpath('.//w:bookmarkStart | .//w:bookmarkEnd'):
+            parent = bm.getparent()
+            if parent is not None:
+                parent.remove(bm)
+        for sectPr in element.xpath('.//w:sectPr'):
+            parent = sectPr.getparent()
+            if parent is not None:
+                parent.remove(sectPr)
+        return element
+
+    def replace_paragraph_placeholder(paragraph, placeholder, value):
+        if placeholder not in paragraph.text:
+            return False
+        value = str(value or "")
+        for run in paragraph.runs:
+            if placeholder in run.text:
+                run.text = run.text.replace(placeholder, value)
+                return True
+        # Word may split a placeholder across several runs. Replace across XML
+        # text nodes while preserving the paragraph properties and first run's
+        # formatting instead of rebuilding the paragraph from scratch.
+        text_nodes = paragraph._p.xpath('.//w:t')
+        combined = ''.join(node.text or '' for node in text_nodes)
+        updated = combined.replace(placeholder, value)
+        if updated != combined and text_nodes:
+            text_nodes[0].text = updated
+            for node in text_nodes[1:]:
+                node.text = ''
+            return True
+        return False
+
+    def rebuild_labeled_line(paragraph, label, value):
+        paragraph.clear()
+        prefix = paragraph.add_run(label)
+        prefix.bold = True
+        paragraph.add_run(str(value or ""))
+
+    # Candidate-information table labels are formatted separately so their bold
+    # prefixes survive placeholder replacement even when Word split the token.
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    ptext = paragraph.text
+                    if "Candidate Legal Name:" in ptext and "{{FullName}}" in ptext:
+                        rebuild_labeled_line(paragraph, "Candidate Legal Name: ", mapping.get("FullName", ""))
+                    elif "Preferred Name:" in ptext and "{{PreferredName}}" in ptext:
+                        rebuild_labeled_line(paragraph, "Preferred Name: ", mapping.get("PreferredName", ""))
+                    elif "Current Location:" in ptext and "{{Location}}" in ptext:
+                        rebuild_labeled_line(paragraph, "Current Location: ", mapping.get("Location", ""))
+
+    # Replace ordinary paragraph/table placeholders except variable-length anchors
+    # that are handled structurally later.
+    structural_placeholders = {
+        "{{KEY_STRENGTHS}}",
+        "{{KEY_HIGHLIGHTS}}",
+        "{{TECHNICAL_SKILLS_TABLE}}",
+        "{{EDUCATION_CERTIFICATIONS}}",
+        "{{PROFESSIONAL_EXPERIENCE}}",
+    }
+    for paragraph in doc.paragraphs:
+        for key, value in mapping.items():
+            placeholder = f"{{{{{key}}}}}"
+            if placeholder in structural_placeholders:
+                continue
+            replace_paragraph_placeholder(paragraph, placeholder, value)
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    for key, value in mapping.items():
+                        placeholder = f"{{{{{key}}}}}"
+                        if placeholder in structural_placeholders:
+                            continue
+                        replace_paragraph_placeholder(paragraph, placeholder, value)
+
+    # Replace placeholders in Word text boxes/shapes, including the blue candidate
+    # name banner. Python-docx does not expose these as ordinary paragraphs.
+    for txbx in doc._element.xpath('.//*[local-name()="txbxContent"]'):
+        text_nodes = txbx.xpath('.//*[local-name()="t"]')
+        if not text_nodes:
+            continue
+        combined = ''.join(node.text or '' for node in text_nodes)
+        updated = combined
+        for key, value in mapping.items():
+            updated = updated.replace(f"{{{{{key}}}}}", str(value or ""))
+        if updated != combined:
+            text_nodes[0].text = updated
+            for node in text_nodes[1:]:
+                node.text = ""
+
+    # Dynamic RFP Skill Matrix. Skill names are deterministic and come directly
+    # from Deloitte box 3; only years/companies are AI-evaluated.
+    skill_values = []
+    for idx in range(1, 9):
+        skill = str(mapping.get(f"SKILL{idx}", "") or "").strip()
+        if skill:
+            skill_values.append((
+                skill,
+                str(mapping.get(f"YEARS{idx}", "") or "").strip(),
+                str(mapping.get(f"SKILL{idx}COMPANIES", "") or "").strip(),
+            ))
+
+    skill_table = None
+    for table in doc.tables:
+        if any("{{SKILL" in cell.text for row in table.rows for cell in row.cells):
+            skill_table = table
+            break
+
+    if skill_table is not None and len(skill_table.rows) >= 2:
+        template_row_xml = deepcopy(skill_table.rows[-1]._tr)
+        # Remove all body rows, preserving the header.
+        for row in list(skill_table.rows[1:]):
+            row._element.getparent().remove(row._element)
+        for row_idx, (skill, years, companies) in enumerate(skill_values, start=1):
+            new_tr = deepcopy(template_row_xml)
+            skill_table._tbl.append(new_tr)
+            new_row = skill_table.rows[-1]
+            values = [skill, years, companies]
+            for cell_idx, value in enumerate(values):
+                cell = new_row.cells[cell_idx]
+                cell.text = value
+        if not skill_values:
+            # Keep one clean blank body row if box 3 is empty.
+            new_tr = deepcopy(template_row_xml)
+            skill_table._tbl.append(new_tr)
+            for cell in skill_table.rows[-1].cells:
+                cell.text = ""
+
+    def replace_anchor_with_cloned_paragraphs(placeholder, values):
+        values = [deloitte_clean_summary_style(v) for v in values if str(v or "").strip()]
+        for paragraph in list(doc.paragraphs):
+            if placeholder not in paragraph.text:
+                continue
+            parent = paragraph._element.getparent()
+            insert_at = parent.index(paragraph._element)
+            for value in values:
+                new_p = deepcopy(paragraph._element)
+                nodes = new_p.xpath('.//w:t')
+                combined = ''.join(node.text or '' for node in nodes)
+                combined = combined.replace(placeholder, value)
+                if nodes:
+                    nodes[0].text = combined
+                    for node in nodes[1:]:
+                        node.text = ""
+                parent.insert(insert_at, new_p)
+                insert_at += 1
+            parent.remove(paragraph._element)
+            return
+
+    replace_anchor_with_cloned_paragraphs(
+        "{{KEY_STRENGTHS}}",
+        [mapping.get(f"KEY_STRENGTH{i}", "") for i in range(1, 6)],
+    )
+    replace_anchor_with_cloned_paragraphs(
+        "{{KEY_HIGHLIGHTS}}",
+        [mapping.get(f"KEY_HIGHLIGHT{i}", "") for i in range(1, 7)],
+    )
+
+    # Professional Summary is one generated paragraph, not a list.
+    for paragraph in doc.paragraphs:
+        if "{{PROFESSIONAL_SUMMARY}}" in paragraph.text:
+            replace_paragraph_placeholder(
+                paragraph,
+                "{{PROFESSIONAL_SUMMARY}}",
+                mapping.get("PROFESSIONAL_SUMMARY", ""),
+            )
+            break
+
+    body_elements = list(orig_doc._body._body)
+
+    def find_section_ranges(target_headings):
+        ranges = []
+        for idx, element in enumerate(body_elements):
+            if element_tag(element) != 'p':
+                continue
+            key = heading_key(visible_text(element))
+            if key not in target_headings:
+                continue
+            end = len(body_elements)
+            for j in range(idx + 1, len(body_elements)):
+                if element_tag(body_elements[j]) != 'p':
+                    continue
+                next_key = heading_key(visible_text(body_elements[j]))
+                if next_key in all_section_headings:
+                    end = j
+                    break
+            ranges.append((idx + 1, end))
+        return ranges
+
+    def copy_elements_for_ranges(ranges):
+        copied = []
+        for start, end in ranges:
+            for element in body_elements[start:end]:
+                text_value = re.sub(r"\s+", " ", visible_text(element)).strip()
+                # Keep tables and substantive/intentional paragraphs. Ignore purely
+                # empty spacing paragraphs from the source resume.
+                if element_tag(element) == 'tbl' or text_value:
+                    copied.append(clean_xml_element(deepcopy(element)))
+        return copied
+
+    def insert_elements_at_placeholder(placeholder, elements):
+        for paragraph in list(doc.paragraphs):
+            if placeholder not in paragraph.text:
+                continue
+            parent = paragraph._element.getparent()
+            insert_at = parent.index(paragraph._element)
+            for element in elements:
+                parent.insert(insert_at, element)
+                insert_at += 1
+            parent.remove(paragraph._element)
+            return True
+        return False
+
+    # Technical Skills: preserve exact source wording while adapting it to the
+    # two-column Deloitte table. Colon-delimited source rows become Category | Detail.
+    def extract_technical_skill_rows():
+        technical_headings = {"technical skills", "skills", "core competencies", "competencies"}
+        ranges = find_section_ranges(technical_headings)
+        if not ranges:
+            return []
+        rows = []
+        for start, end in ranges[:1]:
+            for element in body_elements[start:end]:
+                tag = element_tag(element)
+                if tag == 'p':
+                    line = re.sub(r"\s+", " ", visible_text(element)).strip()
+                    line = _strip_list_marker_only(line)
+                    if not line:
+                        continue
+                    if ':' in line:
+                        left, right = line.split(':', 1)
+                        rows.append((left.strip(), right.strip()))
+                    elif '|' in line:
+                        left, right = line.split('|', 1)
+                        rows.append((left.strip(), right.strip()))
+                    else:
+                        rows.append((line, ""))
+                elif tag == 'tbl':
+                    src_table = Table(element, orig_doc)
+                    for src_row in src_table.rows:
+                        cell_values = [re.sub(r"\s+", " ", c.text).strip() for c in src_row.cells]
+                        cell_values = [v for v in cell_values if v]
+                        if not cell_values:
+                            continue
+                        if len(cell_values) >= 2:
+                            rows.append((cell_values[0], cell_values[1]))
+                        else:
+                            line = _strip_list_marker_only(cell_values[0])
+                            if ':' in line:
+                                left, right = line.split(':', 1)
+                                rows.append((left.strip(), right.strip()))
+                            else:
+                                rows.append((line, ""))
+        return rows
+
+    technical_rows = extract_technical_skill_rows()
+    technical_table = None
+    for table in doc.tables:
+        if any("{{TECHNICAL_SKILLS_TABLE}}" in cell.text for row in table.rows for cell in row.cells):
+            technical_table = table
+            break
+
+    if technical_table is not None:
+        if technical_rows:
+            template_row_xml = deepcopy(technical_table.rows[0]._tr)
+            for row in list(technical_table.rows):
+                row._element.getparent().remove(row._element)
+            for left, right in technical_rows:
+                new_tr = deepcopy(template_row_xml)
+                technical_table._tbl.append(new_tr)
+                row = technical_table.rows[-1]
+                row.cells[0].text = left
+                row.cells[1].text = right
+        else:
+            table_el = technical_table._element
+            parent = table_el.getparent()
+            parent.remove(table_el)
+            # Remove the template's Technical Skills heading when the source resume
+            # has no technical-skills section, rather than inventing one.
+            for paragraph in list(doc.paragraphs):
+                if heading_key(paragraph.text) == "technical skills":
+                    paragraph._element.getparent().remove(paragraph._element)
+                    break
+
+    # Education and Certifications are copied from the source resume in original
+    # wording/order, but placed under the combined Deloitte section heading.
+    edu_cert_ranges = find_section_ranges({"education", "certifications", "certification", "certificates"})
+    edu_cert_elements = copy_elements_for_ranges(edu_cert_ranges)
+    if not edu_cert_elements:
+        # Conservative fallback from source-verified extraction fields.
+        fallback_lines = []
+        for i in range(1, 4):
+            school = str(mapping.get(f"School{i}", "") or "").strip()
+            degree = str(mapping.get(f"Degree{i}", "") or "").strip()
+            if school or degree:
+                fallback_lines.append(" - ".join(x for x in [school, degree] if x))
+        certs = str(mapping.get("Certifications", "") or "").strip()
+        if certs:
+            fallback_lines.append(certs)
+        for paragraph in list(doc.paragraphs):
+            if "{{EDUCATION_CERTIFICATIONS}}" in paragraph.text:
+                parent = paragraph._element.getparent()
+                insert_at = parent.index(paragraph._element)
+                for line in fallback_lines:
+                    new_p = deepcopy(paragraph._element)
+                    nodes = new_p.xpath('.//w:t')
+                    if nodes:
+                        nodes[0].text = line
+                        for node in nodes[1:]:
+                            node.text = ""
+                    parent.insert(insert_at, new_p)
+                    insert_at += 1
+                parent.remove(paragraph._element)
+                break
+    else:
+        insert_elements_at_placeholder("{{EDUCATION_CERTIFICATIONS}}", edu_cert_elements)
+
+    # Professional Experience is copied directly from the uploaded resume. The
+    # section heading itself is omitted because Deloitte's template already has it.
+    experience_ranges = find_section_ranges({
+        "professional experience", "work experience", "employment history", "career history", "experience",
+        "additional experience", "earlier experience", "prior experience",
+    })
+    if experience_ranges:
+        # Preserve the main history plus any explicit Additional/Earlier/Prior
+        # Experience sections. Ranges are already returned in source order.
+        experience_elements = copy_elements_for_ranges(experience_ranges)
+    else:
+        # Fallback to the first verified role header and stop at the next major
+        # non-experience section. This mirrors the standard Deloitte fail-closed logic.
+        experience_elements = []
+        company1 = _normalize_source_match(mapping.get("Company1", ""))
+        title1 = _normalize_source_match(mapping.get("Title1", ""))
+        start_idx = None
+        for idx, element in enumerate(body_elements):
+            normalized = _normalize_source_match(visible_text(element))
+            if normalized and ((company1 and company1 in normalized) or (title1 and title1 in normalized)):
+                start_idx = idx
+                break
+        if start_idx is not None:
+            end_idx = len(body_elements)
+            for j in range(start_idx + 1, len(body_elements)):
+                if element_tag(body_elements[j]) != 'p':
+                    continue
+                next_key = heading_key(visible_text(body_elements[j]))
+                if next_key in {
+                    "education", "certifications", "certification", "certificates",
+                    "technical skills", "skills", "awards", "references",
+                }:
+                    end_idx = j
+                    break
+            experience_elements = copy_elements_for_ranges([(start_idx, end_idx)])
+
+    if not experience_elements:
+        raise RuntimeError(
+            "Deloitte RFP source-fidelity check could not locate Professional Experience in the uploaded resume. "
+            "No document was created because omitting work history is unsafe."
+        )
+    insert_elements_at_placeholder("{{PROFESSIONAL_EXPERIENCE}}", experience_elements)
+
+    collapse_extra_blank_paragraphs(doc)
+    doc.save(output_path)
+
 def process_deloitte_doc(template_path, mapping, resume_path, output_path):
     import docx
     import re
@@ -14176,7 +14906,7 @@ def deloitte_app():
             
             if option_str and option_str != "-":
                 options.append(option_str)
-                req_mapping[option_str] = {"desc": desc, "skills": skills_matrix_text}
+                req_mapping[option_str] = {"desc": desc, "skills": skills_matrix_text, "req_id": req_id, "vms_id": vms_id, "title": title}
 
     if "del_jd" not in st.session_state:
         st.session_state.del_jd = ""
@@ -14205,6 +14935,13 @@ def deloitte_app():
         on_change=update_jd_text
     )
 
+    selected_req_data = req_mapping.get(selected_req, {}) if selected_req != "None" else {}
+    is_deloitte_rfp = deloitte_is_rfp_requisition(selected_req_data)
+    active_template_filename = DELOITTE_RFP_TEMPLATE_FILENAME if is_deloitte_rfp else TEMPLATE_FILENAME
+
+    if is_deloitte_rfp:
+        st.info("📄 This RFP requisition will use the Deloitte Candidate Evaluation Report template.")
+
     Job_Description = st.text_area("1. Official Job Description (Paste generic JD here):", height=150, key="del_jd")
     Chat_Notes = st.text_area("2. Notes (Optional - Overrides JD):", height=100, key="del_notes")
     Skills_Matrix = st.text_area("3. Skills Matrix:", height=100, key="del_skills")
@@ -14217,8 +14954,11 @@ def deloitte_app():
             st.error("❌ Error: Please configure the API key for the selected AI provider in the sidebar.")
         elif not resume_file:
             st.error("❌ Error: Please upload a resume.")
-        elif not os.path.exists(TEMPLATE_FILENAME):
-            st.error(f"❌ Error: The preloaded template '{TEMPLATE_FILENAME}' was not found.")
+        elif not os.path.exists(active_template_filename):
+            st.error(
+                f"❌ Error: The preloaded template '{active_template_filename}' was not found. "
+                "Make sure the required Deloitte template is uploaded to the GitHub repository."
+            )
         else:
             with st.spinner("Processing document and querying AI..."):
                 try:
@@ -14291,8 +15031,13 @@ def deloitte_app():
 
                     # --- UPDATED MAPPING TO SUPPORT 8 SKILLS + COMPANIES + 5 SUMMARIES ---
                     mapping = {
-                        "FullName": final_name, "PreferredName": Preferred_Name, 
+                        "FullName": final_name, "PreferredName": Preferred_Name,
                         "TimeOff": Time_Off, "Location": Current_Location_City_ST,
+                        "ROLE": str(selected_req_data.get("title", "") or "").strip(),
+                        "Certifications": str(data.get("Certifications", "") or "").strip(),
+                        "PROFESSIONAL_SUMMARY": "",
+                        "KEY_STRENGTH1": "", "KEY_STRENGTH2": "", "KEY_STRENGTH3": "", "KEY_STRENGTH4": "", "KEY_STRENGTH5": "",
+                        "KEY_HIGHLIGHT1": "", "KEY_HIGHLIGHT2": "", "KEY_HIGHLIGHT3": "", "KEY_HIGHLIGHT4": "", "KEY_HIGHLIGHT5": "", "KEY_HIGHLIGHT6": "",
                         "SUMMARY1": "", "SUMMARY2": "", "SUMMARY3": "", "SUMMARY4": "", "SUMMARY5": "",
                         "SKILL1": "", "YEARS1": "", "SKILL1COMPANIES": "",
                         "SKILL2": "", "YEARS2": "", "SKILL2COMPANIES": "",
@@ -14324,122 +15069,116 @@ def deloitte_app():
                             mapping[f"Environment{i}"] = ""
                             mapping[f"Dates{i}"] = ""
 
-                    if Job_Description.strip():
+                    if is_deloitte_rfp:
                         try:
-                            # --- v28 EVIDENCE-FIRST SUMMARY PROMPT FOR DELOITTE ---
+                            input_skills = deloitte_rfp_skill_inputs(Skills_Matrix)
+                            for i in range(1, 9):
+                                mapping[f"SKILL{i}"] = input_skills[i - 1] if i <= len(input_skills) else ""
+                                mapping[f"YEARS{i}"] = ""
+                                mapping[f"SKILL{i}COMPANIES"] = ""
+
                             source_total_experience = deloitte_extract_source_total_experience_claim(raw_text)
                             source_years_instruction = (
                                 f'The resume explicitly states total experience as "{source_total_experience}". '
-                                f'If SUMMARY1 uses a total-years statement, use exactly "{source_total_experience}". '
-                                'Do not convert it to a different number or add/remove a plus sign.'
+                                f'If the Professional Summary uses total career years, use exactly "{source_total_experience}".'
                                 if source_total_experience
-                                else 'The resume does not explicitly state a total career-years figure. '
-                                     'Do NOT calculate one from employment dates and do NOT include a total-years claim in SUMMARY1.'
+                                else 'The resume does not explicitly state total career years. Do not calculate or invent a total-years claim.'
                             )
 
-                            summary_prompt = f"""
-                            You are a precise Senior Technical Recruiter writing a Deloitte Fieldglass submission summary.
-                            The hiring manager should be able to understand the candidate's fit quickly, but every statement must remain factual, source-supported, and natural enough that a recruiter could have written it.
+                            rfp_prompt = f"""
+                            You are a precise Senior Technical Recruiter completing Deloitte's Candidate Evaluation Report for an RFP submission.
+                            The evaluation must be concise, evidence-first, natural, and completely grounded in the candidate's resume.
 
                             ========================
-                            HIERARCHY OF ROLE INFORMATION
+                            ROLE INFORMATION PRIORITY
                             ========================
-                            You are receiving:
-                            1. Notes (HIGH PRIORITY)
-                            2. Official Job Description (BASELINE)
+                            1. Notes (if present) may update role priorities.
+                            2. Official Job Description is the baseline role description.
+                            3. Skills Matrix contains the exact required skills that must appear in the evaluation table.
+                            4. The Resume is the ONLY source of truth for candidate experience.
 
-                            - Notes represent the manager's latest role priorities. If Notes update or contradict the baseline JD, follow Notes.
-                            - The Resume is the ONLY source of truth for what the candidate has actually done.
-                            - Never convert a JD requirement into a candidate claim unless the resume independently supports the same skill/experience.
-                            - Use exact JD terminology only when the resume supports that exact term or a defensible equivalent.
+                            Never convert a JD requirement into a candidate claim unless the resume independently supports it.
 
                             ========================
-                            SUMMARY BLUEPRINT - EXACTLY 5 BULLETS
+                            PROFESSIONAL SUMMARY
                             ========================
-                            Return exactly five distinct summary strings mapped to SUMMARY1 through SUMMARY5.
-
-                            - SUMMARY1 (Anchor): Use the candidate's FIRST NAME. State their actual role/expertise and the strongest resume-supported match to the primary requirement. {source_years_instruction}
-                            - SUMMARY2 (Most Relevant Evidence): No pronouns or candidate name. Start with a concrete factual verb. Name the current/most recent employer only when useful and describe the most directly relevant implementation/configuration work from the resume.
-                            - SUMMARY3 (Execution): No pronouns or candidate name. Use concrete evidence such as requirements, configuration, integrations, testing, migration, cutover, go-live, hypercare, troubleshooting, or other delivery stages actually shown in the resume. Do not add vague claims of complexity, scale, or impact unless the resume states them.
-                            - SUMMARY4 (Secondary Expertise): No pronouns or candidate name. Highlight another role-relevant technology, process, architecture, or methodology using factual resume evidence. Do NOT start with "Possesses".
-                            - SUMMARY5 (Additional Differentiator): No pronouns or candidate name. Use another concrete, resume-supported differentiator relevant to the JD, such as banking/payment integration, production support, documentation, testing, reconciliation, or another clearly evidenced capability. Do NOT make a Day 1 promise or predict future value.
+                            - Write one concise paragraph of 2-4 sentences.
+                            - Explain the candidate's actual background and strongest resume-supported alignment to this role.
+                            - Use the candidate's first name naturally at most once.
+                            - {source_years_instruction}
+                            - Do not independently calculate total career years from dates.
 
                             ========================
-                            SUMMARY STYLE RULES - STRICT
+                            KEY STRENGTHS (STRONGLY PROVEN)
                             ========================
-                            - One concise sentence per bullet.
-                            - Evidence first. Prefer specific technologies, implementations, responsibilities, clients, and delivery stages over adjectives or marketing language.
-                            - NEVER use the word "progressive".
-                            - NEVER use "brings", "possesses", "proven", "proven track record", "results-driven", "seasoned", "adept at", "uniquely qualified", "strong background", "highly experienced", "excellent fit", "immediate value", or "will deliver" language.
-                            - Do not use future-tense sales promises.
-                            - Do not say the candidate is a perfect/1:1 match.
-                            - Do not independently calculate total career years from dated work history. Use an explicitly stated source total exactly as written, or omit the total-years claim.
-                            - Do not inflate verbs or authority. Use "architected", "led", "owned", "managed", "expert", "advanced", or similar high-authority wording only when the resume directly supports it.
-                            - Avoid vague adjectives such as "complex", "extensive", "deep", or "strong" unless the resume itself makes and supports that characterization.
-                            - Never mention physical location, onsite/hybrid status, visa status, or other logistics in the summary.
-                            - Do not repeat or paraphrase the JD as though it were candidate history.
-                            - Do not include bullet symbols in SUMMARY1-SUMMARY5. The Deloitte template supplies the bullets.
+                            - Produce 3-5 concise bullets in KEY_STRENGTH1 through KEY_STRENGTH5.
+                            - Focus on the strongest direct evidence against the role and exact Skills Matrix items.
+                            - Every bullet must identify concrete resume-backed technologies, implementations, responsibilities, or delivery work.
+                            - Leave unused fields blank.
 
                             ========================
-                            SKILLS SECTION (INTELLIGENT SEMANTIC MATCHING)
+                            KEY HIGHLIGHTS
                             ========================
-                            - You are evaluating the candidate against the exact skills listed in the "Skills Matrix:" input.
-                            - EVIDENCE-SAFE MATCHING: Credit an exact skill or a truly equivalent naming alias only when the resume clearly proves the same technology/competency. Do NOT treat related-but-distinct frameworks/products as interchangeable (for example, React Native alone does not prove React.js).
-                            - Output the EXACT skill name as it is written in the Skills Matrix input only when the resume evidence supports that exact skill or a defensible alias. Calculate Years and Companies only from roles where that evidence is actually present.
-                            - If the provided Skills Matrix only lists 4 skills, you MUST ONLY output those 4 skills and leave SKILL5 through SKILL8 completely empty ("").
-                            - You MUST extract and populate the 'Years' and 'Companies' fields for EVERY single skill you evaluate. Do not leave 'Years' or 'Companies' blank if the candidate has experience with the tool/concept.
-
-                            Format: "Skill Area"
-                            Years format: "X+ years" ONLY. (CRITICAL: DO NOT add ", current" or any years/dates to this string. Only output the number of years).
-                            Companies format: "Company A, Company B" (Extract exact company names from the resume where the skill was used)
+                            - Produce 4-6 concise bullets in KEY_HIGHLIGHT1 through KEY_HIGHLIGHT6.
+                            - Add useful candidate evidence beyond the Strengths without simply repeating them.
+                            - Prioritize concrete technical work, implementations, integrations, automation, testing, migrations, security, cloud, delivery, or other role-relevant evidence actually shown in the resume.
+                            - Leave unused fields blank.
 
                             ========================
-                            ZERO-TOLERANCE HALLUCINATION RULES
+                            STYLE / FACTUALITY RULES
                             ========================
-                            1. THE RESUME IS THE ONLY SOURCE OF TRUTH for candidate experience.
-                            2. DO NOT INFER OR ASSUME candidate skills from the JD.
-                            3. DO NOT INFLATE TO MATCH THE JD. If the candidate lacks a requested skill, omit it completely.
+                            - Use direct recruiter language, not marketing copy.
+                            - NEVER use: progressive, brings, possesses, proven, proven track record, results-driven, seasoned, adept at, uniquely qualified, strong background, highly experienced, excellent fit, immediate value, or "will deliver" language.
+                            - Do not use future-tense promises.
+                            - Do not claim scale, leadership, architecture, impact, or authority unless the resume directly supports it.
+                            - Do not use numeric years claims in Key Strengths or Key Highlights.
+                            - Do not mention rate, location, remote/onsite status, visa status, or other logistics in generated narrative.
+                            - Do not include bullet symbols in generated bullet strings. The template supplies bullet formatting.
 
                             ========================
-                            SKILLS MATRIX YEARS ACCURACY RULES
+                            SKILL MATRIX - EXACT INPUT SKILLS ONLY
                             ========================
-                            - These rules apply ONLY to YEARS1 through YEARS8 in the Skills Matrix, not to SUMMARY1-SUMMARY5.
-                            - Use October 2026 as the current date.
-                            - STRICT MATH (DATE-DRIVEN ONLY): Calculate years strictly based on the earliest chronological date provided in the 'Professional Experience'. Round DOWN to the nearest whole year.
+                            The exact Skills Matrix input lines, in order, are:
+                            {json.dumps(input_skills, ensure_ascii=False)}
 
-                            ========================
-                            OUTPUT FORMAT (STRICT)
-                            ========================
-                            Return ONLY valid JSON. If fewer than 8 skills are supported, leave the remaining skill strings empty ("").
+                            - NEVER rename, replace, add, remove, or reorder these required skill names.
+                            - Skill names are inserted deterministically by the formatter. You are ONLY calculating YEARS and COMPANIES for each input skill.
+                            - Evaluate each skill only where the resume clearly proves the exact skill or a defensible naming alias.
+                            - Do not treat related-but-distinct technologies as interchangeable.
+                            - If a required skill is not supported by the resume, leave its YEARS and COMPANIES fields blank. Do not invent evidence.
+                            - Years format when supported: "X+ years" only.
+                            - Companies format when supported: comma-separated exact employer/client names from the resume where the skill was used.
+                            - Calculate years from the dated Professional Experience evidence for that skill and round DOWN to the nearest whole year.
+                            - Use November 2026 as the current date for a present/current role.
 
+                            Return ONLY valid JSON in this exact structure:
                             {{
-                              "SUMMARY1": "Bullet 1...",
-                              "SUMMARY2": "Bullet 2...",
-                              "SUMMARY3": "Bullet 3...",
-                              "SUMMARY4": "Bullet 4...",
-                              "SUMMARY5": "Bullet 5...",
-                              "SKILL1": "Skill Area",
-                              "YEARS1": "X+ years",
-                              "SKILL1COMPANIES": "Company A, Company B",
-                              "SKILL2": "Skill Area",
-                              "YEARS2": "X+ years",
-                              "SKILL2COMPANIES": "Company C",
-                              "SKILL3": "",
+                              "PROFESSIONAL_SUMMARY": "",
+                              "KEY_STRENGTH1": "",
+                              "KEY_STRENGTH2": "",
+                              "KEY_STRENGTH3": "",
+                              "KEY_STRENGTH4": "",
+                              "KEY_STRENGTH5": "",
+                              "KEY_HIGHLIGHT1": "",
+                              "KEY_HIGHLIGHT2": "",
+                              "KEY_HIGHLIGHT3": "",
+                              "KEY_HIGHLIGHT4": "",
+                              "KEY_HIGHLIGHT5": "",
+                              "KEY_HIGHLIGHT6": "",
+                              "YEARS1": "",
+                              "SKILL1COMPANIES": "",
+                              "YEARS2": "",
+                              "SKILL2COMPANIES": "",
                               "YEARS3": "",
                               "SKILL3COMPANIES": "",
-                              "SKILL4": "",
                               "YEARS4": "",
                               "SKILL4COMPANIES": "",
-                              "SKILL5": "",
                               "YEARS5": "",
                               "SKILL5COMPANIES": "",
-                              "SKILL6": "",
                               "YEARS6": "",
                               "SKILL6COMPANIES": "",
-                              "SKILL7": "",
                               "YEARS7": "",
                               "SKILL7COMPANIES": "",
-                              "SKILL8": "",
                               "YEARS8": "",
                               "SKILL8COMPANIES": ""
                             }}
@@ -14459,61 +15198,243 @@ def deloitte_app():
                             Resume:
                             {raw_text}
                             """
-                            time.sleep(2) 
-                            summary_data = {}
-                            
+
+                            time.sleep(2)
+                            rfp_data = {}
                             for attempt in range(6):
                                 current_model = models_to_try[0] if attempt == 0 else (models_to_try[1] if attempt in [1, 2] else (models_to_try[2] if attempt in [3, 4] else models_to_try[3]))
                                 try:
-                                    summary_response = client.models.generate_content(
+                                    rfp_response = client.models.generate_content(
                                         model=current_model,
-                                        contents=summary_prompt,
+                                        contents=rfp_prompt,
                                         config=types.GenerateContentConfig(response_mime_type="application/json")
                                     )
-                                    summary_data = repair_and_load_json(summary_response.text)
-                                    # v28: Repair/validate only the five Deloitte summary bullets.
-                                    # Skills Matrix fields from this original response remain untouched.
-                                    summary_data = deloitte_repair_summary_style(
+                                    rfp_data = repair_and_load_json(rfp_response.text)
+                                    rfp_data = deloitte_rfp_repair_narrative_style(
                                         client=client,
                                         models_to_try=models_to_try,
-                                        summary_data=summary_data,
+                                        rfp_data=rfp_data,
                                         raw_text=raw_text,
                                         job_description=Job_Description,
                                         notes=Chat_Notes,
+                                        skills_matrix=Skills_Matrix,
                                     )
                                     break
                                 except Exception as api_e:
                                     if "503" in str(api_e) and attempt < 5:
                                         time.sleep(2 ** ((attempt % 2) + 1))
                                         continue
-                                    else:
-                                        raise api_e
+                                    raise
 
-                            mapping["SUMMARY1"] = summary_data.get("SUMMARY1", "")
-                            mapping["SUMMARY2"] = summary_data.get("SUMMARY2", "")
-                            mapping["SUMMARY3"] = summary_data.get("SUMMARY3", "")
-                            mapping["SUMMARY4"] = summary_data.get("SUMMARY4", "")
-                            mapping["SUMMARY5"] = summary_data.get("SUMMARY5", "")
-                            
+                            mapping["PROFESSIONAL_SUMMARY"] = rfp_data.get("PROFESSIONAL_SUMMARY", "")
+                            for i in range(1, 6):
+                                mapping[f"KEY_STRENGTH{i}"] = rfp_data.get(f"KEY_STRENGTH{i}", "")
+                            for i in range(1, 7):
+                                mapping[f"KEY_HIGHLIGHT{i}"] = rfp_data.get(f"KEY_HIGHLIGHT{i}", "")
                             for i in range(1, 9):
-                                mapping[f"SKILL{i}"] = summary_data.get(f"SKILL{i}", "")
-                                mapping[f"YEARS{i}"] = summary_data.get(f"YEARS{i}", "")
-                                mapping[f"SKILL{i}COMPANIES"] = summary_data.get(f"SKILL{i}COMPANIES", "")
-                                
-                        except Exception as e:
-                            st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
+                                if mapping.get(f"SKILL{i}", ""):
+                                    mapping[f"YEARS{i}"] = str(rfp_data.get(f"YEARS{i}", "") or "").strip()
+                                    mapping[f"SKILL{i}COMPANIES"] = str(rfp_data.get(f"SKILL{i}COMPANIES", "") or "").strip()
 
+                        except Exception as e:
+                            raise RuntimeError(f"Deloitte RFP evaluation generation failed: {e}") from e
+                    else:
+                        if Job_Description.strip():
+                            try:
+                                # --- v28 EVIDENCE-FIRST SUMMARY PROMPT FOR DELOITTE ---
+                                source_total_experience = deloitte_extract_source_total_experience_claim(raw_text)
+                                source_years_instruction = (
+                                    f'The resume explicitly states total experience as "{source_total_experience}". '
+                                    f'If SUMMARY1 uses a total-years statement, use exactly "{source_total_experience}". '
+                                    'Do not convert it to a different number or add/remove a plus sign.'
+                                    if source_total_experience
+                                    else 'The resume does not explicitly state a total career-years figure. '
+                                         'Do NOT calculate one from employment dates and do NOT include a total-years claim in SUMMARY1.'
+                                )
+
+                                summary_prompt = f"""
+                                You are a precise Senior Technical Recruiter writing a Deloitte Fieldglass submission summary.
+                                The hiring manager should be able to understand the candidate's fit quickly, but every statement must remain factual, source-supported, and natural enough that a recruiter could have written it.
+
+                                ========================
+                                HIERARCHY OF ROLE INFORMATION
+                                ========================
+                                You are receiving:
+                                1. Notes (HIGH PRIORITY)
+                                2. Official Job Description (BASELINE)
+
+                                - Notes represent the manager's latest role priorities. If Notes update or contradict the baseline JD, follow Notes.
+                                - The Resume is the ONLY source of truth for what the candidate has actually done.
+                                - Never convert a JD requirement into a candidate claim unless the resume independently supports the same skill/experience.
+                                - Use exact JD terminology only when the resume supports that exact term or a defensible equivalent.
+
+                                ========================
+                                SUMMARY BLUEPRINT - EXACTLY 5 BULLETS
+                                ========================
+                                Return exactly five distinct summary strings mapped to SUMMARY1 through SUMMARY5.
+
+                                - SUMMARY1 (Anchor): Use the candidate's FIRST NAME. State their actual role/expertise and the strongest resume-supported match to the primary requirement. {source_years_instruction}
+                                - SUMMARY2 (Most Relevant Evidence): No pronouns or candidate name. Start with a concrete factual verb. Name the current/most recent employer only when useful and describe the most directly relevant implementation/configuration work from the resume.
+                                - SUMMARY3 (Execution): No pronouns or candidate name. Use concrete evidence such as requirements, configuration, integrations, testing, migration, cutover, go-live, hypercare, troubleshooting, or other delivery stages actually shown in the resume. Do not add vague claims of complexity, scale, or impact unless the resume states them.
+                                - SUMMARY4 (Secondary Expertise): No pronouns or candidate name. Highlight another role-relevant technology, process, architecture, or methodology using factual resume evidence. Do NOT start with "Possesses".
+                                - SUMMARY5 (Additional Differentiator): No pronouns or candidate name. Use another concrete, resume-supported differentiator relevant to the JD, such as banking/payment integration, production support, documentation, testing, reconciliation, or another clearly evidenced capability. Do NOT make a Day 1 promise or predict future value.
+
+                                ========================
+                                SUMMARY STYLE RULES - STRICT
+                                ========================
+                                - One concise sentence per bullet.
+                                - Evidence first. Prefer specific technologies, implementations, responsibilities, clients, and delivery stages over adjectives or marketing language.
+                                - NEVER use the word "progressive".
+                                - NEVER use "brings", "possesses", "proven", "proven track record", "results-driven", "seasoned", "adept at", "uniquely qualified", "strong background", "highly experienced", "excellent fit", "immediate value", or "will deliver" language.
+                                - Do not use future-tense sales promises.
+                                - Do not say the candidate is a perfect/1:1 match.
+                                - Do not independently calculate total career years from dated work history. Use an explicitly stated source total exactly as written, or omit the total-years claim.
+                                - Do not inflate verbs or authority. Use "architected", "led", "owned", "managed", "expert", "advanced", or similar high-authority wording only when the resume directly supports it.
+                                - Avoid vague adjectives such as "complex", "extensive", "deep", or "strong" unless the resume itself makes and supports that characterization.
+                                - Never mention physical location, onsite/hybrid status, visa status, or other logistics in the summary.
+                                - Do not repeat or paraphrase the JD as though it were candidate history.
+                                - Do not include bullet symbols in SUMMARY1-SUMMARY5. The Deloitte template supplies the bullets.
+
+                                ========================
+                                SKILLS SECTION (INTELLIGENT SEMANTIC MATCHING)
+                                ========================
+                                - You are evaluating the candidate against the exact skills listed in the "Skills Matrix:" input.
+                                - EVIDENCE-SAFE MATCHING: Credit an exact skill or a truly equivalent naming alias only when the resume clearly proves the same technology/competency. Do NOT treat related-but-distinct frameworks/products as interchangeable (for example, React Native alone does not prove React.js).
+                                - Output the EXACT skill name as it is written in the Skills Matrix input only when the resume evidence supports that exact skill or a defensible alias. Calculate Years and Companies only from roles where that evidence is actually present.
+                                - If the provided Skills Matrix only lists 4 skills, you MUST ONLY output those 4 skills and leave SKILL5 through SKILL8 completely empty ("").
+                                - You MUST extract and populate the 'Years' and 'Companies' fields for EVERY single skill you evaluate. Do not leave 'Years' or 'Companies' blank if the candidate has experience with the tool/concept.
+
+                                Format: "Skill Area"
+                                Years format: "X+ years" ONLY. (CRITICAL: DO NOT add ", current" or any years/dates to this string. Only output the number of years).
+                                Companies format: "Company A, Company B" (Extract exact company names from the resume where the skill was used)
+
+                                ========================
+                                ZERO-TOLERANCE HALLUCINATION RULES
+                                ========================
+                                1. THE RESUME IS THE ONLY SOURCE OF TRUTH for candidate experience.
+                                2. DO NOT INFER OR ASSUME candidate skills from the JD.
+                                3. DO NOT INFLATE TO MATCH THE JD. If the candidate lacks a requested skill, omit it completely.
+
+                                ========================
+                                SKILLS MATRIX YEARS ACCURACY RULES
+                                ========================
+                                - These rules apply ONLY to YEARS1 through YEARS8 in the Skills Matrix, not to SUMMARY1-SUMMARY5.
+                                - Use October 2026 as the current date.
+                                - STRICT MATH (DATE-DRIVEN ONLY): Calculate years strictly based on the earliest chronological date provided in the 'Professional Experience'. Round DOWN to the nearest whole year.
+
+                                ========================
+                                OUTPUT FORMAT (STRICT)
+                                ========================
+                                Return ONLY valid JSON. If fewer than 8 skills are supported, leave the remaining skill strings empty ("").
+
+                                {{
+                                  "SUMMARY1": "Bullet 1...",
+                                  "SUMMARY2": "Bullet 2...",
+                                  "SUMMARY3": "Bullet 3...",
+                                  "SUMMARY4": "Bullet 4...",
+                                  "SUMMARY5": "Bullet 5...",
+                                  "SKILL1": "Skill Area",
+                                  "YEARS1": "X+ years",
+                                  "SKILL1COMPANIES": "Company A, Company B",
+                                  "SKILL2": "Skill Area",
+                                  "YEARS2": "X+ years",
+                                  "SKILL2COMPANIES": "Company C",
+                                  "SKILL3": "",
+                                  "YEARS3": "",
+                                  "SKILL3COMPANIES": "",
+                                  "SKILL4": "",
+                                  "YEARS4": "",
+                                  "SKILL4COMPANIES": "",
+                                  "SKILL5": "",
+                                  "YEARS5": "",
+                                  "SKILL5COMPANIES": "",
+                                  "SKILL6": "",
+                                  "YEARS6": "",
+                                  "SKILL6COMPANIES": "",
+                                  "SKILL7": "",
+                                  "YEARS7": "",
+                                  "SKILL7COMPANIES": "",
+                                  "SKILL8": "",
+                                  "YEARS8": "",
+                                  "SKILL8COMPANIES": ""
+                                }}
+
+                                ========================
+                                INPUT DATA
+                                ========================
+                                Official Job Description:
+                                {Job_Description}
+
+                                Notes:
+                                {Chat_Notes}
+
+                                Skills Matrix:
+                                {Skills_Matrix}
+
+                                Resume:
+                                {raw_text}
+                                """
+                                time.sleep(2) 
+                                summary_data = {}
+                                
+                                for attempt in range(6):
+                                    current_model = models_to_try[0] if attempt == 0 else (models_to_try[1] if attempt in [1, 2] else (models_to_try[2] if attempt in [3, 4] else models_to_try[3]))
+                                    try:
+                                        summary_response = client.models.generate_content(
+                                            model=current_model,
+                                            contents=summary_prompt,
+                                            config=types.GenerateContentConfig(response_mime_type="application/json")
+                                        )
+                                        summary_data = repair_and_load_json(summary_response.text)
+                                        # v28: Repair/validate only the five Deloitte summary bullets.
+                                        # Skills Matrix fields from this original response remain untouched.
+                                        summary_data = deloitte_repair_summary_style(
+                                            client=client,
+                                            models_to_try=models_to_try,
+                                            summary_data=summary_data,
+                                            raw_text=raw_text,
+                                            job_description=Job_Description,
+                                            notes=Chat_Notes,
+                                        )
+                                        break
+                                    except Exception as api_e:
+                                        if "503" in str(api_e) and attempt < 5:
+                                            time.sleep(2 ** ((attempt % 2) + 1))
+                                            continue
+                                        else:
+                                            raise api_e
+
+                                mapping["SUMMARY1"] = summary_data.get("SUMMARY1", "")
+                                mapping["SUMMARY2"] = summary_data.get("SUMMARY2", "")
+                                mapping["SUMMARY3"] = summary_data.get("SUMMARY3", "")
+                                mapping["SUMMARY4"] = summary_data.get("SUMMARY4", "")
+                                mapping["SUMMARY5"] = summary_data.get("SUMMARY5", "")
+                                
+                                for i in range(1, 9):
+                                    mapping[f"SKILL{i}"] = summary_data.get(f"SKILL{i}", "")
+                                    mapping[f"YEARS{i}"] = summary_data.get(f"YEARS{i}", "")
+                                    mapping[f"SKILL{i}COMPANIES"] = summary_data.get(f"SKILL{i}COMPANIES", "")
+                                    
+                            except Exception as e:
+                                st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
                     out_file = f"Submission_Deloitte_{final_name.replace(' ', '_')}.docx"
 
-                    # Deloitte needs a Word-compatible source here because
-                    # process_deloitte_doc() copies XML/content from the
-                    # candidate's original resume into the template.
-                    process_deloitte_doc(
-                        TEMPLATE_FILENAME,
-                        mapping,
-                        resume_docx_path,
-                        out_file
-                    )
+                    # Deloitte needs a Word-compatible source because both document
+                    # builders preserve source resume content directly in Word XML.
+                    if is_deloitte_rfp:
+                        process_deloitte_rfp_doc(
+                            active_template_filename,
+                            mapping,
+                            resume_docx_path,
+                            out_file
+                        )
+                    else:
+                        process_deloitte_doc(
+                            active_template_filename,
+                            mapping,
+                            resume_docx_path,
+                            out_file
+                        )
                     
                     with open(out_file, "rb") as file:
                         btn = st.download_button(
