@@ -1,5 +1,5 @@
-# v37 SOURCE FIDELITY BUILD - DELOITTE RFP MAPPING REFINEMENTS / FINAL ROLE SPACING
-# Preserves all v36 behavior while refining Deloitte RFP evidence weighting/excerpts, restoring dynamic row dividers, repeating table headers, and enforcing final role spacing.
+# v38 SOURCE FIDELITY BUILD - DELOITTE RFP STRICT MAPPING RELIABILITY
+# Preserves all v37 behavior while making RFP requirement selection deterministic so valid JDs cannot collapse to an empty Evaluation Table.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -14459,6 +14459,133 @@ def _deloitte_rfp_evidence_excerpt(text, requirement="", max_chars=190):
     return excerpt
 
 
+
+def _deloitte_rfp_extract_mandatory_requirements(job_description, max_rows=8):
+    """
+    Deterministically select Deloitte Strict Mapping requirements from the JD.
+
+    Priority:
+    1. Numbered headings inside Required Qualifications/Requirements.
+    2. Individual requirement lines inside Required Qualifications/Requirements.
+    3. Top/Must-Have Skills when no explicit required section exists.
+
+    Returned text is always an exact contiguous substring of the supplied JD after
+    harmless whitespace/list-marker cleanup. This removes the need for the model to
+    decide whether a JD contains requirements before it can evaluate the candidate.
+    """
+    raw = str(job_description or "")
+    if not raw.strip():
+        return []
+
+    lines = []
+    for raw_line in raw.splitlines():
+        value = re.sub(r"\s+", " ", str(raw_line or "")).strip()
+        if value:
+            lines.append(value)
+
+    def heading_key(value):
+        value = re.sub(r"\s*[:：]\s*$", "", str(value or "")).strip().casefold()
+        return value
+
+    required_heading_re = re.compile(
+        r"^(?:required\s+qualifications?|required\s+skills?|requirements?|minimum\s+qualifications?)$",
+        flags=re.I,
+    )
+    stop_heading_re = re.compile(
+        r"^(?:preferred\s+qualifications?|preferred\s+skills?|education(?:\s*&\s*experience)?|"
+        r"education\s+and\s+experience|technical\s+assessment|assessment|key\s+responsibilities|"
+        r"responsibilities|job\s+description|position\s+overview|about\s+the\s+role)$",
+        flags=re.I,
+    )
+
+    section = []
+    start = None
+    for idx, value in enumerate(lines):
+        if required_heading_re.fullmatch(heading_key(value)):
+            start = idx + 1
+            break
+
+    if start is not None:
+        for value in lines[start:]:
+            key = heading_key(value)
+            if stop_heading_re.fullmatch(key):
+                break
+            # Another obvious section heading means the required section ended.
+            if (
+                value.endswith(":")
+                and len(value) <= 80
+                and not re.match(r"^\s*\d+[.)]\s+", value)
+                and key not in {"preferred platforms include", "hands-on experience with"}
+            ):
+                # Keep colon-ended sublabels only when they are clearly requirement
+                # content rather than a new document section.
+                if re.search(r"\b(?:platforms?|technologies|providers?|including)\b", key):
+                    section.append(value)
+                    continue
+                break
+            section.append(value)
+
+    # RFP JDs frequently use numbered requirement categories. When present, those
+    # category headings are the cleanest one-row-per-requirement mapping target.
+    numbered = []
+    for value in section:
+        match = re.match(r"^\s*\d+[.)]\s+(.+?)\s*$", value)
+        if match:
+            requirement = match.group(1).strip()
+            if requirement and requirement not in numbered:
+                numbered.append(requirement)
+    if numbered:
+        return numbered[:max_rows]
+
+    requirements = []
+    for value in section:
+        cleaned = _strip_list_marker_only(value).strip()
+        if not cleaned:
+            continue
+        key = heading_key(cleaned)
+        # Skip helper labels that introduce examples/options rather than being
+        # requirements themselves.
+        if key in {
+            "preferred platforms include",
+            "preferred platforms",
+            "hands-on experience with",
+        }:
+            continue
+        if cleaned.endswith(":") and len(cleaned) <= 80:
+            continue
+        if cleaned not in requirements:
+            requirements.append(cleaned)
+        if len(requirements) >= max_rows:
+            break
+    if requirements:
+        return requirements
+
+    # Fallback for JDs that present only Top/Must-Have Skills.
+    must_have_start = None
+    for idx, value in enumerate(lines):
+        key = heading_key(value)
+        if re.search(r"\b(?:top\s+\d+\s+)?must[- ]have\s+skills?\b", key, flags=re.I):
+            must_have_start = idx + 1
+            break
+    if must_have_start is not None:
+        fallback = []
+        for value in lines[must_have_start:]:
+            key = heading_key(value)
+            if stop_heading_re.fullmatch(key) or key in {"job description", "position overview"}:
+                break
+            cleaned = _strip_list_marker_only(value).strip()
+            if not cleaned:
+                continue
+            if cleaned not in fallback:
+                fallback.append(cleaned)
+            if len(fallback) >= max_rows:
+                break
+        if fallback:
+            return fallback
+
+    return []
+
+
 def deloitte_rfp_generate_evaluation_rows(
     client,
     models_to_try,
@@ -14468,16 +14595,25 @@ def deloitte_rfp_generate_evaluation_rows(
     raw_text,
 ):
     """
-    Generate Deloitte's Strict Mapping rows.
+    Generate Deloitte's Strict Mapping rows with deterministic JD requirements.
 
-    Requirement text must come verbatim from the official JD. Candidate evidence is
-    never AI-authored: the model selects IDs from a catalog of source-verified
-    historical bullets, and the formatter renders those exact source excerpts.
+    v38 intentionally separates the two decisions:
+    - Python selects the mandatory JD requirements verbatim and in source order.
+    - The model only selects source-verified evidence IDs and assigns Match Level.
+
+    This prevents a valid JD from producing an empty Evaluation Table simply
+    because the model declined to select requirements.
     """
     job_description = str(job_description or "").strip()
     if not job_description:
         raise RuntimeError(
             "Deloitte RFP Evaluation Table requires an Official Job Description."
+        )
+
+    requirements = _deloitte_rfp_extract_mandatory_requirements(job_description, max_rows=8)
+    if not requirements:
+        raise RuntimeError(
+            "Deloitte RFP Evaluation Table could not identify mandatory requirements in the Official Job Description."
         )
 
     catalog = deloitte_rfp_evidence_catalog(experience, raw_text=raw_text)
@@ -14498,22 +14634,28 @@ def deloitte_rfp_generate_evaluation_rows(
     ]
     catalog_by_id = {item["id"]: item for item in catalog}
 
+    requirements_for_prompt = [
+        {"requirement_id": f"R{i}", "requirement": requirement}
+        for i, requirement in enumerate(requirements, start=1)
+    ]
+    expected_by_norm = {
+        _normalize_source_match(requirement): requirement
+        for requirement in requirements
+    }
+
     prompt = f"""
 You are completing Section 3, "Evaluation Table (Strict Mapping)", in Deloitte's RFP Candidate Evaluation Report.
 Deloitte's instruction is: use the JD requirement, then enter evidence from the candidate's resume that shows the match, and the level at which the candidate matches it.
 
-STRICT REQUIREMENT SELECTION RULES:
-- Select the major MANDATORY/core requirements from the Official Job Description, in JD priority/order.
-- Prefer explicit requirement headings, numbered Required Qualifications, and named must-have skills.
-- Include all distinct major mandatory requirement areas when practical, with a maximum of 8 rows.
-- Do NOT use Preferred Qualifications unless the JD has no explicit mandatory requirement section.
-- Do NOT use rate, location, remote/onsite status, visa status, end date, assessment logistics, or other administrative details.
-- REQUIREMENT must be copied VERBATIM as a contiguous phrase from the Official Job Description. Do not paraphrase or rename it.
-- If the same requirement appears more than once, include it only once.
+IMPORTANT: Python has already selected the mandatory JD requirements verbatim. You are NOT selecting requirements.
+You MUST return exactly one row for every requirement below, in the same order. Never return an empty EVALUATION_ROWS array.
+
+MANDATORY JD REQUIREMENTS:
+{json.dumps(requirements_for_prompt, ensure_ascii=False)}
 
 STRICT CANDIDATE EVIDENCE RULES:
 - You may NOT write or paraphrase candidate evidence.
-- Choose up to 2 evidence IDs from the SOURCE-VERIFIED EVIDENCE CATALOG for each requirement.
+- For each requirement, choose up to 2 evidence IDs from the SOURCE-VERIFIED EVIDENCE CATALOG.
 - Evidence strength hierarchy is mandatory:
   1. work_history = strongest evidence and should be selected first when relevant.
   2. technical_skills = valid secondary evidence that may confirm an exact technology/capability named elsewhere in the resume.
@@ -14522,7 +14664,7 @@ STRICT CANDIDATE EVIDENCE RULES:
 - technical_skills + relevant work_history may strengthen the assessment when the two pieces complement one another.
 - Environment-only evidence MUST NOT justify Strong.
 - Never infer candidate experience from the JD.
-- If no catalog item directly or partially supports the requirement, return an empty evidence_ids list and Match Level "No Evidence".
+- If no catalog item directly or partially supports a requirement, return an empty evidence_ids list and Match Level "No Evidence" for THAT requirement. Do not omit the row.
 
 MATCH LEVEL DEFINITIONS:
 - Strong: direct, hands-on work-history evidence closely matches the requirement, including its key technology/capability. A complementary technical_skills item may reinforce this assessment.
@@ -14534,12 +14676,9 @@ CONSISTENCY RULES:
 - A row with evidence_ids may be Strong, Moderate, or Limited, but not No Evidence.
 - A row with no evidence_ids MUST be No Evidence.
 - Do not inflate Match Level because a requirement is important.
-- Notes may help prioritize requirements, but REQUIREMENT text must still be copied from the Official Job Description.
+- REQUIREMENT text must exactly equal the supplied mandatory requirement text. Do not shorten or rewrite it.
 
-Official Job Description:
-{job_description}
-
-Notes:
+Notes (may help interpret priority only):
 {notes}
 
 SOURCE-VERIFIED EVIDENCE CATALOG:
@@ -14549,7 +14688,7 @@ Return ONLY valid JSON in this exact structure:
 {{
   "EVALUATION_ROWS": [
     {{
-      "requirement": "",
+      "requirement": "<exact supplied requirement>",
       "evidence_ids": ["E1"],
       "match_level": "Strong"
     }}
@@ -14558,7 +14697,6 @@ Return ONLY valid JSON in this exact structure:
 """
 
     allowed_levels = {"Strong", "Moderate", "Limited", "No Evidence"}
-    jd_norm = _normalize_source_match(job_description)
     last_error = None
 
     for attempt in range(4):
@@ -14576,21 +14714,34 @@ Return ONLY valid JSON in this exact structure:
             if len(raw_rows) > 8:
                 raise RuntimeError("more than 8 Evaluation Table rows were generated")
 
-            rendered_rows = []
-            seen_requirements = set()
+            # Index model rows by exact normalized requirement. Missing rows are
+            # rejected and retried rather than silently disappearing.
+            rows_by_requirement = {}
             for row_num, row in enumerate(raw_rows, start=1):
                 if not isinstance(row, dict):
                     raise RuntimeError(f"Evaluation row {row_num} is not an object")
-
                 requirement = re.sub(r"\s+", " ", str(row.get("requirement", "") or "")).strip()
                 req_norm = _normalize_source_match(requirement)
-                if not requirement or not req_norm or req_norm not in jd_norm:
+                if req_norm not in expected_by_norm:
                     raise RuntimeError(
-                        f"Evaluation row {row_num} requirement is not copied verbatim from the Official JD: {requirement}"
+                        f"Evaluation row {row_num} requirement does not match a supplied mandatory JD requirement: {requirement}"
                     )
-                if req_norm in seen_requirements:
-                    continue
-                seen_requirements.add(req_norm)
+                if req_norm not in rows_by_requirement:
+                    rows_by_requirement[req_norm] = row
+
+            missing = [
+                requirement
+                for requirement in requirements
+                if _normalize_source_match(requirement) not in rows_by_requirement
+            ]
+            if missing:
+                raise RuntimeError(
+                    "Evaluation Table omitted mandatory requirement(s): " + " | ".join(missing)
+                )
+
+            rendered_rows = []
+            for row_num, requirement in enumerate(requirements, start=1):
+                row = rows_by_requirement[_normalize_source_match(requirement)]
 
                 evidence_ids = row.get("evidence_ids", [])
                 if isinstance(evidence_ids, str):
@@ -14606,8 +14757,6 @@ Return ONLY valid JSON in this exact structure:
                         break
 
                 match_level = str(row.get("match_level", "") or "").strip().title()
-                if match_level == "No Evidence":
-                    match_level = "No Evidence"
                 if match_level not in allowed_levels:
                     raise RuntimeError(
                         f"Evaluation row {row_num} has invalid Match Level: {match_level}"
@@ -14661,7 +14810,7 @@ Return ONLY valid JSON in this exact structure:
                 })
 
             if not rendered_rows:
-                raise RuntimeError("all Evaluation Table rows were invalid or duplicates")
+                raise RuntimeError("all Evaluation Table rows were invalid")
             return rendered_rows
         except Exception as exc:
             last_error = exc
@@ -14672,7 +14821,6 @@ Return ONLY valid JSON in this exact structure:
         "Deloitte RFP Strict Mapping could not produce a safe requirement-to-resume evaluation: "
         + str(last_error or "unknown validation error")
     )
-
 
 def deloitte_rfp_narrative_style_issues(rfp_data, raw_text):
     """Deterministic style guardrails for generated RFP narrative fields only."""
