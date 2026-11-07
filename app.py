@@ -1,5 +1,5 @@
-# v39 SOURCE FIDELITY BUILD - DELOITTE RFP STRICT MAPPING SCHEMA FIX
-# Preserves all v38 behavior while making every deterministic RFP requirement mandatory in the OpenAI Structured Output schema.
+# v40 SOURCE FIDELITY BUILD - DELOITTE RFP LAYOUT CLEANUP
+# Preserves all v39 behavior while removing trailing Evaluation Table rule shapes and aligning Education/Experience content with Deloitte section headers.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -15008,6 +15008,7 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
     from docx.text.paragraph import Paragraph
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
+    from docx.shared import Inches
 
     doc = docx.Document(template_path)
     orig_doc = docx.Document(resume_path)
@@ -15313,6 +15314,16 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
             bottom.set(qn("w:space"), "0")
             bottom.set(qn("w:color"), color)
 
+        def remove_cell_bottom_divider(cell):
+            """Remove a row's bottom rule so dividers appear only BETWEEN populated rows."""
+            tc_pr = cell._tc.get_or_add_tcPr()
+            borders = tc_pr.find(qn("w:tcBorders"))
+            if borders is None:
+                return
+            bottom = borders.find(qn("w:bottom"))
+            if bottom is not None:
+                borders.remove(bottom)
+
         # Capture one of Deloitte's supplied body rows BEFORE deleting unused rows.
         # Cloning it preserves the template's exact border/cell formatting; the
         # explicit divider helper below remains a deterministic fallback.
@@ -15373,6 +15384,67 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
         for row in list(evaluation_table.rows[1:]):
             if not any(str(cell.text or "").strip() for cell in row.cells):
                 row._element.getparent().remove(row._element)
+
+        # Deloitte's supplied form uses dividers BETWEEN evaluation rows, not a
+        # trailing rule after the final populated requirement. v39 applied a
+        # bottom border to every row, so remove it from the last populated row.
+        if len(evaluation_table.rows) > 1:
+            for cell in evaluation_table.rows[-1].cells:
+                remove_cell_bottom_divider(cell)
+
+        # The original Deloitte DOCX also contains decorative horizontal-line
+        # drawing objects in blank paragraphs immediately after the Evaluation
+        # Table. Once the table is populated these look like extra unused rows.
+        # Remove only those blank, post-table rule drawings. Preserve the section
+        # break paragraph itself so Recommendation still begins on the intended
+        # next page.
+        body = doc._element.body
+        body_children = list(body)
+        try:
+            table_index = body_children.index(evaluation_table._tbl)
+        except ValueError:
+            table_index = -1
+
+        if table_index >= 0:
+            for child in list(body)[table_index + 1:]:
+                if child.tag.rsplit('}', 1)[-1] != 'p':
+                    break
+                visible = re.sub(
+                    r"\s+",
+                    " ",
+                    "".join(node.text or "" for node in child.xpath('.//w:t')),
+                ).strip()
+                if visible:
+                    break
+
+                has_rule_drawing = bool(
+                    child.xpath('.//w:drawing')
+                    or child.xpath('.//w:pict')
+                    or child.xpath('.//*[local-name()="shape"]')
+                )
+                if not has_rule_drawing:
+                    continue
+
+                # Remove complete AlternateContent containers first so modern
+                # DrawingML and legacy VML fallbacks disappear together.
+                for alt in list(child.xpath('.//*[local-name()="AlternateContent"]')):
+                    parent = alt.getparent()
+                    if parent is not None:
+                        parent.remove(alt)
+                for node in list(child.xpath('.//w:drawing | .//w:pict')):
+                    parent = node.getparent()
+                    if parent is not None:
+                        parent.remove(node)
+
+                has_section_break = bool(child.xpath('.//w:sectPr'))
+                has_break = bool(child.xpath('.//w:br'))
+                remaining_text = "".join(
+                    node.text or "" for node in child.xpath('.//w:t')
+                ).strip()
+                if not has_section_break and not has_break and not remaining_text:
+                    parent = child.getparent()
+                    if parent is not None:
+                        parent.remove(child)
 
     def replace_anchor_with_cloned_paragraphs(placeholder, values):
         values = [deloitte_clean_summary_style(v) for v in values if str(v or "").strip()]
@@ -15824,10 +15896,63 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
 
     collapse_extra_blank_paragraphs(doc)
 
-    # v37 final-document spacing pass. The earlier XML-copy phase applies role
-    # spacing before insertion, but later Word/document cleanup can normalize away
-    # those properties. Apply the separation to the actual final paragraphs after
-    # all structural edits so every role after the first has visible breathing room.
+    # v40 final-document layout pass. Align source-preserved Education and
+    # Professional Experience content to Deloitte's section-heading left edge.
+    # This is done after all cloning/cleanup so source paragraph styles cannot
+    # pull the content back to the page margin.
+    def effective_left_indent(paragraph, fallback=Inches(0.3)):
+        direct = paragraph.paragraph_format.left_indent
+        if direct is not None:
+            return direct
+        try:
+            style_indent = paragraph.style.paragraph_format.left_indent
+            if style_indent is not None:
+                return style_indent
+        except Exception:
+            pass
+        return fallback
+
+    paragraphs = list(doc.paragraphs)
+    education_idx = None
+    experience_idx = None
+    for idx, paragraph in enumerate(paragraphs):
+        key = heading_key(paragraph.text)
+        if education_idx is None and "education" in key and "certification" in key:
+            education_idx = idx
+        if experience_idx is None and key in {
+            "professional experience", "work experience", "employment history",
+            "career history", "experience",
+        }:
+            experience_idx = idx
+
+    education_header = paragraphs[education_idx] if education_idx is not None else None
+    experience_header = paragraphs[experience_idx] if experience_idx is not None else None
+    education_indent = effective_left_indent(education_header) if education_header else Inches(0.3)
+    experience_indent = effective_left_indent(experience_header) if experience_header else Inches(0.3)
+
+    # Align university/certification lines with the Education heading. Keep
+    # degree bullets one standard level inside that shared left edge.
+    if education_idx is not None:
+        end_idx = experience_idx if experience_idx is not None and experience_idx > education_idx else len(paragraphs)
+        for paragraph in paragraphs[education_idx + 1:end_idx]:
+            text_value = re.sub(r"\s+", " ", str(paragraph.text or "")).strip()
+            if not text_value:
+                continue
+            p_pr = paragraph._p.pPr
+            has_num = bool(p_pr is not None and p_pr.numPr is not None)
+            is_list = has_num or (paragraph.style and paragraph.style.name in {"List Paragraph", "List Bullet"}) or bool(
+                re.match(r"^\s*[•·▪◦●○■□►▸*]\s*", text_value)
+            )
+            if is_list:
+                paragraph.paragraph_format.left_indent = education_indent + Inches(0.3)
+                paragraph.paragraph_format.first_line_indent = Inches(-0.2)
+            else:
+                paragraph.paragraph_format.left_indent = education_indent
+                paragraph.paragraph_format.first_line_indent = Inches(0)
+
+    # Preserve the v37/v39 role-spacing correction, but also align every
+    # Client/Role/Project line with the Professional Experience heading and move
+    # true bullets one clean list level inside it.
     role_companies = []
     for idx in range(1, 100):
         company = _normalize_source_match(mapping.get(f"Company{idx}", ""))
@@ -15856,13 +15981,31 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
             and any(company in normalized for company in role_companies)
             and _looks_like_experience_role_header(text_value)
         )
-        if not (explicit_role_header or company_date_header):
-            continue
+        role_metadata = bool(re.match(
+            r"^(?:role|position|job\s+title|project(?:\s+name)?|program(?:\s+name)?)\s*:",
+            text_value,
+            flags=re.I,
+        ))
 
-        paragraph.paragraph_format.space_before = Pt(0 if not seen_role_header else 10)
-        paragraph.paragraph_format.space_after = Pt(0)
-        paragraph.paragraph_format.keep_with_next = True
-        seen_role_header = True
+        p_pr = paragraph._p.pPr
+        has_num = bool(p_pr is not None and p_pr.numPr is not None)
+        is_list = has_num or (paragraph.style and paragraph.style.name in {"List Paragraph", "List Bullet"})
+
+        if explicit_role_header or company_date_header:
+            paragraph.paragraph_format.left_indent = experience_indent
+            paragraph.paragraph_format.first_line_indent = Inches(0)
+            paragraph.paragraph_format.space_before = Pt(0 if not seen_role_header else 10)
+            paragraph.paragraph_format.space_after = Pt(0)
+            paragraph.paragraph_format.keep_with_next = True
+            seen_role_header = True
+        elif role_metadata:
+            paragraph.paragraph_format.left_indent = experience_indent
+            paragraph.paragraph_format.first_line_indent = Inches(0)
+            paragraph.paragraph_format.space_after = Pt(0)
+            paragraph.paragraph_format.keep_with_next = True
+        elif is_list:
+            paragraph.paragraph_format.left_indent = experience_indent + Inches(0.3)
+            paragraph.paragraph_format.first_line_indent = Inches(-0.25)
 
     doc.save(output_path)
 
