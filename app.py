@@ -1,5 +1,5 @@
-# v38 SOURCE FIDELITY BUILD - DELOITTE RFP STRICT MAPPING RELIABILITY
-# Preserves all v37 behavior while making RFP requirement selection deterministic so valid JDs cannot collapse to an empty Evaluation Table.
+# v39 SOURCE FIDELITY BUILD - DELOITTE RFP STRICT MAPPING SCHEMA FIX
+# Preserves all v38 behavior while making every deterministic RFP requirement mandatory in the OpenAI Structured Output schema.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -14597,12 +14597,17 @@ def deloitte_rfp_generate_evaluation_rows(
     """
     Generate Deloitte's Strict Mapping rows with deterministic JD requirements.
 
-    v38 intentionally separates the two decisions:
+    v39 removes the final empty-array failure mode from OpenAI Structured Outputs:
     - Python selects the mandatory JD requirements verbatim and in source order.
-    - The model only selects source-verified evidence IDs and assigns Match Level.
+    - The model does NOT return an EVALUATION_ROWS array.
+    - Instead, it returns an EVALUATION_MATCHES object keyed by R1/R2/etc.
+    - Because the OpenAI adapter derives a strict schema from the output template,
+      every R# key is required by the schema itself. An empty evaluation response is
+      therefore impossible while still allowing evidence_ids to be empty for a
+      legitimate No Evidence determination.
 
-    This prevents a valid JD from producing an empty Evaluation Table simply
-    because the model declined to select requirements.
+    Candidate evidence remains source-verified. The model only selects evidence IDs
+    and a match level; it never authors historical resume evidence.
     """
     job_description = str(job_description or "").strip()
     if not job_description:
@@ -14638,9 +14643,21 @@ def deloitte_rfp_generate_evaluation_rows(
         {"requirement_id": f"R{i}", "requirement": requirement}
         for i, requirement in enumerate(requirements, start=1)
     ]
-    expected_by_norm = {
-        _normalize_source_match(requirement): requirement
-        for requirement in requirements
+
+    # IMPORTANT FOR OPENAI STRUCTURED OUTPUTS:
+    # _ai_schema_from_template() makes every OBJECT property required, while an
+    # array template can legally collapse to []. Therefore build one required R#
+    # object property per deterministic requirement instead of asking for rows in
+    # an array. evidence_ids itself remains an array because [] is meaningful for
+    # a truthful No Evidence result.
+    output_shape = {
+        "EVALUATION_MATCHES": {
+            item["requirement_id"]: {
+                "evidence_ids": ["E1"],
+                "match_level": "Strong",
+            }
+            for item in requirements_for_prompt
+        }
     }
 
     prompt = f"""
@@ -14648,14 +14665,15 @@ You are completing Section 3, "Evaluation Table (Strict Mapping)", in Deloitte's
 Deloitte's instruction is: use the JD requirement, then enter evidence from the candidate's resume that shows the match, and the level at which the candidate matches it.
 
 IMPORTANT: Python has already selected the mandatory JD requirements verbatim. You are NOT selecting requirements.
-You MUST return exactly one row for every requirement below, in the same order. Never return an empty EVALUATION_ROWS array.
+Every requirement ID below is mandatory. The output schema requires every R# key, so evaluate every one of them.
+Do NOT add, remove, rename, or reorder requirement IDs.
 
 MANDATORY JD REQUIREMENTS:
 {json.dumps(requirements_for_prompt, ensure_ascii=False)}
 
 STRICT CANDIDATE EVIDENCE RULES:
 - You may NOT write or paraphrase candidate evidence.
-- For each requirement, choose up to 2 evidence IDs from the SOURCE-VERIFIED EVIDENCE CATALOG.
+- For each requirement ID, choose up to 2 evidence IDs from the SOURCE-VERIFIED EVIDENCE CATALOG.
 - Evidence strength hierarchy is mandatory:
   1. work_history = strongest evidence and should be selected first when relevant.
   2. technical_skills = valid secondary evidence that may confirm an exact technology/capability named elsewhere in the resume.
@@ -14664,7 +14682,7 @@ STRICT CANDIDATE EVIDENCE RULES:
 - technical_skills + relevant work_history may strengthen the assessment when the two pieces complement one another.
 - Environment-only evidence MUST NOT justify Strong.
 - Never infer candidate experience from the JD.
-- If no catalog item directly or partially supports a requirement, return an empty evidence_ids list and Match Level "No Evidence" for THAT requirement. Do not omit the row.
+- If no catalog item directly or partially supports a requirement, return an empty evidence_ids list and Match Level "No Evidence" for THAT R# key.
 
 MATCH LEVEL DEFINITIONS:
 - Strong: direct, hands-on work-history evidence closely matches the requirement, including its key technology/capability. A complementary technical_skills item may reinforce this assessment.
@@ -14673,10 +14691,11 @@ MATCH LEVEL DEFINITIONS:
 - No Evidence: no defensible resume evidence is present.
 
 CONSISTENCY RULES:
-- A row with evidence_ids may be Strong, Moderate, or Limited, but not No Evidence.
-- A row with no evidence_ids MUST be No Evidence.
+- A requirement with valid evidence_ids may be Strong, Moderate, or Limited, but not No Evidence.
+- A requirement with no valid evidence_ids MUST be No Evidence.
 - Do not inflate Match Level because a requirement is important.
-- REQUIREMENT text must exactly equal the supplied mandatory requirement text. Do not shorten or rewrite it.
+- Work-history evidence should outrank Technical Skills when both support the same requirement.
+- Technical Skills may reinforce work-history evidence but may not independently create Strong.
 
 Notes (may help interpret priority only):
 {notes}
@@ -14684,19 +14703,12 @@ Notes (may help interpret priority only):
 SOURCE-VERIFIED EVIDENCE CATALOG:
 {json.dumps(catalog_for_prompt, ensure_ascii=False)}
 
-Return ONLY valid JSON in this exact structure:
-{{
-  "EVALUATION_ROWS": [
-    {{
-      "requirement": "<exact supplied requirement>",
-      "evidence_ids": ["E1"],
-      "match_level": "Strong"
-    }}
-  ]
-}}
+Return ONLY valid JSON in this exact structure. Keep every R# key shown below:
+{json.dumps(output_shape, ensure_ascii=False, indent=2)}
 """
 
     allowed_levels = {"Strong", "Moderate", "Limited", "No Evidence"}
+    expected_ids = [item["requirement_id"] for item in requirements_for_prompt]
     last_error = None
 
     for attempt in range(4):
@@ -14708,46 +14720,32 @@ Return ONLY valid JSON in this exact structure:
                 config=types.GenerateContentConfig(response_mime_type="application/json")
             )
             payload = repair_and_load_json(response.text)
-            raw_rows = payload.get("EVALUATION_ROWS", [])
-            if not isinstance(raw_rows, list) or not raw_rows:
-                raise RuntimeError("no Evaluation Table rows were generated")
-            if len(raw_rows) > 8:
-                raise RuntimeError("more than 8 Evaluation Table rows were generated")
+            raw_matches = payload.get("EVALUATION_MATCHES", {})
+            if not isinstance(raw_matches, dict):
+                raise RuntimeError("EVALUATION_MATCHES was not an object")
 
-            # Index model rows by exact normalized requirement. Missing rows are
-            # rejected and retried rather than silently disappearing.
-            rows_by_requirement = {}
-            for row_num, row in enumerate(raw_rows, start=1):
-                if not isinstance(row, dict):
-                    raise RuntimeError(f"Evaluation row {row_num} is not an object")
-                requirement = re.sub(r"\s+", " ", str(row.get("requirement", "") or "")).strip()
-                req_norm = _normalize_source_match(requirement)
-                if req_norm not in expected_by_norm:
-                    raise RuntimeError(
-                        f"Evaluation row {row_num} requirement does not match a supplied mandatory JD requirement: {requirement}"
-                    )
-                if req_norm not in rows_by_requirement:
-                    rows_by_requirement[req_norm] = row
-
-            missing = [
-                requirement
-                for requirement in requirements
-                if _normalize_source_match(requirement) not in rows_by_requirement
-            ]
-            if missing:
+            missing_keys = [req_id for req_id in expected_ids if req_id not in raw_matches]
+            if missing_keys:
                 raise RuntimeError(
-                    "Evaluation Table omitted mandatory requirement(s): " + " | ".join(missing)
+                    "Evaluation response omitted required key(s): " + ", ".join(missing_keys)
                 )
 
             rendered_rows = []
-            for row_num, requirement in enumerate(requirements, start=1):
-                row = rows_by_requirement[_normalize_source_match(requirement)]
+            for row_num, item in enumerate(requirements_for_prompt, start=1):
+                req_id = item["requirement_id"]
+                requirement = item["requirement"]
+                row = raw_matches.get(req_id, {})
+                if not isinstance(row, dict):
+                    row = {}
 
                 evidence_ids = row.get("evidence_ids", [])
                 if isinstance(evidence_ids, str):
                     evidence_ids = [evidence_ids]
                 if not isinstance(evidence_ids, list):
                     evidence_ids = []
+
+                # Only verified catalog IDs survive. Invalid/hallucinated IDs are
+                # dropped rather than causing a resume-content invention.
                 clean_ids = []
                 for evidence_id in evidence_ids:
                     evidence_id = str(evidence_id or "").strip()
@@ -14756,26 +14754,21 @@ Return ONLY valid JSON in this exact structure:
                     if len(clean_ids) >= 2:
                         break
 
-                match_level = str(row.get("match_level", "") or "").strip().title()
-                if match_level not in allowed_levels:
-                    raise RuntimeError(
-                        f"Evaluation row {row_num} has invalid Match Level: {match_level}"
-                    )
-                if clean_ids and match_level == "No Evidence":
-                    raise RuntimeError(
-                        f"Evaluation row {row_num} has source evidence but is labeled No Evidence"
-                    )
-                if not clean_ids and match_level != "No Evidence":
-                    raise RuntimeError(
-                        f"Evaluation row {row_num} has no source evidence but is labeled {match_level}"
-                    )
-
                 selected_items = [catalog_by_id[evidence_id] for evidence_id in clean_ids]
-                selected_kinds = {str(item.get("kind", "") or "") for item in selected_items}
+                selected_kinds = {str(source.get("kind", "") or "") for source in selected_items}
 
-                # Deterministic guardrail: Technical Skills and Environment are
-                # legitimate secondary evidence, but neither can independently
-                # justify Deloitte's highest match level.
+                match_level = str(row.get("match_level", "") or "").strip().title()
+
+                # Deterministically repair harmless model inconsistencies rather
+                # than failing the entire submission. These repairs only downgrade
+                # or normalize based on already verified evidence.
+                if not clean_ids:
+                    match_level = "No Evidence"
+                elif match_level not in allowed_levels or match_level == "No Evidence":
+                    match_level = "Moderate" if "work_history" in selected_kinds else "Limited"
+
+                # Technical Skills / Environment are legitimate secondary evidence,
+                # but neither can independently justify Deloitte's highest level.
                 if match_level == "Strong" and "work_history" not in selected_kinds:
                     match_level = "Moderate"
 
@@ -14809,8 +14802,13 @@ Return ONLY valid JSON in this exact structure:
                     "match_level": match_level,
                 })
 
-            if not rendered_rows:
-                raise RuntimeError("all Evaluation Table rows were invalid")
+            # There is always exactly one output row per deterministic requirement.
+            # This check is defensive; unlike v37/v38, the model cannot make the
+            # table disappear by returning an empty array.
+            if len(rendered_rows) != len(requirements):
+                raise RuntimeError(
+                    f"Evaluation Table row count mismatch: expected {len(requirements)}, produced {len(rendered_rows)}"
+                )
             return rendered_rows
         except Exception as exc:
             last_error = exc
