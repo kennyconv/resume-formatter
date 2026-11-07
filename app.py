@@ -1,5 +1,5 @@
-# v36 SOURCE FIDELITY BUILD - DELOITTE RFP STRICT MAPPING / ROLE SPACING
-# Preserves all v35 behavior while adding Deloitte RFP requirement-to-resume strict mapping and clearer role separation.
+# v37 SOURCE FIDELITY BUILD - DELOITTE RFP MAPPING REFINEMENTS / FINAL ROLE SPACING
+# Preserves all v36 behavior while refining Deloitte RFP evidence weighting/excerpts, restoring dynamic row dividers, repeating table headers, and enforcing final role spacing.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -14290,10 +14290,61 @@ def deloitte_rfp_skill_inputs(skills_matrix_text):
     return skills[:8]
 
 
-def deloitte_rfp_evidence_catalog(experience):
-    """Build a source-verified evidence catalog from immutable work-history content."""
+def _deloitte_rfp_technical_skill_evidence(raw_text):
+    """Return exact source lines from the resume's Technical Skills/Skills section."""
+    blocks = _source_blocks_for_text(raw_text)
+    if not blocks:
+        return []
+
+    heading_names = {"technical skills", "skills", "core competencies", "competencies"}
+    stop_names = {
+        "professional summary", "summary", "profile",
+        "professional experience", "work experience", "employment history", "career history", "experience",
+        "education", "certifications", "certification", "certificates",
+        "additional experience", "earlier experience", "prior experience",
+        "professional projects", "projects", "awards", "references",
+    }
+
+    start = None
+    for idx, block in enumerate(blocks):
+        value = re.sub(r"\s+", " ", str(block.get("text", "") or "")).strip()
+        key = re.sub(r"\s*[:：]\s*$", "", _strip_list_marker_only(value)).strip().casefold()
+        if key in heading_names:
+            start = idx + 1
+            break
+    if start is None:
+        return []
+
+    results = []
+    seen = set()
+    for idx in range(start, len(blocks)):
+        value = re.sub(r"\s+", " ", str(blocks[idx].get("text", "") or "")).strip()
+        if not value:
+            continue
+        key = re.sub(r"\s*[:：]\s*$", "", _strip_list_marker_only(value)).strip().casefold()
+        if key in stop_names or (key not in heading_names and _looks_like_section_heading(value)):
+            break
+        source_text = _strip_list_marker_only(value)
+        normalized = _normalize_source_match(source_text)
+        if len(normalized) < 3 or normalized in seen:
+            continue
+        seen.add(normalized)
+        results.append(source_text)
+    return results
+
+
+def deloitte_rfp_evidence_catalog(experience, raw_text=""):
+    """
+    Build a source-verified evidence catalog with explicit evidence strength tiers.
+
+    Work-history bullets are primary evidence. Technical Skills lines are valid
+    secondary evidence. Environment/Technologies inventories remain tertiary.
+    """
     catalog = []
+    environments = []
     seq = 1
+
+    # Tier 1: dated, hands-on work-history bullets.
     for role in experience or []:
         if not isinstance(role, dict):
             continue
@@ -14326,26 +14377,86 @@ def deloitte_rfp_evidence_catalog(experience):
                 flags=re.I,
             ).strip()
             if env_text:
-                catalog.append({
-                    "id": f"E{seq}",
-                    "company": company,
-                    "title": title,
-                    "text": f"Environment: {env_text}",
-                    "kind": "environment",
-                })
-                seq += 1
+                environments.append((company, title, env_text))
+
+    # Tier 2: exact Technical Skills lines from the source resume.
+    for skill_line in _deloitte_rfp_technical_skill_evidence(raw_text):
+        catalog.append({
+            "id": f"E{seq}",
+            "company": "",
+            "title": "",
+            "text": skill_line,
+            "kind": "technical_skills",
+        })
+        seq += 1
+
+    # Tier 3: source Environment/Technologies inventories.
+    for company, title, env_text in environments:
+        catalog.append({
+            "id": f"E{seq}",
+            "company": company,
+            "title": title,
+            "text": f"Environment: {env_text}",
+            "kind": "environment",
+        })
+        seq += 1
     return catalog
 
 
-def _deloitte_rfp_evidence_excerpt(text, max_chars=260):
-    """Create a compact excerpt from verified source wording without paraphrasing it."""
+def _deloitte_rfp_evidence_excerpt(text, requirement="", max_chars=190):
+    """
+    Create a shorter exact-source excerpt without paraphrasing.
+
+    When possible, center the excerpt around a meaningful requirement term so the
+    reader sees the relevant proof instead of an arbitrary first 190 characters.
+    Ellipses indicate omitted source text and are never presented as source words.
+    """
     value = re.sub(r"\s+", " ", str(text or "")).strip()
     if len(value) <= max_chars:
         return value
-    cut = value[: max_chars - 3]
-    if " " in cut:
-        cut = cut.rsplit(" ", 1)[0]
-    return cut.rstrip(" ,;:") + "..."
+
+    stopwords = {
+        "experience", "strong", "advanced", "hands", "hand", "support", "supporting",
+        "implementation", "implementing", "configuration", "configuring", "required",
+        "skills", "skill", "knowledge", "management", "processes", "ability", "with",
+        "using", "and", "the", "for", "from", "that", "this",
+    }
+    terms = []
+    for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9+/#.&_-]*", str(requirement or "")):
+        cleaned = token.strip(".,:;()[]{}").casefold()
+        if len(cleaned) >= 3 and cleaned not in stopwords:
+            terms.append(token)
+    terms = sorted(set(terms), key=lambda x: (-len(x), x.casefold()))
+
+    low = value.casefold()
+    hit = None
+    for term in terms:
+        pos = low.find(term.casefold())
+        if pos >= 0:
+            hit = pos
+            break
+
+    if hit is None:
+        start = 0
+    else:
+        start = max(0, hit - 45)
+        if start > 0:
+            next_space = value.find(" ", start)
+            if next_space >= 0 and next_space < hit:
+                start = next_space + 1
+
+    end = min(len(value), start + max_chars)
+    if end < len(value):
+        prior_space = value.rfind(" ", start, end)
+        if prior_space > start + 80:
+            end = prior_space
+
+    excerpt = value[start:end].strip(" ,;:")
+    if start > 0:
+        excerpt = "..." + excerpt
+    if end < len(value):
+        excerpt = excerpt + "..."
+    return excerpt
 
 
 def deloitte_rfp_generate_evaluation_rows(
@@ -14354,6 +14465,7 @@ def deloitte_rfp_generate_evaluation_rows(
     job_description,
     notes,
     experience,
+    raw_text,
 ):
     """
     Generate Deloitte's Strict Mapping rows.
@@ -14368,10 +14480,10 @@ def deloitte_rfp_generate_evaluation_rows(
             "Deloitte RFP Evaluation Table requires an Official Job Description."
         )
 
-    catalog = deloitte_rfp_evidence_catalog(experience)
+    catalog = deloitte_rfp_evidence_catalog(experience, raw_text=raw_text)
     if not catalog:
         raise RuntimeError(
-            "Deloitte RFP Evaluation Table could not build a verified work-history evidence catalog."
+            "Deloitte RFP Evaluation Table could not build a verified resume evidence catalog."
         )
 
     catalog_for_prompt = [
@@ -14402,14 +14514,19 @@ STRICT REQUIREMENT SELECTION RULES:
 STRICT CANDIDATE EVIDENCE RULES:
 - You may NOT write or paraphrase candidate evidence.
 - Choose up to 2 evidence IDs from the SOURCE-VERIFIED EVIDENCE CATALOG for each requirement.
-- Prefer direct work-history evidence over Environment lines.
-- Use an Environment line only when it materially supports a technology requirement and no stronger work-history bullet exists.
+- Evidence strength hierarchy is mandatory:
+  1. work_history = strongest evidence and should be selected first when relevant.
+  2. technical_skills = valid secondary evidence that may confirm an exact technology/capability named elsewhere in the resume.
+  3. environment = tertiary evidence and should be used only when it materially adds support.
+- A technical_skills item by itself may support Moderate or Limited, but MUST NOT justify Strong.
+- technical_skills + relevant work_history may strengthen the assessment when the two pieces complement one another.
+- Environment-only evidence MUST NOT justify Strong.
 - Never infer candidate experience from the JD.
 - If no catalog item directly or partially supports the requirement, return an empty evidence_ids list and Match Level "No Evidence".
 
 MATCH LEVEL DEFINITIONS:
-- Strong: direct, hands-on resume evidence closely matches the requirement, including its key technology/capability.
-- Moderate: relevant evidence covers a meaningful portion of the requirement but is not a complete/direct match.
+- Strong: direct, hands-on work-history evidence closely matches the requirement, including its key technology/capability. A complementary technical_skills item may reinforce this assessment.
+- Moderate: meaningful relevant evidence is present, but the match is incomplete/directly narrower, or the only explicit proof is a Technical Skills/Environment mention.
 - Limited: only adjacent, partial, or weakly related evidence is present.
 - No Evidence: no defensible resume evidence is present.
 
@@ -14504,12 +14621,32 @@ Return ONLY valid JSON in this exact structure:
                         f"Evaluation row {row_num} has no source evidence but is labeled {match_level}"
                     )
 
+                selected_items = [catalog_by_id[evidence_id] for evidence_id in clean_ids]
+                selected_kinds = {str(item.get("kind", "") or "") for item in selected_items}
+
+                # Deterministic guardrail: Technical Skills and Environment are
+                # legitimate secondary evidence, but neither can independently
+                # justify Deloitte's highest match level.
+                if match_level == "Strong" and "work_history" not in selected_kinds:
+                    match_level = "Moderate"
+
                 evidence_lines = []
-                for evidence_id in clean_ids:
-                    source_item = catalog_by_id[evidence_id]
-                    excerpt = _deloitte_rfp_evidence_excerpt(source_item["text"])
+                for source_item in selected_items:
+                    excerpt = _deloitte_rfp_evidence_excerpt(
+                        source_item["text"],
+                        requirement=requirement,
+                        max_chars=190,
+                    )
                     company = str(source_item.get("company", "") or "").strip()
-                    prefix = f"{company}: " if company else ""
+                    kind = str(source_item.get("kind", "") or "").strip()
+                    if kind == "technical_skills":
+                        prefix = "Technical Skills: "
+                    elif company:
+                        prefix = f"{company}: "
+                    elif kind == "environment":
+                        prefix = "Environment: "
+                    else:
+                        prefix = ""
                     evidence_lines.append(f'{prefix}"{excerpt}"')
 
                 candidate_evidence = (
@@ -15005,10 +15142,47 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
             break
 
     if evaluation_table is not None:
-        # Future-proof the supplied template: remove any decorative/example body
-        # rows before inserting the current candidate's strict mappings.
+        def set_table_header_repeat(row):
+            """Repeat the Evaluation Table column headings when Word spans pages."""
+            tr_pr = row._tr.get_or_add_trPr()
+            header = tr_pr.find(qn("w:tblHeader"))
+            if header is None:
+                header = OxmlElement("w:tblHeader")
+                tr_pr.append(header)
+            header.set(qn("w:val"), "true")
+
+        def set_cell_bottom_divider(cell, color="D9D9D9", size="6"):
+            """Apply the horizontal divider Deloitte supplied between mapping rows."""
+            tc_pr = cell._tc.get_or_add_tcPr()
+            borders = tc_pr.find(qn("w:tcBorders"))
+            if borders is None:
+                borders = OxmlElement("w:tcBorders")
+                tc_pr.append(borders)
+            bottom = borders.find(qn("w:bottom"))
+            if bottom is None:
+                bottom = OxmlElement("w:bottom")
+                borders.append(bottom)
+            bottom.set(qn("w:val"), "single")
+            bottom.set(qn("w:sz"), str(size))
+            bottom.set(qn("w:space"), "0")
+            bottom.set(qn("w:color"), color)
+
+        # Capture one of Deloitte's supplied body rows BEFORE deleting unused rows.
+        # Cloning it preserves the template's exact border/cell formatting; the
+        # explicit divider helper below remains a deterministic fallback.
+        template_evaluation_row_xml = (
+            deepcopy(evaluation_table.rows[1]._tr)
+            if len(evaluation_table.rows) >= 2
+            else None
+        )
+
+        # Future-proof the supplied template: remove ALL decorative/example/blank
+        # body rows before inserting exactly the current candidate's mappings.
         for row in list(evaluation_table.rows[1:]):
             row._element.getparent().remove(row._element)
+
+        if evaluation_table.rows:
+            set_table_header_repeat(evaluation_table.rows[0])
 
         for item in evaluation_rows:
             if not isinstance(item, dict):
@@ -15019,7 +15193,11 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
             if not requirement:
                 continue
 
-            row = evaluation_table.add_row()
+            if template_evaluation_row_xml is not None:
+                evaluation_table._tbl.append(deepcopy(template_evaluation_row_xml))
+                row = evaluation_table.rows[-1]
+            else:
+                row = evaluation_table.add_row()
             set_row_content_driven_height(row)
             values = [requirement, candidate_evidence, match_level]
             for cell_idx, value in enumerate(values):
@@ -15029,6 +15207,7 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
                     cell.vertical_alignment = 0  # TOP
                 except Exception:
                     pass
+                set_cell_bottom_divider(cell)
                 for paragraph in cell.paragraphs:
                     paragraph.paragraph_format.space_before = Pt(0)
                     paragraph.paragraph_format.space_after = Pt(0)
@@ -15042,6 +15221,12 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
             tr_pr = row._tr.get_or_add_trPr()
             if tr_pr.find(qn("w:cantSplit")) is None:
                 tr_pr.append(OxmlElement("w:cantSplit"))
+
+        # Final safety cleanup: there should never be decorative unused rows below
+        # the populated mappings, even if a future template revision adds them.
+        for row in list(evaluation_table.rows[1:]):
+            if not any(str(cell.text or "").strip() for cell in row.cells):
+                row._element.getparent().remove(row._element)
 
     def replace_anchor_with_cloned_paragraphs(placeholder, values):
         values = [deloitte_clean_summary_style(v) for v in values if str(v or "").strip()]
@@ -15492,6 +15677,47 @@ def process_deloitte_rfp_doc(template_path, mapping, resume_path, output_path):
     insert_elements_at_placeholder("{{PROFESSIONAL_EXPERIENCE}}", experience_elements)
 
     collapse_extra_blank_paragraphs(doc)
+
+    # v37 final-document spacing pass. The earlier XML-copy phase applies role
+    # spacing before insertion, but later Word/document cleanup can normalize away
+    # those properties. Apply the separation to the actual final paragraphs after
+    # all structural edits so every role after the first has visible breathing room.
+    role_companies = []
+    for idx in range(1, 100):
+        company = _normalize_source_match(mapping.get(f"Company{idx}", ""))
+        if company:
+            role_companies.append(company)
+
+    inside_experience = False
+    seen_role_header = False
+    for paragraph in doc.paragraphs:
+        text_value = re.sub(r"\s+", " ", str(paragraph.text or "")).strip()
+        key = heading_key(text_value)
+        if key in {"professional experience", "work experience", "employment history", "career history", "experience"}:
+            inside_experience = True
+            continue
+        if not inside_experience or not text_value:
+            continue
+
+        normalized = _normalize_source_match(text_value)
+        explicit_role_header = bool(re.match(
+            r"^(?:client|company|employer|organization)\s*:",
+            text_value,
+            flags=re.I,
+        ))
+        company_date_header = bool(
+            role_companies
+            and any(company in normalized for company in role_companies)
+            and _looks_like_experience_role_header(text_value)
+        )
+        if not (explicit_role_header or company_date_header):
+            continue
+
+        paragraph.paragraph_format.space_before = Pt(0 if not seen_role_header else 10)
+        paragraph.paragraph_format.space_after = Pt(0)
+        paragraph.paragraph_format.keep_with_next = True
+        seen_role_header = True
+
     doc.save(output_path)
 
 def process_deloitte_doc(template_path, mapping, resume_path, output_path):
@@ -16145,6 +16371,7 @@ def deloitte_app():
                                 job_description=Job_Description,
                                 notes=Chat_Notes,
                                 experience=data.get("Experience", []),
+                                raw_text=raw_text,
                             )
 
                         except Exception as e:
