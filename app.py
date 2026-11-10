@@ -1,5 +1,5 @@
-# v47 SOURCE FIDELITY BUILD - NAVY CONDENSED EXPERIENCE DISPLAY PRESERVATION
-# Preserves all v46 fidelity behavior and adds source-style Navy Federal rendering for proven condensed Earlier/Additional Experience blocks.
+# v48 SOURCE FIDELITY BUILD - NAVY ROLE-CONTEXT CLASSIFICATION HARDENING
+# Preserves all v47 behavior while deterministically separating non-bulleted role-context/subheading lines from true work-history bullets in Navy Federal resumes.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -1503,6 +1503,125 @@ def _likely_role_metadata_block(text, role):
     return False
 
 
+def _looks_like_navy_role_context_subheading(text):
+    """
+    Recognize a narrow class of non-bulleted role-context lines used immediately
+    beneath a job title and before the real accomplishment bullets.
+
+    Example from Matthew's source:
+        "Supporting a federal cybersecurity firm (~200 users, ~430 devices)"
+
+    This is intentionally narrow. It is NOT a generic rule that deletes bullets
+    beginning with "Supporting". Structural callers additionally require the
+    source block to be non-list text in the role preamble before the first real
+    list item.
+    """
+    value = _strip_list_marker_only(str(text or "").strip())
+    if not value or len(value) > 240:
+        return False
+
+    # Current supported source pattern: a short descriptive "Supporting a/an/the ..."
+    # line beneath the role title. Keep the pattern narrow so accomplishment prose
+    # is not silently reclassified as metadata.
+    return bool(
+        re.match(
+            r"^supporting\s+(?:a|an|the)\b",
+            value,
+            flags=re.I,
+        )
+    )
+
+
+def _navy_role_context_block_indices(experience, role_index, blocks, role_anchors):
+    """
+    Return source indices for proven non-bulleted Navy role-context lines.
+
+    Safety constraints:
+    - Navy display/extraction hardening only; callers explicitly scope its use.
+    - Scan only the role preamble after the proven role anchor.
+    - Stop at the first true list item or next role anchor/major heading.
+    - Company/title/date metadata may be skipped while locating the context line.
+    - Only the narrow linguistic context pattern above is classified as context.
+    """
+    if (
+        not isinstance(experience, list)
+        or role_index < 0
+        or role_index >= len(experience)
+        or role_index >= len(role_anchors)
+        or not blocks
+    ):
+        return set()
+
+    role = experience[role_index]
+    if not isinstance(role, dict):
+        return set()
+
+    anchor = role_anchors[role_index]
+    end = len(blocks)
+    if role_index + 1 < len(role_anchors):
+        next_anchor = role_anchors[role_index + 1]
+        if next_anchor > anchor:
+            end = next_anchor
+
+    found = set()
+    # Context lines should be very close to the role header. The small cap prevents
+    # an unrelated later paragraph from being reclassified merely because it begins
+    # with the same words.
+    scan_end = min(end, anchor + 7)
+
+    for idx in range(anchor + 1, scan_end):
+        block = blocks[idx]
+        source_text = str(block.get('text', '') or '').strip()
+        if not source_text:
+            continue
+
+        if _looks_like_section_heading(source_text):
+            break
+
+        # A real list item is historical bullet content. Never reinterpret it as
+        # context even if the sentence itself begins with "Supporting ...".
+        if block.get('is_list'):
+            break
+
+        if _likely_role_metadata_block(source_text, role):
+            continue
+
+        if _looks_like_navy_role_context_subheading(source_text):
+            found.add(idx)
+            continue
+
+        # Any other substantive non-metadata paragraph ends the narrow preamble scan.
+        break
+
+    return found
+
+
+def _candidate_matches_navy_role_context(candidate, context_indices, blocks):
+    """
+    Return True only when an AI bullet is actually a source-proven role-context line.
+
+    Comparison is exact after normal source normalization and removal of terminal
+    sentence punctuation. This permits Gemini to add a trailing period, as happened
+    in Matthew's run, without allowing paraphrased/rewritten context to disappear.
+    """
+    target = _normalize_source_match(_strip_list_marker_only(candidate))
+    target = re.sub(r"[.!?]+$", "", target).strip()
+    if not target:
+        return False
+
+    for idx in sorted(set(context_indices or [])):
+        if idx < 0 or idx >= len(blocks):
+            continue
+        source = _normalize_source_match(
+            _strip_list_marker_only(blocks[idx].get('text', ''))
+        )
+        source = re.sub(r"[.!?]+$", "", source).strip()
+        if source and target == source:
+            return True
+
+    return False
+
+
 def _validate_role_date_precision(role, blocks, anchor_index, client_name, role_num):
     dates = str(role.get('Dates', '') or '').strip()
     if not dates or anchor_index is None:
@@ -2130,6 +2249,19 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
         anchor: role_anchors.count(anchor) for anchor in set(role_anchors)
     }
 
+    # v48 Navy Federal hardening: precompute non-bulleted role-context/subheading
+    # source lines so Gemini cannot promote them into accomplishment bullets and
+    # the later coverage audit does not demand that they be rendered as bullets.
+    navy_role_context_indices = {}
+    if str(client_name or '').strip().casefold() == 'navy federal':
+        for context_role_index in range(len(experience)):
+            navy_role_context_indices[context_role_index] = _navy_role_context_block_indices(
+                experience,
+                context_role_index,
+                blocks,
+                role_anchors,
+            )
+
     for role_num, role in enumerate(experience, start=1):
         role_index = role_num - 1
         role_anchor = role_anchors[role_index]
@@ -2187,6 +2319,18 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
             for bullet_num, bullet in enumerate(bullets, start=1):
                 candidate = _strip_list_marker_only(bullet)
                 if not candidate:
+                    continue
+
+                # v48: Gemini sometimes promotes a non-bulleted role-context line
+                # (for example, "Supporting a federal cybersecurity firm ...") into
+                # Bullets. If the exact source line is structurally proven to be a
+                # pre-bullet role subheading, remove that extraction artifact rather
+                # than trying to validate/render it as an accomplishment bullet.
+                if _candidate_matches_navy_role_context(
+                    candidate,
+                    navy_role_context_indices.get(role_index, set()),
+                    blocks,
+                ):
                     continue
 
                 # v46: if an earlier candidate in this same role already caused the
@@ -2336,9 +2480,13 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
                 end = idx
                 break
 
+        context_indices_for_role = navy_role_context_indices.get(role_idx, set())
         interval = [
             (idx, blocks[idx]) for idx in range(start, end)
-            if not _likely_role_metadata_block(blocks[idx].get('text', ''), role)
+            if (
+                idx not in context_indices_for_role
+                and not _likely_role_metadata_block(blocks[idx].get('text', ''), role)
+            )
         ]
         list_items = [(idx, block) for idx, block in interval if block.get('is_list')]
         expected = list_items
@@ -19536,6 +19684,26 @@ def navy_build_display_experience(experience, raw_text):
     if len(role_anchors) != len(experience):
         return copy.deepcopy(experience)
 
+    # v48: Preserve exact non-bulleted role-context/subheading lines separately
+    # from Bullets so the final Navy Word document can render them beneath the
+    # role title without falsely turning them into accomplishments.
+    role_context_text = {}
+    for context_role_index in range(len(experience)):
+        context_indices = _navy_role_context_block_indices(
+            experience,
+            context_role_index,
+            blocks,
+            role_anchors,
+        )
+        if context_indices:
+            context_lines = [
+                _strip_list_marker_only(str(blocks[idx].get('text', '') or '').strip())
+                for idx in sorted(context_indices)
+                if str(blocks[idx].get('text', '') or '').strip()
+            ]
+            if context_lines:
+                role_context_text[context_role_index] = " ".join(context_lines).strip()
+
     display_roles = []
     role_index = 0
 
@@ -19595,10 +19763,12 @@ def navy_build_display_experience(experience, raw_text):
                 role_index = group_end
                 continue
 
-        display_roles.extend(
-            copy.deepcopy(experience[idx])
-            for idx in range(role_index, group_end)
-        )
+        for idx in range(role_index, group_end):
+            ordinary_role = copy.deepcopy(experience[idx])
+            context_value = role_context_text.get(idx, "")
+            if context_value:
+                ordinary_role["Context"] = context_value
+            display_roles.append(ordinary_role)
         role_index = group_end
 
     for role in display_roles:
@@ -19719,6 +19889,44 @@ def process_navy_federal_word_doc(temp_path, mapping, out_path):
 
             if tag.lower() not in p.text.lower():
                 continue
+
+            # v48: preserve exact source role-context text as a plain paragraph
+            # immediately above the role's first true bullet. Do this before the
+            # empty-bullet removal branch so context is retained even when a role
+            # legitimately has context but no list bullets.
+            if "Bullets" in key:
+                role_match = re.search(r"(\d+)$", str(key))
+                context_value = ""
+                if role_match:
+                    context_value = str(
+                        mapping.get(f"Context{role_match.group(1)}", "") or ""
+                    ).strip()
+
+                if context_value:
+                    context_p = p.insert_paragraph_before(context_value)
+                    try:
+                        context_p.style = doc.styles["Normal"]
+                    except Exception:
+                        pass
+                    context_p.paragraph_format.space_before = Pt(0)
+                    context_p.paragraph_format.space_after = Pt(0)
+                    try:
+                        context_p.paragraph_format.left_indent = p.paragraph_format.left_indent
+                    except Exception:
+                        pass
+                    context_p.paragraph_format.first_line_indent = Pt(0)
+
+                    # Match the template's body font while intentionally removing
+                    # bullet emphasis/numbering semantics.
+                    if context_p.runs and p.runs:
+                        source_font = p.runs[0].font
+                        target_font = context_p.runs[0].font
+                        target_font.name = source_font.name
+                        target_font.size = source_font.size
+                        target_font.bold = False
+                        target_font.italic = source_font.italic
+                        if source_font.color and source_font.color.rgb:
+                            target_font.color.rgb = source_font.color.rgb
 
             if not value or not str(value).strip():
                 if any(k.lower() in key.lower() for k in kill_keys):
@@ -20115,6 +20323,11 @@ BULLETS:
 - Preserve every substantive original bullet in original order.
 - Light cleanup of malformed bullet characters/spacing is allowed.
 - Do NOT rewrite bullets to match the Navy Federal JD.
+- A short NON-BULLETED role-context/subheading line immediately beneath a title
+  is NOT a bullet. For example, lines such as "Supporting a federal cybersecurity
+  firm (~200 users, ~430 devices)", "Supporting a DoD contractor through CMMC
+  Level 2", or "Supporting a space technology client" must NOT be placed in Bullets.
+  Keep Bullets limited to the resume's actual bullet/list content.
 
 DATES:
 - Preserve the source date precision.
@@ -20705,6 +20918,9 @@ FULL ORIGINAL RESUME:
                         mapping[f"Title{i}"] = clean_job_title(
                             role.get("Title", "")
                         )
+                        mapping[f"Context{i}"] = str(
+                            role.get("Context", "") or ""
+                        ).strip()
                         mapping[f"Bullets{i}"] = clean_bullets(
                             role.get("Bullets", [])
                         )
@@ -20714,6 +20930,7 @@ FULL ORIGINAL RESUME:
                     else:
                         mapping[f"Company{i}"] = ""
                         mapping[f"Title{i}"] = ""
+                        mapping[f"Context{i}"] = ""
                         mapping[f"Bullets{i}"] = ""
                         mapping[f"Dates{i}"] = ""
 
