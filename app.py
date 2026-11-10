@@ -1,5 +1,5 @@
-# v40 SOURCE FIDELITY BUILD - DELOITTE RFP LAYOUT CLEANUP
-# Preserves all v39 behavior while removing trailing Evaluation Table rule shapes and aligning Education/Experience content with Deloitte section headers.
+# v41 SOURCE FIDELITY BUILD - SHARED-BLOCK CONDENSED ROLE ANCHORING
+# Preserves all v40 behavior while allowing multiple explicitly supported condensed Earlier/Additional Experience roles to share one parsed source block without weakening source-order validation.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -884,6 +884,85 @@ def _find_role_anchor(role, blocks, start_index=0):
     return min(idx for score, idx in candidates if score == best_score)
 
 
+def _role_identifier_positions_in_block(role, block_text):
+    """
+    Return exact normalized identifier positions for one role inside a single source block.
+
+    PDF/Word extraction can preserve a visually condensed Earlier/Additional Experience
+    line as one structural paragraph, for example:
+
+        "Northrop Grumman: lead technician ... Digital 323: client infrastructure support."
+
+    The source-fidelity validator must still verify each extracted role independently,
+    but two real roles may legitimately begin in the same parsed block.  Positions are
+    therefore based only on source-supported company/title text, never semantic guesses.
+    """
+    source = _normalize_source_match(block_text)
+    if not source:
+        return {"company": None, "title": None}
+
+    company = _normalize_source_match(clean_company_name(role.get('Company', '')))
+    title = _normalize_source_match(clean_job_title(role.get('Title', '')))
+
+    company_pos = source.find(company) if company else -1
+    title_pos = source.find(title) if title else -1
+
+    return {
+        "company": company_pos if company_pos >= 0 else None,
+        "title": title_pos if title_pos >= 0 else None,
+    }
+
+
+def _shared_block_role_order_supported(previous_role, current_role, block_text):
+    """
+    Allow two consecutive extracted roles to share one source block only when the
+    current role's explicit identifier occurs later in that exact block.
+
+    This is deliberately strict:
+    - both roles still pass the normal company/title source-support checks;
+    - no fuzzy or semantic role-order inference is used;
+    - different companies are ordered by exact company occurrence;
+    - same-company condensed roles are ordered by exact title occurrence; and
+    - if exact in-block order cannot be proven, validation still fails closed.
+    """
+    prev = _role_identifier_positions_in_block(previous_role, block_text)
+    curr = _role_identifier_positions_in_block(current_role, block_text)
+
+    prev_company = _normalize_source_match(clean_company_name(previous_role.get('Company', '')))
+    curr_company = _normalize_source_match(clean_company_name(current_role.get('Company', '')))
+    prev_title = _normalize_source_match(clean_job_title(previous_role.get('Title', '')))
+    curr_title = _normalize_source_match(clean_job_title(current_role.get('Title', '')))
+
+    # Most condensed Earlier Experience lines delimit roles by company names.
+    if (
+        prev_company
+        and curr_company
+        and prev_company != curr_company
+        and prev['company'] is not None
+        and curr['company'] is not None
+    ):
+        return curr['company'] > prev['company']
+
+    # If the same employer has multiple condensed roles in one paragraph, title
+    # order is the safer discriminator.
+    if (
+        prev_title
+        and curr_title
+        and prev_title != curr_title
+        and prev['title'] is not None
+        and curr['title'] is not None
+    ):
+        return curr['title'] > prev['title']
+
+    # Conservative fallback when only one usable identifier is available per role.
+    prev_positions = [p for p in (prev['company'], prev['title']) if p is not None]
+    curr_positions = [p for p in (curr['company'], curr['title']) if p is not None]
+    if not prev_positions or not curr_positions:
+        return False
+
+    return min(curr_positions) > min(prev_positions)
+
+
 def _looks_like_role_metadata_label(text):
     """
     Recognize explicit role-level metadata/header lines that the formatter templates
@@ -1307,17 +1386,60 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
         role['Title'] = title
 
         anchor = _find_role_anchor(role, blocks, start_index=search_from)
+        shared_block_anchor = False
+
+        # v41: A visually condensed Earlier/Additional Experience paragraph can
+        # contain more than one legitimate role in a single parsed Word/PDF block.
+        # v40 always advanced to anchor + 1, so the second role became impossible
+        # to locate even when its exact company/title text was present later in
+        # the same source paragraph.  Retry the immediately previous block only
+        # when exact in-block identifier order proves that this is a second role.
+        if anchor is None and role_anchors and role_num > 1:
+            previous_anchor = role_anchors[-1]
+            retry_anchor = _find_role_anchor(
+                role,
+                blocks,
+                start_index=previous_anchor,
+            )
+            if (
+                retry_anchor == previous_anchor
+                and _shared_block_role_order_supported(
+                    experience[role_num - 2],
+                    role,
+                    blocks[previous_anchor].get('text', ''),
+                )
+            ):
+                anchor = retry_anchor
+                shared_block_anchor = True
+
         if anchor is None:
             raise RuntimeError(
                 f"{client_name} source-fidelity check could not locate role {role_num} in source order "
                 f"({company} / {title})."
             )
-        if role_anchors and anchor <= role_anchors[-1]:
-            raise RuntimeError(
-                f"{client_name} source-fidelity check detected work-history roles out of source order."
-            )
+
+        if role_anchors:
+            previous_anchor = role_anchors[-1]
+            if anchor < previous_anchor:
+                raise RuntimeError(
+                    f"{client_name} source-fidelity check detected work-history roles out of source order."
+                )
+            if anchor == previous_anchor:
+                shared_block_anchor = _shared_block_role_order_supported(
+                    experience[role_num - 2],
+                    role,
+                    blocks[anchor].get('text', ''),
+                )
+                if not shared_block_anchor:
+                    raise RuntimeError(
+                        f"{client_name} source-fidelity check detected work-history roles out of source order."
+                    )
+
         role_anchors.append(anchor)
-        search_from = anchor + 1
+
+        # Stay on the shared source block so a third condensed role can also be
+        # proven in exact textual order.  Otherwise keep the original behavior.
+        search_from = anchor if shared_block_anchor else anchor + 1
         _validate_role_date_precision(role, blocks, anchor, client_name, role_num)
 
     _validate_no_dated_roles_omitted(
