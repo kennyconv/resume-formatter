@@ -1,5 +1,5 @@
-# v43 SOURCE FIDELITY BUILD - SOURCE-BULLET SENTENCE RECOVERY
-# Preserves all v42 behavior while safely recovering an entire original source bullet when AI extraction returns only one exact, sentence-aligned sentence from that multi-sentence bullet.
+# v44 NAVY FEDERAL QUALITY HARDENING - EDUCATION CONTEXT, SECTION-DATE GUARD, SKILL PRIORITY
+# Preserves all v43 behavior while preventing work-history training from being misclassified as Education, preventing section-level Earlier/Additional Experience dates from leaking onto condensed roles, and improving Navy Federal four-slot skill prioritization.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -1668,6 +1668,207 @@ def _validate_additional_experience_coverage(experience, blocks, client_name):
             + ' | '.join(x[:150] for x in missing[:4])
         )
 
+
+def _education_section_ranges(blocks):
+    """Return explicit Education section ranges as (start, end) block indexes."""
+    ranges = []
+    for idx, block in enumerate(blocks or []):
+        heading = str(block.get('text', '') or '').strip()
+        if not (_looks_like_section_heading(heading) and re.fullmatch(r"education\s*:?", heading, flags=re.I)):
+            continue
+
+        end = len(blocks)
+        stop_re = re.compile(
+            r"^(?:professional summary|summary|profile|core competencies|competencies|"
+            r"technical skills|skills|professional experience|work experience|employment history|"
+            r"career history|additional experience|earlier experience|prior experience|previous experience|"
+            r"certifications?|certificates?|awards?|references?|military service|projects?)\b",
+            flags=re.I,
+        )
+        for j in range(idx + 1, len(blocks)):
+            nxt = str(blocks[j].get('text', '') or '').strip()
+            if stop_re.search(nxt):
+                end = j
+                break
+        ranges.append((idx + 1, end))
+    return ranges
+
+
+def _has_formal_academic_credential_signal(value):
+    """Recognize degree/diploma language without treating generic 'Graduate' as a degree."""
+    text = str(value or '')
+    return bool(re.search(
+        r"\b(?:associate(?:'s)?|bachelor(?:'s)?|master(?:'s)?|doctor(?:ate|al)?|"
+        r"ph\.?\s*d\.?|dba|mba|m\.?\s*s\.?|m\.?\s*a\.?|b\.?\s*s\.?|b\.?\s*a\.?|"
+        r"bsc|msc|a\.?\s*s\.?|a\.?\s*a\.?|jd|j\.?d\.?|llm|mfa|bfa|mph|mha|"
+        r"degree|diploma|ged)\b",
+        text,
+        flags=re.I,
+    ))
+
+
+def _education_entry_has_source_context(school, degree, blocks):
+    """
+    Verify that an Education record is actually educational context, not merely words
+    found inside work history, military service, training, or another narrative bullet.
+
+    Preferred evidence is an explicit Education section. If the resume has no Education
+    heading, allow a clearly academic school/credential pair only when a formal degree or
+    diploma signal is present near the school. A generic word such as 'Graduate' alone is
+    intentionally insufficient outside an Education section.
+    """
+    school_norm = _normalize_source_match(school)
+    degree_norm = _normalize_source_match(degree)
+    if not school_norm and not degree_norm:
+        return False
+
+    ranges = _education_section_ranges(blocks)
+    for start, end in ranges:
+        section_text = " ".join(
+            str(blocks[i].get('text', '') or '')
+            for i in range(start, end)
+        )
+        section_norm = _normalize_source_match(section_text)
+        school_ok = (not school_norm) or school_norm in section_norm
+        degree_ok = (not degree_norm) or degree_norm in section_norm
+        if school_ok and degree_ok:
+            return True
+
+    # No explicit Education-section support. Require a formal academic credential
+    # signal in the extracted degree or in the immediate source context around the
+    # school. This rejects cases such as a work-history bullet saying
+    # 'Graduate, Airmen Leadership School (2009).' while retaining conventional
+    # unheaded entries such as 'University X - Bachelor of Science'.
+    if not _has_formal_academic_credential_signal(degree):
+        formal_signal_required = True
+    else:
+        formal_signal_required = False
+
+    for idx, block in enumerate(blocks or []):
+        block_text = str(block.get('text', '') or '')
+        block_norm = _normalize_source_match(block_text)
+        if school_norm and school_norm not in block_norm:
+            continue
+
+        window_start = max(0, idx - 1)
+        window_end = min(len(blocks), idx + 2)
+        window_text = " ".join(
+            str(blocks[j].get('text', '') or '')
+            for j in range(window_start, window_end)
+        )
+        window_norm = _normalize_source_match(window_text)
+
+        if degree_norm and degree_norm not in window_norm:
+            continue
+        if formal_signal_required and not _has_formal_academic_credential_signal(window_text):
+            continue
+
+        # Do not treat an explicitly bulleted work/training statement as Education
+        # unless a formal academic credential signal independently proves it.
+        if block.get('is_list') and not _has_formal_academic_credential_signal(window_text):
+            continue
+        return True
+
+    return False
+
+
+def _additional_experience_section_for_anchor(blocks, anchor_index):
+    """Return the explicit Earlier/Additional/Prior Experience section owning anchor."""
+    if anchor_index is None:
+        return None
+
+    heading_re = re.compile(
+        r"^(?:additional|earlier|prior|previous)\s+(?:professional\s+)?(?:experience|roles?|positions?)\b",
+        flags=re.I,
+    )
+    stop_re = re.compile(
+        r"\b(?:education|certifications?|certificates?|skills|technical skills|awards?|references?|projects?|military service)\b",
+        flags=re.I,
+    )
+
+    for idx, block in enumerate(blocks or []):
+        heading = str(block.get('text', '') or '').strip()
+        if not heading_re.search(heading):
+            continue
+        # Section headings commonly include a section-wide range on the same line,
+        # e.g. "Earlier Experience 2007 - 2015". Accept that concise structural
+        # form even though _looks_like_section_heading() intentionally expects bare
+        # section labels.
+        if len(heading) > 180 or (re.search(r"[.!?]", heading) and not _looks_like_section_heading(heading)):
+            continue
+
+        end = len(blocks)
+        for j in range(idx + 1, len(blocks)):
+            nxt = str(blocks[j].get('text', '') or '').strip()
+            if _looks_like_section_heading(nxt) and stop_re.search(nxt):
+                end = j
+                break
+        if idx < anchor_index < end:
+            return idx, end, heading
+
+    return None
+
+
+def _source_block_explicitly_supports_role_dates(dates, block_text):
+    """Require the role's date precision to be present in the role-owned source block."""
+    dates = str(dates or '').strip()
+    source = str(block_text or '').strip()
+    if not dates or not source:
+        return False
+
+    output_years = set(_extract_years(dates))
+    source_years = set(_extract_years(source))
+    if output_years and not output_years.issubset(source_years):
+        return False
+
+    output_months = _month_tokens(dates)
+    source_months = _month_tokens(source)
+    if output_months and not output_months.issubset(source_months):
+        return False
+
+    # Normal role range / Present marker in the same source block.
+    if re.search(
+        r"(?:19|20)\d{2}.*?(?:[-–—]|\bto\b).*?(?:(?:19|20)\d{2}|present|current)",
+        source,
+        flags=re.I,
+    ):
+        return True
+
+    # Some abbreviated roles legitimately show only one year (or one month/year).
+    # That is still role-specific support when it is printed in the role-owned block.
+    if len(output_years) == 1:
+        only_year = next(iter(output_years))
+        if re.search(rf"\b{re.escape(only_year)}\b", source):
+            return True
+
+    return False
+
+
+def _remove_section_level_dates_from_condensed_roles(experience, blocks, role_anchors):
+    """
+    Prevent a section heading such as 'Earlier Experience 2007 - 2015' from being
+    copied onto each condensed role beneath it. If an abbreviated role has no date
+    range in its own source block, Dates is forced blank as required by the formatter.
+    """
+    for role_index, role in enumerate(experience or []):
+        if not isinstance(role, dict) or role_index >= len(role_anchors):
+            continue
+        dates = str(role.get('Dates', '') or '').strip()
+        if not dates:
+            continue
+
+        anchor = role_anchors[role_index]
+        section = _additional_experience_section_for_anchor(blocks, anchor)
+        if section is None:
+            continue
+
+        # The condensed source block itself must carry a role-specific date range.
+        # Nearby section headings do not count as role dates.
+        anchor_text = str(blocks[anchor].get('text', '') or '')
+        if not _source_block_explicitly_supports_role_dates(dates, anchor_text):
+            role['Dates'] = ''
+
+
 def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
     """
     Fail-closed historical-resume verification used by every client.
@@ -1708,6 +1909,7 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
 
     education = result.get('Education', [])
     if isinstance(education, list):
+        verified_education = []
         for item in education:
             if not isinstance(item, dict):
                 continue
@@ -1724,7 +1926,20 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
                     raise RuntimeError(
                         f"{client_name} source-fidelity check could not verify degree: {degree}"
                     )
+
+            # v44 Navy Federal hardening: Source existence alone is not enough for
+            # Education. A training-school reference inside work/military history must
+            # not become an academic entry. Keep other client workflows on their v43
+            # behavior until they are separately regression-tested.
+            if (
+                str(client_name or '').strip().casefold() == 'navy federal'
+                and not _education_entry_has_source_context(school, degree, blocks)
+            ):
+                continue
+
             item['School'] = school
+            verified_education.append(item)
+        result['Education'] = verified_education
 
     experience = result.get('Experience', [])
     if not isinstance(experience, list):
@@ -1809,7 +2024,25 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
         # Stay on the shared source block so a third condensed role can also be
         # proven in exact textual order.  Otherwise keep the original behavior.
         search_from = anchor if shared_block_anchor else anchor + 1
-        _validate_role_date_precision(role, blocks, anchor, client_name, role_num)
+
+    # v44: A date range printed on an Earlier/Additional Experience SECTION heading
+    # belongs to the section, not automatically to each condensed role beneath it.
+    # Remove those inherited dates first, then validate the remaining role-specific dates.
+    if str(client_name or '').strip().casefold() == 'navy federal':
+        _remove_section_level_dates_from_condensed_roles(
+            experience,
+            blocks,
+            role_anchors,
+        )
+
+    for role_num, role in enumerate(experience, start=1):
+        _validate_role_date_precision(
+            role,
+            blocks,
+            role_anchors[role_num - 1],
+            client_name,
+            role_num,
+        )
 
     _validate_no_dated_roles_omitted(
         experience,
@@ -19477,7 +19710,15 @@ RULES:
 - Do not guess an end-client that is not stated.
 
 3. EDUCATION
-For every education entry return:
+Return ONLY genuine academic education records.
+- Prefer entries located under an explicit Education section.
+- A school/training reference inside Professional Experience, Military Service, a
+  work-history bullet, certification/training text, or an accomplishment is NOT an
+  Education record unless the resume independently presents it as academic education.
+- Do NOT turn words such as "Graduate" or "completed training" into a Degree.
+- If the resume contains no genuine academic education, return an empty Education array.
+
+For every genuine education entry return:
 - School
 - Degree
 - CompletionStatus: ONLY "Yes", "No", or ""
@@ -19831,6 +20072,22 @@ FOUR-SLOT PRIORITY RULE — CRITICAL:
   row. Core manager priorities outrank generic JD language and nice-to-haves.
 - Preserve useful JD overlap where truthful so possible Fieldglass ranking or
   scoring still sees the candidate's genuine baseline match.
+- DIRECT NAMED TECHNICAL INTERSECTIONS outrank broad generic process coverage when
+  the requisition is technical. If the JD explicitly names a tool, platform,
+  operating system, scripting language, diagnostic source, security capability, or
+  troubleshooting method AND the resume proves it, give that direct intersection
+  strong preference over generic ITIL, documentation, knowledge-management, or
+  broad operations content unless Internal Notes explicitly make process work a
+  higher priority.
+- Do not waste one of the four rows on a broad umbrella that obscures several
+  stronger exact JD/resume intersections. Group related direct matches sensibly,
+  but keep the right-column details atomic and resume-supported.
+- For endpoint/cybersecurity roles, examples of direct intersections that should
+  outrank generic process content when both the JD and resume support them include
+  Defender/Defender Antivirus, Windows event-log or endpoint-telemetry
+  troubleshooting, PowerShell/automation, RHEL/Linux, SCCM/MECM, Intune, and
+  application-control technologies. These are examples, not facts to assign unless
+  the current resume proves them.
 
 SKILLDETAILS# — RIGHT COLUMN
 - Return a JSON ARRAY of 3-6 objects.
