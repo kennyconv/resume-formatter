@@ -1,5 +1,5 @@
-# v44 NAVY FEDERAL QUALITY HARDENING - EDUCATION CONTEXT, SECTION-DATE GUARD, SKILL PRIORITY
-# Preserves all v43 behavior while preventing work-history training from being misclassified as Education, preventing section-level Earlier/Additional Experience dates from leaking onto condensed roles, and improving Navy Federal four-slot skill prioritization.
+# v46 SOURCE FIDELITY BUILD - SPLIT-SENTENCE DEDUPLICATION + DETERMINISTIC SHARED-BLOCK RECOVERY
+# Preserves all v45 behavior and adds exact same-role deduplication when AI splits one immutable multi-sentence source bullet into multiple extracted bullets.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -791,6 +791,47 @@ def _best_source_block_match(value, blocks, min_index=0, used=None):
     return None, None
 
 
+def _candidate_is_redundant_with_restored_source_block(candidate, restored_block_indices, blocks):
+    """
+    Return True when a later AI bullet is only a duplicate representation of a
+    source bullet that has already been restored for the SAME role.
+
+    This closes a deterministic extraction artifact where one original list bullet
+    contains multiple sentences but the model emits those sentences as separate
+    bullets. The first exact sentence can identify and restore the whole immutable
+    source bullet; any later exact sentence from that same source block must then be
+    ignored rather than failing because the block is already consumed.
+
+    Safety constraints:
+    - same-role restored source blocks only;
+    - exact normalized whole-block duplicate OR exact sentence-boundary subitem only;
+    - list-item source blocks only for sentence-level deduplication;
+    - rewritten/fuzzy wording is never accepted here.
+    """
+    target = _normalize_source_match(_strip_list_marker_only(candidate))
+    if not target:
+        return False
+
+    for source_idx in sorted(set(restored_block_indices or [])):
+        if source_idx < 0 or source_idx >= len(blocks):
+            continue
+        block = blocks[source_idx]
+        source_text = _strip_list_marker_only(block.get('text', ''))
+        source_norm = _normalize_source_match(source_text)
+        if not source_norm:
+            continue
+
+        # Exact duplicate of the already-restored source bullet.
+        if target == source_norm:
+            return True
+
+        # Exact complete sentence split out of the already-restored list bullet.
+        if block.get('is_list') and _sentence_aligned_exact_subitem(candidate, source_text):
+            return True
+
+    return False
+
+
 def _source_supports_display_value(value, blocks, allow_substring=True):
     target = _normalize_source_match(value)
     if not target:
@@ -1277,6 +1318,25 @@ def _shared_block_payload_for_role(experience, role_index, blocks, role_anchors)
         ).strip()
 
     return segment.strip(" \t|:-–—")
+
+
+def _shared_block_payload_is_substantive(role, payload):
+    """Return True when a role-owned shared-block payload contains narrative content beyond only its title."""
+    payload_text = str(payload or '').strip()
+    payload_norm = _normalize_source_match(payload_text)
+    if len(payload_norm) < 8:
+        return False
+
+    # A condensed entry that contains only the job title is metadata, not a bullet.
+    title_norm = _normalize_source_match(clean_job_title((role or {}).get('Title', '')))
+    payload_core = re.sub(r"[.!?;:,]+$", "", payload_norm).strip()
+    title_core = re.sub(r"[.!?;:,]+$", "", title_norm).strip()
+    if title_core and payload_core == title_core:
+        return False
+
+    # Require at least a small amount of alphabetic narrative signal.
+    words = re.findall(r"[A-Za-z][A-Za-z0-9+/#.&-]*", payload_text)
+    return len(words) >= 3
 
 
 def _validate_shared_block_role_coverage(experience, blocks, role_anchors, client_name):
@@ -2070,6 +2130,10 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
     }
 
     for role_num, role in enumerate(experience, start=1):
+        role_index = role_num - 1
+        role_anchor = role_anchors[role_index]
+        is_shared_anchor = shared_anchor_counts.get(role_anchor, 0) > 1
+
         bullets = role.get('Bullets', [])
         if isinstance(bullets, str):
             bullets = [x for x in bullets.split('\n') if str(x).strip()]
@@ -2078,61 +2142,111 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
 
         restored = []
         matched_indices = []
-        role_min = max(global_min_index, role_anchors[role_num - 1])
-        for bullet_num, bullet in enumerate(bullets, start=1):
-            candidate = _strip_list_marker_only(bullet)
-            if not candidate:
-                continue
-            role_index = role_num - 1
-            role_anchor = role_anchors[role_index]
-            is_shared_anchor = shared_anchor_counts.get(role_anchor, 0) > 1
+        # v46: remember source blocks already restored for THIS role so a model
+        # that splits one real multi-sentence source bullet into multiple AI bullets
+        # cannot trigger a false second-consumption failure.
+        role_restored_source_blocks = set()
+        role_min = max(global_min_index, role_anchor)
 
-            if is_shared_anchor:
-                idx, block = _best_shared_block_subitem_match(
-                    candidate,
-                    experience,
-                    role_index,
-                    blocks,
-                    role_anchors,
-                    min_norm_pos=shared_role_cursors.get(role_index, 0),
-                    used_spans=shared_block_used_spans,
-                )
-            else:
-                idx, block = _best_source_block_match(
-                    candidate,
-                    blocks,
-                    min_index=role_min,
-                    used=global_used,
-                )
+        # v45 Navy Federal hardening: once exact company/title order has already
+        # proven that multiple condensed Earlier/Additional Experience roles share
+        # one source block, the source-owned role payload is more authoritative than
+        # AI bullet extraction. Recover that exact payload deterministically so an
+        # AI omission cannot make a truthful abbreviated role disappear on one run.
+        # This remains fail-closed: no wording is generated or fuzzily inferred.
+        deterministic_shared_payload = ""
+        if (
+            str(client_name or '').strip().casefold() == 'navy federal'
+            and is_shared_anchor
+            and _additional_experience_section_for_anchor(blocks, role_anchor) is not None
+        ):
+            source_payload = _shared_block_payload_for_role(
+                experience,
+                role_index,
+                blocks,
+                role_anchors,
+            )
+            if _shared_block_payload_is_substantive(role, source_payload):
+                deterministic_shared_payload = source_payload
 
-            if block is None:
-                raise RuntimeError(
-                    f"{client_name} source-fidelity check rejected work-history bullet "
-                    f"{bullet_num} in role {role_num} because it was not a near-exact source item: "
-                    f"{candidate[:180]}"
-                )
-
-            exact_source = _strip_list_marker_only(block.get('text', ''))
-            restored.append(exact_source)
-
-            # A single visible source bullet may have been reconstructed from a
-            # small adjacent-block continuation span. Mark every contributing
-            # source block as represented so the later coverage audit does not
-            # falsely report the continuation line as omitted. Shared condensed
-            # blocks are consumed by exact character span rather than by whole block.
-            source_indices = list(block.get('_source_indices', [idx]) or [idx])
-            matched_indices.extend(source_indices)
-
-            shared_subspan = block.get('_shared_block_subspan')
-            if shared_subspan is not None:
-                span_start, span_end = shared_subspan
-                shared_block_used_spans.setdefault(idx, []).append((span_start, span_end))
+        if deterministic_shared_payload:
+            restored = [deterministic_shared_payload]
+            matched_indices.append(role_anchor)
+            window = _shared_block_role_window(
+                experience,
+                role_index,
+                blocks,
+                role_anchors,
+            )
+            if window is not None:
+                _, span_start, span_end = window
+                shared_block_used_spans.setdefault(role_anchor, []).append((span_start, span_end))
                 shared_role_cursors[role_index] = span_end
-                role_min = role_anchor
-            else:
-                global_used.update(source_indices)
-                role_min = max(source_indices) + 1
-                global_min_index = max(source_indices) + 1
+        else:
+            for bullet_num, bullet in enumerate(bullets, start=1):
+                candidate = _strip_list_marker_only(bullet)
+                if not candidate:
+                    continue
+
+                # v46: if an earlier candidate in this same role already caused the
+                # entire source bullet to be restored, a later exact sentence from
+                # that same source bullet is just an AI split artifact. Ignore it.
+                # Rewritten/fuzzy text still proceeds to normal matching and fails
+                # closed if unsupported.
+                if _candidate_is_redundant_with_restored_source_block(
+                    candidate,
+                    role_restored_source_blocks,
+                    blocks,
+                ):
+                    continue
+
+                if is_shared_anchor:
+                    idx, block = _best_shared_block_subitem_match(
+                        candidate,
+                        experience,
+                        role_index,
+                        blocks,
+                        role_anchors,
+                        min_norm_pos=shared_role_cursors.get(role_index, 0),
+                        used_spans=shared_block_used_spans,
+                    )
+                else:
+                    idx, block = _best_source_block_match(
+                        candidate,
+                        blocks,
+                        min_index=role_min,
+                        used=global_used,
+                    )
+
+                if block is None:
+                    raise RuntimeError(
+                        f"{client_name} source-fidelity check rejected work-history bullet "
+                        f"{bullet_num} in role {role_num} because it was not a near-exact source item: "
+                        f"{candidate[:180]}"
+                    )
+
+                exact_source = _strip_list_marker_only(block.get('text', ''))
+                restored.append(exact_source)
+
+                # A single visible source bullet may have been reconstructed from a
+                # small adjacent-block continuation span. Mark every contributing
+                # source block as represented so the later coverage audit does not
+                # falsely report the continuation line as omitted. Shared condensed
+                # blocks are consumed by exact character span rather than by whole block.
+                source_indices = list(block.get('_source_indices', [idx]) or [idx])
+                matched_indices.extend(source_indices)
+                role_restored_source_blocks.update(source_indices)
+
+                shared_subspan = block.get('_shared_block_subspan')
+                if shared_subspan is not None:
+                    span_start, span_end = shared_subspan
+                    shared_block_used_spans.setdefault(idx, []).append((span_start, span_end))
+                    shared_role_cursors[role_index] = span_end
+                    role_min = role_anchor
+                else:
+                    global_used.update(source_indices)
+                    role_min = max(source_indices) + 1
+                    global_min_index = max(source_indices) + 1
 
         role['Bullets'] = restored
 
