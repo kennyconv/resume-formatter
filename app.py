@@ -1,8 +1,9 @@
-# v46 SOURCE FIDELITY BUILD - SPLIT-SENTENCE DEDUPLICATION + DETERMINISTIC SHARED-BLOCK RECOVERY
-# Preserves all v45 behavior and adds exact same-role deduplication when AI splits one immutable multi-sentence source bullet into multiple extracted bullets.
+# v47 SOURCE FIDELITY BUILD - NAVY CONDENSED EXPERIENCE DISPLAY PRESERVATION
+# Preserves all v46 fidelity behavior and adds source-style Navy Federal rendering for proven condensed Earlier/Additional Experience blocks.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
+# Final Navy Word output may collapse multiple validated roles from one condensed source block into one section with exact company-prefixed bullets.
 
 import streamlit as st
 import pandas as pd
@@ -19365,6 +19366,248 @@ ORIGINAL RESUME:
 
 
 
+
+def _navy_reconstruct_validated_role_anchors(experience, blocks):
+    """
+    Reconstruct already-validated source anchors for Navy Federal display logic.
+
+    This mirrors the strict source-order rules used by enforce_source_fidelity(), but
+    it does not validate or mutate history. It exists only so final Word rendering can
+    recognize multiple proven roles that came from one condensed source block.
+    """
+    if not isinstance(experience, list) or not blocks:
+        return []
+
+    role_anchors = []
+    search_from = _initial_experience_search_start(blocks)
+
+    for role_index, role in enumerate(experience):
+        if not isinstance(role, dict):
+            return []
+
+        anchor = _find_role_anchor(role, blocks, start_index=search_from)
+        shared_block_anchor = False
+
+        if anchor is None and role_anchors and role_index > 0:
+            previous_anchor = role_anchors[-1]
+            retry_anchor = _find_role_anchor(
+                role,
+                blocks,
+                start_index=previous_anchor,
+            )
+            if (
+                retry_anchor == previous_anchor
+                and _shared_block_role_order_supported(
+                    experience[role_index - 1],
+                    role,
+                    blocks[previous_anchor].get('text', ''),
+                )
+            ):
+                anchor = retry_anchor
+                shared_block_anchor = True
+
+        if anchor is None:
+            return []
+
+        if role_anchors:
+            previous_anchor = role_anchors[-1]
+            if anchor < previous_anchor:
+                return []
+            if anchor == previous_anchor:
+                shared_block_anchor = _shared_block_role_order_supported(
+                    experience[role_index - 1],
+                    role,
+                    blocks[anchor].get('text', ''),
+                )
+                if not shared_block_anchor:
+                    return []
+
+        role_anchors.append(anchor)
+        search_from = anchor if shared_block_anchor else anchor + 1
+
+    return role_anchors
+
+
+def _navy_condensed_section_heading_parts(heading):
+    """
+    Return a clean display label and optional section-wide source date range.
+
+    Example:
+        "Earlier Experience 2007 - 2015" -> ("Earlier Experience", "2007 - 2015")
+
+    The date belongs to the section, not to each abbreviated company entry.
+    """
+    value = re.sub(r"\s+", " ", str(heading or "")).strip()
+    match = re.match(
+        r"^(?P<label>(?:additional|earlier|prior|previous)\s+"
+        r"(?:professional\s+)?(?:experience|roles?|positions?))\b(?P<tail>.*)$",
+        value,
+        flags=re.I,
+    )
+    if not match:
+        return None, ""
+
+    label = re.sub(r"\s+", " ", match.group("label")).strip()
+    label = " ".join(part.capitalize() for part in label.split())
+
+    month = (
+        r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+        r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
+        r"Dec(?:ember)?|\d{1,2})"
+    )
+    endpoint = rf"(?:(?:{month})[ /-]+)?(?:19|20)\d{{2}}"
+    date_match = re.search(
+        rf"{endpoint}\s*(?:[-–—]|\bto\b)\s*(?:{endpoint}|present|current)",
+        match.group("tail") or "",
+        flags=re.I,
+    )
+    dates = standardize_dates(date_match.group(0).strip()) if date_match else ""
+    return label, dates
+
+
+def _navy_exact_shared_role_segment(experience, role_index, blocks, role_anchors):
+    """
+    Return the exact company-prefixed source segment owned by one shared-block role.
+
+    No wording is generated. The already-proven normalized role window is mapped back
+    to original source characters so capitalization and punctuation remain source-faithful.
+    """
+    window = _shared_block_role_window(
+        experience,
+        role_index,
+        blocks,
+        role_anchors,
+    )
+    if window is None:
+        return ""
+
+    anchor, window_start, window_end = window
+    source_text = _strip_list_marker_only(
+        str(blocks[anchor].get('text', '') or '')
+    )
+    source_norm, raw_map = _normalized_source_with_raw_map(source_text)
+
+    if (
+        not source_norm
+        or not raw_map
+        or window_start < 0
+        or window_end <= window_start
+        or window_start >= len(raw_map)
+    ):
+        return ""
+
+    bounded_end = min(window_end, len(source_norm))
+    if bounded_end <= window_start:
+        return ""
+
+    raw_start = raw_map[window_start]
+    raw_end = raw_map[bounded_end - 1] + 1
+    segment = source_text[raw_start:raw_end].strip()
+
+    company = clean_company_name(experience[role_index].get('Company', ''))
+    if company:
+        company_norm = _normalize_source_match(company)
+        segment_norm = _normalize_source_match(segment)
+        if not segment_norm.startswith(company_norm):
+            return ""
+
+    return segment
+
+
+def navy_build_display_experience(experience, raw_text):
+    """
+    Build Navy Federal's final Word-display history without changing validated facts.
+
+    Normal roles remain one role per template block. The special case is an explicit
+    Earlier/Additional/Prior Experience section where two or more consecutive roles
+    were proven to occupy the SAME condensed source block. Those roles render as one
+    section-level entry with section-wide dates shown once and exact company-prefixed
+    source bullets beneath it.
+
+    This transformation happens AFTER enforce_source_fidelity(), so extraction and
+    source verification still prove each individual role independently. If exact source
+    boundaries cannot be reconstructed, fall back to ordinary validated role display.
+    """
+    if not isinstance(experience, list) or not experience:
+        return []
+
+    blocks = _source_blocks_for_text(raw_text)
+    role_anchors = _navy_reconstruct_validated_role_anchors(experience, blocks)
+    if len(role_anchors) != len(experience):
+        return copy.deepcopy(experience)
+
+    display_roles = []
+    role_index = 0
+
+    while role_index < len(experience):
+        anchor = role_anchors[role_index]
+        group_end = role_index + 1
+        while (
+            group_end < len(experience)
+            and role_anchors[group_end] == anchor
+        ):
+            group_end += 1
+
+        group_size = group_end - role_index
+        section = _additional_experience_section_for_anchor(blocks, anchor)
+
+        # Collapse only multiple proven roles sharing one physical source block inside
+        # an explicit condensed-experience section. Ordinary jobs remain untouched.
+        if group_size >= 2 and section is not None:
+            section_idx, _, section_heading = section
+            label, section_dates = _navy_condensed_section_heading_parts(section_heading)
+
+            segments = []
+            if label:
+                for idx in range(role_index, group_end):
+                    segment = _navy_exact_shared_role_segment(
+                        experience,
+                        idx,
+                        blocks,
+                        role_anchors,
+                    )
+                    if not segment:
+                        segments = []
+                        break
+                    segments.append(segment)
+
+            if segments:
+                condensed_role = {
+                    "Company": label,
+                    "Title": "",
+                    "Bullets": segments,
+                    "Dates": section_dates,
+                    "_NavyCondensedSectionSourceIndex": section_idx,
+                }
+
+                # If consecutive shared blocks belong to the same source section,
+                # append their bullets under one section heading instead of repeating it.
+                if (
+                    display_roles
+                    and display_roles[-1].get("_NavyCondensedSectionSourceIndex") == section_idx
+                ):
+                    display_roles[-1]["Bullets"].extend(segments)
+                    if not display_roles[-1].get("Dates") and section_dates:
+                        display_roles[-1]["Dates"] = section_dates
+                else:
+                    display_roles.append(condensed_role)
+
+                role_index = group_end
+                continue
+
+        display_roles.extend(
+            copy.deepcopy(experience[idx])
+            for idx in range(role_index, group_end)
+        )
+        role_index = group_end
+
+    for role in display_roles:
+        if isinstance(role, dict):
+            role.pop("_NavyCondensedSectionSourceIndex", None)
+
+    return display_roles
+
+
 def process_navy_federal_word_doc(temp_path, mapping, out_path):
     """
     Navy Federal Word processor.
@@ -20397,6 +20640,17 @@ FULL ORIGINAL RESUME:
                     )
 
                 # ====================================================
+                # BUILD NAVY DISPLAY HISTORY
+                # ====================================================
+                # Keep individual roles for validation and optimization. Only the
+                # final Word presentation collapses proven shared-block condensed
+                # experience into a source-style section with exact bullets.
+                display_experience = navy_build_display_experience(
+                    experience,
+                    raw_text,
+                )
+
+                # ====================================================
                 # BUILD WORD MAPPING
                 # ====================================================
                 mapping = {
@@ -20439,11 +20693,12 @@ FULL ORIGINAL RESUME:
                         mapping[f"Degree{i}"] = ""
                         mapping[f"Completed{i}"] = ""
 
-                # Work History — preserve EVERY extracted role and rely on the
-                # shared dynamic template expander for Company8/9/etc.
-                for i in range(1, max(7, len(experience)) + 1):
-                    if i <= len(experience):
-                        role = experience[i - 1]
+                # Work History: use the Navy-specific display transformation for
+                # proven condensed Earlier/Additional Experience while preserving all
+                # ordinary validated roles one-for-one.
+                for i in range(1, max(7, len(display_experience)) + 1):
+                    if i <= len(display_experience):
+                        role = display_experience[i - 1]
                         mapping[f"Company{i}"] = clean_company_name(
                             role.get("Company", "")
                         )
