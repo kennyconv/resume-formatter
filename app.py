@@ -1,5 +1,5 @@
-# v42 SOURCE FIDELITY BUILD - SHARED-BLOCK BULLET RESTORATION
-# Preserves all v41 behavior while allowing multiple explicitly supported condensed Earlier/Additional Experience roles to restore distinct exact source items from one shared parsed source block without weakening source-order validation.
+# v43 SOURCE FIDELITY BUILD - SOURCE-BULLET SENTENCE RECOVERY
+# Preserves all v42 behavior while safely recovering an entire original source bullet when AI extraction returns only one exact, sentence-aligned sentence from that multi-sentence bullet.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -641,6 +641,53 @@ def _source_blocks_for_text(raw_text):
     return list(entry.get('blocks', []) or [])
 
 
+def _sentence_aligned_exact_subitem(target, source_text):
+    """
+    Return True only when target is an exact normalized complete-sentence segment
+    inside source_text.
+
+    This is deliberately NOT fuzzy. It supports a common extraction artifact where
+    one original resume bullet contains two or more sentences but the model returns
+    only one of those sentences as the extracted bullet. The caller can then restore
+    the entire immutable source bullet rather than accepting the shortened version.
+    """
+    target_norm = _normalize_source_match(_strip_list_marker_only(target))
+    source_norm = _normalize_source_match(_strip_list_marker_only(source_text))
+    if not target_norm or not source_norm or target_norm == source_norm:
+        return False
+
+    # Avoid treating short phrases or labels as sentence-level evidence.
+    if len(target_norm) < 20 or len(re.findall(r"\b\w+\b", target_norm)) < 4:
+        return False
+
+    search_at = 0
+    while True:
+        pos = source_norm.find(target_norm, search_at)
+        if pos < 0:
+            return False
+
+        end = pos + len(target_norm)
+        before = source_norm[:pos].rstrip()
+        after = source_norm[end:].lstrip()
+
+        # The extracted item must begin at the source-bullet start or immediately
+        # after terminal sentence punctuation. It must also end at the source-bullet
+        # end or itself end with terminal punctuation. This prevents arbitrary phrase
+        # containment from being treated as a historical bullet match.
+        start_aligned = (
+            not before
+            or bool(re.search(r'[.!?]["\')\]]?$', before))
+        )
+        end_aligned = (
+            not after
+            or bool(re.search(r'[.!?]["\')\]]?$', target_norm))
+        )
+
+        if start_aligned and end_aligned:
+            return True
+        search_at = pos + 1
+
+
 def _best_source_block_match(value, blocks, min_index=0, used=None):
     """
     Return the best source match for a generated/extracted historical item.
@@ -649,8 +696,15 @@ def _best_source_block_match(value, blocks, min_index=0, used=None):
     can split one visible bullet across adjacent paragraphs. In that case, allow a
     small continuation span only when the preceding fragment is visibly unfinished.
 
+    v43 also handles the inverse structural artifact: the source contains one real
+    multi-sentence list bullet, while AI extraction returns only one exact complete
+    sentence from it. In that narrow case, the entire original source bullet is
+    restored so no source sentence is silently lost.
+
     Safety constraints:
     - Single-block exact/near-exact matching remains the first choice.
+    - Sentence recovery is exact-only, list-item-only, and sentence-boundary-aligned.
+    - Sentence recovery emits the whole original source bullet, never the shortened AI text.
     - Continuation spans are limited to three adjacent blocks.
     - A span may continue only while the prior fragment does NOT end in terminal
       punctuation, preventing two complete source bullets from being merged.
@@ -664,6 +718,7 @@ def _best_source_block_match(value, blocks, min_index=0, used=None):
         return None, None
 
     exact = []
+    sentence_recovery = []
     fuzzy = []
 
     def consider(candidate_text, start_idx, source_indices, base_block):
@@ -691,6 +746,16 @@ def _best_source_block_match(value, blocks, min_index=0, used=None):
         # Normal case: one parsed block contains the whole historical item.
         consider(source_text, idx, [idx], block)
 
+        # v43: if one real source LIST bullet contains multiple sentences and the
+        # extractor returned only one exact complete sentence, use that sentence as
+        # evidence for the block but restore the entire immutable source bullet.
+        if block.get('is_list') and _sentence_aligned_exact_subitem(value, source_text):
+            synthetic = dict(block)
+            synthetic['text'] = source_text
+            synthetic['_source_indices'] = [idx]
+            synthetic['_restored_from_sentence_subitem'] = True
+            sentence_recovery.append((idx, synthetic))
+
         # PDF/Word continuation case: one visible bullet was split across adjacent
         # parsed blocks. Never cross a completed sentence/bullet boundary.
         pieces = [source_text]
@@ -716,6 +781,9 @@ def _best_source_block_match(value, blocks, min_index=0, used=None):
     if exact:
         exact.sort(key=lambda x: x[0])
         return exact[0]
+    if sentence_recovery:
+        sentence_recovery.sort(key=lambda x: x[0])
+        return sentence_recovery[0]
     if fuzzy:
         fuzzy.sort(key=lambda x: (-x[0], x[1]))
         _, idx, block = fuzzy[0]
