@@ -1,5 +1,5 @@
-# v41 SOURCE FIDELITY BUILD - SHARED-BLOCK CONDENSED ROLE ANCHORING
-# Preserves all v40 behavior while allowing multiple explicitly supported condensed Earlier/Additional Experience roles to share one parsed source block without weakening source-order validation.
+# v42 SOURCE FIDELITY BUILD - SHARED-BLOCK BULLET RESTORATION
+# Preserves all v41 behavior while allowing multiple explicitly supported condensed Earlier/Additional Experience roles to restore distinct exact source items from one shared parsed source block without weakening source-order validation.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -963,6 +963,307 @@ def _shared_block_role_order_supported(previous_role, current_role, block_text):
     return min(curr_positions) > min(prev_positions)
 
 
+def _normalized_source_with_raw_map(value):
+    """
+    Return comparison-normalized text plus a character map back to the exact source.
+
+    This intentionally mirrors _normalize_source_match closely enough to recover the
+    original source substring after an exact normalized match. It is used only for
+    the special case where multiple condensed Earlier/Additional Experience roles
+    legitimately share one parsed source block.
+    """
+    raw = str(value or "")
+    normalized_chars = []
+    raw_map = []
+
+    for raw_idx, char in enumerate(raw):
+        transformed = unicodedata.normalize("NFKC", char)
+        transformed = (
+            transformed
+            .replace("\u00a0", " ")
+            .replace("–", "-")
+            .replace("—", "-")
+            .replace("‑", "-")
+            .replace("“", '"')
+            .replace("”", '"')
+            .replace("’", "'")
+            .casefold()
+        )
+
+        for out_char in transformed:
+            if out_char.isspace():
+                if normalized_chars and normalized_chars[-1] != " ":
+                    normalized_chars.append(" ")
+                    raw_map.append(raw_idx)
+            else:
+                normalized_chars.append(out_char)
+                raw_map.append(raw_idx)
+
+    while normalized_chars and normalized_chars[0] == " ":
+        normalized_chars.pop(0)
+        raw_map.pop(0)
+    while normalized_chars and normalized_chars[-1] == " ":
+        normalized_chars.pop()
+        raw_map.pop()
+
+    return "".join(normalized_chars), raw_map
+
+
+def _shared_block_effective_role_position(role, block_text, previous_role=None, next_role=None):
+    """
+    Return the exact normalized start position that best distinguishes one role
+    inside a shared condensed source block.
+
+    Different-company condensed roles are delimited by company occurrence. When
+    the same employer has multiple roles in one paragraph, exact title occurrence
+    is the safer delimiter. No fuzzy or semantic boundary inference is allowed.
+    """
+    positions = _role_identifier_positions_in_block(role, block_text)
+    company = _normalize_source_match(clean_company_name(role.get('Company', '')))
+    title = _normalize_source_match(clean_job_title(role.get('Title', '')))
+
+    neighbor_companies = []
+    for neighbor in (previous_role, next_role):
+        if isinstance(neighbor, dict):
+            neighbor_company = _normalize_source_match(
+                clean_company_name(neighbor.get('Company', ''))
+            )
+            if neighbor_company:
+                neighbor_companies.append(neighbor_company)
+
+    if company and company in neighbor_companies and title and positions.get('title') is not None:
+        return positions['title']
+    if company and positions.get('company') is not None:
+        return positions['company']
+    if title and positions.get('title') is not None:
+        return positions['title']
+    return None
+
+
+def _shared_block_role_window(experience, role_index, blocks, role_anchors):
+    """
+    Return the normalized [start, end) interval owned by one role when two or more
+    consecutive roles share the same parsed source block. Returns None for ordinary
+    one-role-per-block history.
+    """
+    if role_index < 0 or role_index >= len(experience) or role_index >= len(role_anchors):
+        return None
+
+    anchor = role_anchors[role_index]
+    shared_indices = [i for i, value in enumerate(role_anchors) if value == anchor]
+    if len(shared_indices) < 2:
+        return None
+
+    try:
+        group_pos = shared_indices.index(role_index)
+    except ValueError:
+        return None
+
+    block_text = _strip_list_marker_only(str(blocks[anchor].get('text', '') or ''))
+    source_norm = _normalize_source_match(block_text)
+    if not source_norm:
+        return None
+
+    previous_role = experience[shared_indices[group_pos - 1]] if group_pos > 0 else None
+    next_role = experience[shared_indices[group_pos + 1]] if group_pos + 1 < len(shared_indices) else None
+
+    start = _shared_block_effective_role_position(
+        experience[role_index],
+        block_text,
+        previous_role=previous_role,
+        next_role=next_role,
+    )
+    if start is None:
+        return None
+
+    end = len(source_norm)
+    if next_role is not None:
+        next_next_role = (
+            experience[shared_indices[group_pos + 2]]
+            if group_pos + 2 < len(shared_indices)
+            else None
+        )
+        next_start = _shared_block_effective_role_position(
+            next_role,
+            block_text,
+            previous_role=experience[role_index],
+            next_role=next_next_role,
+        )
+        if next_start is None or next_start <= start:
+            return None
+        end = next_start
+
+    return anchor, start, end
+
+
+def _exact_source_substring_occurrences(source_text, candidate):
+    """
+    Find exact comparison-normalized candidate occurrences inside one source block
+    and return the exact original source substring for each occurrence.
+
+    Unlike the ordinary whole-block matcher, this does NOT permit fuzzy wording.
+    It exists solely so two legitimate condensed roles can consume different exact
+    portions of the same physical source paragraph.
+    """
+    source_text = _strip_list_marker_only(source_text)
+    target = _normalize_source_match(_strip_list_marker_only(candidate))
+    if len(target) < 8:
+        return []
+
+    source_norm, raw_map = _normalized_source_with_raw_map(source_text)
+    if not source_norm or not raw_map:
+        return []
+
+    matches = []
+    search_at = 0
+    while True:
+        pos = source_norm.find(target, search_at)
+        if pos < 0:
+            break
+        end = pos + len(target)
+        raw_start = raw_map[pos]
+        raw_end = raw_map[end - 1] + 1
+        exact_source = source_text[raw_start:raw_end].strip()
+        if _normalize_source_match(exact_source) == target:
+            matches.append((pos, end, exact_source))
+        search_at = pos + 1
+
+    return matches
+
+
+def _best_shared_block_subitem_match(
+    candidate,
+    experience,
+    role_index,
+    blocks,
+    role_anchors,
+    min_norm_pos=0,
+    used_spans=None,
+):
+    """
+    Match one historical item inside the exact role-owned portion of a shared block.
+
+    Safety constraints:
+    - only activates when 2+ roles share the same proven source anchor;
+    - candidate wording must be an exact normalized substring of the source;
+    - the occurrence must fall inside this role's exact company/title-delimited window;
+    - already-consumed character spans cannot be reused; and
+    - the exact source substring, never AI wording, is returned for output.
+    """
+    window = _shared_block_role_window(
+        experience,
+        role_index,
+        blocks,
+        role_anchors,
+    )
+    if window is None:
+        return None, None
+
+    anchor, window_start, window_end = window
+    used_spans = list((used_spans or {}).get(anchor, []) or [])
+    lower_bound = max(window_start, int(min_norm_pos or 0))
+
+    source_text = str(blocks[anchor].get('text', '') or '')
+    for start, end, exact_source in _exact_source_substring_occurrences(source_text, candidate):
+        if start < lower_bound or end > window_end:
+            continue
+        if any(not (end <= used_start or start >= used_end) for used_start, used_end in used_spans):
+            continue
+
+        synthetic = dict(blocks[anchor])
+        synthetic['text'] = exact_source
+        synthetic['_source_indices'] = [anchor]
+        synthetic['_shared_block_subspan'] = (start, end)
+        return anchor, synthetic
+
+    return None, None
+
+
+def _shared_block_payload_for_role(experience, role_index, blocks, role_anchors):
+    """Return the exact role-specific payload after a leading Company: label, if provable."""
+    window = _shared_block_role_window(experience, role_index, blocks, role_anchors)
+    if window is None:
+        return ""
+
+    anchor, window_start, window_end = window
+    source_text = _strip_list_marker_only(str(blocks[anchor].get('text', '') or ''))
+    source_norm, raw_map = _normalized_source_with_raw_map(source_text)
+    if not source_norm or not raw_map or window_start >= len(raw_map):
+        return ""
+
+    raw_start = raw_map[window_start]
+    raw_end = raw_map[min(window_end, len(raw_map)) - 1] + 1 if window_end > window_start else raw_start
+    segment = source_text[raw_start:raw_end].strip()
+    if not segment:
+        return ""
+
+    company = clean_company_name(experience[role_index].get('Company', ''))
+    if company:
+        company_pattern = r"\s+".join(re.escape(part) for part in re.split(r"\s+", company.strip()) if part)
+        segment = re.sub(
+            rf"^\s*{company_pattern}\s*(?::|\||[-–—])\s*",
+            "",
+            segment,
+            count=1,
+            flags=re.I,
+        ).strip()
+
+    return segment.strip(" \t|:-–—")
+
+
+def _validate_shared_block_role_coverage(experience, blocks, role_anchors, client_name):
+    """
+    Ensure a condensed shared source block did not lose role-specific narrative text.
+
+    The role payload must be preserved by an exact/near-exact restored bullet or by
+    another historical role field that contains the whole payload. This closes the
+    omission gap created when a single source bullet encodes multiple abbreviated roles.
+    """
+    for role_index, role in enumerate(experience):
+        window = _shared_block_role_window(experience, role_index, blocks, role_anchors)
+        if window is None:
+            continue
+
+        payload = _shared_block_payload_for_role(experience, role_index, blocks, role_anchors)
+        payload_norm = _normalize_source_match(payload)
+        if len(payload_norm) < 8:
+            continue
+
+        represented = []
+        for key in ('Title', 'Dates', 'Environment', 'Responsible'):
+            value = str(role.get(key, '') or '').strip()
+            if value:
+                represented.append(_normalize_source_match(_strip_list_marker_only(value)))
+
+        bullets = role.get('Bullets', [])
+        if isinstance(bullets, str):
+            bullets = [x for x in bullets.split('\n') if str(x).strip()]
+        if isinstance(bullets, list):
+            represented.extend(
+                _normalize_source_match(_strip_list_marker_only(x))
+                for x in bullets
+                if str(x).strip()
+            )
+
+        represented = [value for value in represented if value]
+        fully_covered = any(
+            value == payload_norm
+            or payload_norm in value
+            or (
+                difflib.SequenceMatcher(None, payload_norm, value).ratio() >= 0.985
+                and abs(len(payload_norm) - len(value)) <= max(4, int(len(payload_norm) * 0.03))
+            )
+            for value in represented
+        )
+
+        if not fully_covered:
+            role_num = role_index + 1
+            raise RuntimeError(
+                f"{client_name} source-fidelity check detected shared-block work-history "
+                f"content that was not fully preserved in role {role_num}: {payload[:180]}"
+            )
+
+
 def _looks_like_role_metadata_label(text):
     """
     Recognize explicit role-level metadata/header lines that the formatter templates
@@ -1458,6 +1759,15 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
     global_used = set()
     matched_by_role = []
 
+    # v42: character-level consumption for the narrow case where multiple proven
+    # condensed roles share one physical source block. Ordinary role bullets keep
+    # v41's block-level matching/consumption unchanged.
+    shared_block_used_spans = {}
+    shared_role_cursors = {}
+    shared_anchor_counts = {
+        anchor: role_anchors.count(anchor) for anchor in set(role_anchors)
+    }
+
     for role_num, role in enumerate(experience, start=1):
         bullets = role.get('Bullets', [])
         if isinstance(bullets, str):
@@ -1472,30 +1782,56 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
             candidate = _strip_list_marker_only(bullet)
             if not candidate:
                 continue
-            idx, block = _best_source_block_match(
-                candidate,
-                blocks,
-                min_index=role_min,
-                used=global_used,
-            )
+            role_index = role_num - 1
+            role_anchor = role_anchors[role_index]
+            is_shared_anchor = shared_anchor_counts.get(role_anchor, 0) > 1
+
+            if is_shared_anchor:
+                idx, block = _best_shared_block_subitem_match(
+                    candidate,
+                    experience,
+                    role_index,
+                    blocks,
+                    role_anchors,
+                    min_norm_pos=shared_role_cursors.get(role_index, 0),
+                    used_spans=shared_block_used_spans,
+                )
+            else:
+                idx, block = _best_source_block_match(
+                    candidate,
+                    blocks,
+                    min_index=role_min,
+                    used=global_used,
+                )
+
             if block is None:
                 raise RuntimeError(
                     f"{client_name} source-fidelity check rejected work-history bullet "
                     f"{bullet_num} in role {role_num} because it was not a near-exact source item: "
                     f"{candidate[:180]}"
                 )
+
             exact_source = _strip_list_marker_only(block.get('text', ''))
             restored.append(exact_source)
 
             # A single visible source bullet may have been reconstructed from a
             # small adjacent-block continuation span. Mark every contributing
             # source block as represented so the later coverage audit does not
-            # falsely report the continuation line as omitted.
+            # falsely report the continuation line as omitted. Shared condensed
+            # blocks are consumed by exact character span rather than by whole block.
             source_indices = list(block.get('_source_indices', [idx]) or [idx])
             matched_indices.extend(source_indices)
-            global_used.update(source_indices)
-            role_min = max(source_indices) + 1
-            global_min_index = max(source_indices) + 1
+
+            shared_subspan = block.get('_shared_block_subspan')
+            if shared_subspan is not None:
+                span_start, span_end = shared_subspan
+                shared_block_used_spans.setdefault(idx, []).append((span_start, span_end))
+                shared_role_cursors[role_index] = span_end
+                role_min = role_anchor
+            else:
+                global_used.update(source_indices)
+                role_min = max(source_indices) + 1
+                global_min_index = max(source_indices) + 1
 
         role['Bullets'] = restored
 
@@ -1556,6 +1892,15 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
             )
 
         matched_by_role.append(set(matched_indices))
+
+    # A shared condensed source block is not divisible by block-index intervals, so
+    # validate its role-specific narrative payload explicitly after exact restoration.
+    _validate_shared_block_role_coverage(
+        experience,
+        blocks,
+        role_anchors,
+        client_name,
+    )
 
     # Coverage audit: within each detected role interval, every clearly structured
     # list item must be represented. If the role has no list formatting at all,
