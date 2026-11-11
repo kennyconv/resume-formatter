@@ -1,3 +1,4 @@
+# v58 FANNIE HYBRID RESTORATION BUILD - PROVEN SUMMARY BLUEPRINT + MODERN RESILIENCE
 # v57 FANNIE STABILIZATION BUILD - AUTHORITATIVE NAME INPUT + PROVEN SKILLS STYLE + SHARED-ASSIGNMENT COLLAPSE
 # Preserves v55/v56 production resilience, diagnostics, blank-QA removal, and PDF boundary cleanup while making Fannie candidate identity deterministic and restoring the proven skills-table presentation.
 # resume ingestion and source fidelity. Historical resume content is treated as
@@ -1798,37 +1799,23 @@ def _likely_role_metadata_block(text, role):
 
 def _looks_like_fannie_compound_role_header(text, role):
     """
-    Recognize a narrow Adobe PDF structural artifact in Fannie resumes where
-    role metadata and a short subsection heading are fused into one non-list block.
+    Recognize a narrow Fannie structural artifact where Adobe fuses role metadata
+    with a short subsection heading, for example:
 
-    Example:
-        "ICF International, Inc.  Mar 2018 to Present | Task Order Administration"
+        "ICF International, Inc. Mar 2018 to Present | Task Order Administration"
 
-    This is structural metadata, not a responsibility paragraph. The detector is
-    deliberately conservative:
-    - Fannie-only at the caller;
-    - source block must contain the proven role company or title;
-    - source block must contain an employment-style date range;
-    - after removing exact role metadata/date text, only a short heading-like
-      remainder may remain; and
-    - action/sentence-like remainders are rejected so real historical narrative
-      remains subject to the fail-closed coverage audit.
+    Fannie intentionally displays an explicitly labeled end-client when present, so
+    the source employer/vendor in such a fused header may differ from role['Company'].
+    v58 therefore accepts either:
+      * the proven output role company/title, OR
+      * a short employer-like prefix immediately before the date range,
+    but only when everything after the date is empty or a short heading-like label.
+
+    Action/sentence-like remainders are rejected so genuine historical narrative
+    remains subject to source-fidelity coverage.
     """
     value = _strip_list_marker_only(str(text or "").strip())
     if not value or len(value) > 280:
-        return False
-
-    role = role or {}
-    company = clean_company_name(role.get('Company', ''))
-    title = clean_job_title(role.get('Title', ''))
-    source_norm = _normalize_source_match(value)
-    company_norm = _normalize_source_match(company)
-    title_norm = _normalize_source_match(title)
-
-    if not (
-        (company_norm and company_norm in source_norm)
-        or (title_norm and title_norm in source_norm)
-    ):
         return False
 
     month = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|\d{1,2})"
@@ -1837,20 +1824,65 @@ def _looks_like_fannie_compound_role_header(text, role):
         rf"{endpoint}\s*(?:[-–—]|\bto\b)\s*(?:{endpoint}|present|current)",
         flags=re.I,
     )
-    if not date_range_re.search(value):
+    date_match = date_range_re.search(value)
+    if not date_match:
         return False
 
+    role = role or {}
+    company = clean_company_name(role.get("Company", ""))
+    title = clean_job_title(role.get("Title", ""))
+    source_norm = _normalize_source_match(value)
+    company_norm = _normalize_source_match(company)
+    title_norm = _normalize_source_match(title)
+    role_metadata_matches = bool(
+        (company_norm and company_norm in source_norm)
+        or (title_norm and title_norm in source_norm)
+    )
+
     remainder = value
-    # Remove exact proven role identifiers first. Flexible whitespace makes this
-    # robust to Adobe spacing changes without fuzzy semantic matching.
-    for metadata_value in (company, title):
-        metadata_value = str(metadata_value or '').strip()
-        if not metadata_value:
-            continue
-        pattern = r"\s+".join(
-            re.escape(part) for part in re.split(r"\s+", metadata_value) if part
+    if role_metadata_matches:
+        # Remove exact proven role identifiers first. Flexible whitespace keeps
+        # this robust to Adobe spacing without fuzzy semantic matching.
+        for metadata_value in (company, title):
+            metadata_value = str(metadata_value or "").strip()
+            if not metadata_value:
+                continue
+            pattern = r"\s+".join(
+                re.escape(part) for part in re.split(r"\s+", metadata_value) if part
+            )
+            remainder = re.sub(pattern, " ", remainder, count=1, flags=re.I)
+    else:
+        # Source employer/vendor may differ from the displayed end-client. Allow a
+        # short organization-like prefix immediately before the date range, but do
+        # not accept sentence/action prose as a synthetic company header.
+        prefix = value[:date_match.start()].strip(" |:;,-–—")
+        prefix_words = re.findall(r"[A-Za-z][A-Za-z0-9&.'/-]*", prefix)
+        if not prefix_words or len(prefix_words) > 10 or len(prefix) > 120:
+            return False
+        action_openers = {
+            "administer", "administered", "analyze", "analyzed", "build", "built",
+            "collaborate", "collaborated", "conduct", "conducted", "coordinate", "coordinated",
+            "create", "created", "develop", "developed", "drive", "drove", "engage", "engaged",
+            "execute", "executed", "facilitate", "facilitated", "implement", "implemented",
+            "lead", "led", "manage", "managed", "perform", "performed", "plan", "planned",
+            "prepare", "prepared", "provide", "provided", "review", "reviewed", "serve", "served",
+            "support", "supported", "test", "tested", "translate", "translated", "work", "worked",
+        }
+        if prefix_words[0].casefold() in action_openers:
+            return False
+
+        company_markers = re.compile(
+            r"\b(?:inc\.?|llc|ltd\.?|corp\.?|corporation|company|co\.?|group|international|"
+            r"bank|partners?|associates?|consulting|services?|systems?|technologies?)\b",
+            flags=re.I,
         )
-        remainder = re.sub(pattern, " ", remainder, count=1, flags=re.I)
+        title_like_prefix = sum(
+            1 for word in prefix_words
+            if word.isupper() or word[:1].isupper()
+        ) >= max(1, len(prefix_words) - 1)
+        if not (company_markers.search(prefix) or title_like_prefix):
+            return False
+        remainder = remainder[date_match.start():]
 
     remainder = date_range_re.sub(" ", remainder, count=1)
     remainder = re.sub(r"[|:;,/\\()\[\]{}]+", " ", remainder)
@@ -1864,23 +1896,19 @@ def _looks_like_fannie_compound_role_header(text, role):
     if not words or len(words) > 7 or len(remainder) > 90:
         return False
 
-    # A short subsection label may remain after the role metadata. Reject common
-    # action-verb openings so fused responsibility prose is never hidden.
     action_openers = {
-        'administer', 'administered', 'analyze', 'analyzed', 'build', 'built',
-        'collaborate', 'collaborated', 'conduct', 'conducted', 'coordinate', 'coordinated',
-        'create', 'created', 'develop', 'developed', 'drive', 'drove', 'engage', 'engaged',
-        'execute', 'executed', 'facilitate', 'facilitated', 'implement', 'implemented',
-        'lead', 'led', 'manage', 'managed', 'perform', 'performed', 'plan', 'planned',
-        'prepare', 'prepared', 'provide', 'provided', 'review', 'reviewed', 'serve', 'served',
-        'support', 'supported', 'test', 'tested', 'translate', 'translated', 'work', 'worked',
+        "administer", "administered", "analyze", "analyzed", "build", "built",
+        "collaborate", "collaborated", "conduct", "conducted", "coordinate", "coordinated",
+        "create", "created", "develop", "developed", "drive", "drove", "engage", "engaged",
+        "execute", "executed", "facilitate", "facilitated", "implement", "implemented",
+        "lead", "led", "manage", "managed", "perform", "performed", "plan", "planned",
+        "prepare", "prepared", "provide", "provided", "review", "reviewed", "serve", "served",
+        "support", "supported", "test", "tested", "translate", "translated", "work", "worked",
     }
     if words[0].casefold() in action_openers:
         return False
 
-    # Heading-like remainder: words are predominantly title-cased/acronyms, with
-    # only ordinary connector words allowed in lowercase.
-    connectors = {'and', 'or', 'of', 'for', 'to', 'the', 'in', 'on', 'with', 'a', 'an'}
+    connectors = {"and", "or", "of", "for", "to", "the", "in", "on", "with", "a", "an"}
     heading_like = 0
     for word in words:
         clean = word.strip(".'-")
@@ -2973,7 +3001,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v57"
+_FORMATTER_BUILD_VERSION = "v58"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -3873,14 +3901,265 @@ def _fannie_collapse_duplicate_shared_assignments(experience):
     return result
 
 
-def _fannie_tailoring_validation_issues(payload, first_name, raw_text):
-    """Nonfatal QA for Fannie's generated summary/skills payload."""
+
+def _fannie_merge_compound_date_ranges(value):
+    """
+    Collapse multiple overlapping/touching month-precision ranges that describe
+    one shared Fannie assignment into one continuous source-supported span.
+
+    Example:
+        "Jan 2016 to May 2017; Apr 2011 to Dec 2016"
+        -> "Apr 2011 - May 2017"
+
+    If the ranges are disjoint or cannot be parsed safely, preserve the source
+    display unchanged.
+    """
+    raw = re.sub(r"\s+", " ", str(value or "")).strip()
+    if ";" not in raw:
+        return raw
+    parts = [part.strip() for part in raw.split(";") if part.strip()]
+    if len(parts) < 2:
+        return raw
+    parsed = [_fannie_parse_date_range(part) for part in parts]
+    if any(item is None for item in parsed):
+        return raw
+
+    ranges = []
+    for start, end in parsed:
+        s = start[0] * 12 + start[1]
+        e = end[0] * 12 + end[1]
+        ranges.append((s, e, start, end))
+    ranges.sort(key=lambda item: item[0])
+
+    current_end = ranges[0][1]
+    for start_num, end_num, _, _ in ranges[1:]:
+        if start_num > current_end + 1:
+            return raw
+        current_end = max(current_end, end_num)
+
+    earliest = min(ranges, key=lambda item: item[0])[2]
+    latest = max(ranges, key=lambda item: item[1])[3]
+    return f"{_fannie_format_month_endpoint(earliest)} - {_fannie_format_month_endpoint(latest)}"
+
+
+def _fannie_normalize_compound_assignment_dates(experience):
+    roles = [copy.deepcopy(r) for r in (experience or []) if isinstance(r, dict)]
+    for role in roles:
+        role["Dates"] = _fannie_merge_compound_date_ranges(role.get("Dates", ""))
+    return roles
+
+
+def _fannie_parse_any_date_range(value):
+    """Parse month/year or year-only role spans for safe containment checks only."""
+    raw = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not raw:
+        return None
+    parts = re.split(r"\s+(?:to|through|thru)\s+|\s*[–—-]\s*", raw, maxsplit=1, flags=re.I)
+    if len(parts) != 2:
+        return None
+    start = _fannie_parse_date_endpoint(parts[0], is_end=False)
+    end = _fannie_parse_date_endpoint(parts[1], is_end=True)
+    if not start or not end:
+        return None
+    return start, end
+
+
+def _fannie_collapse_umbrella_career_roles(experience):
+    """
+    Fannie-only presentation cleanup for a broad same-employer career header
+    immediately followed by the detailed dated subroles it summarizes.
+
+    Example source pattern:
+        Fannie Mae | Aug 1993 - Apr 2011
+        Project Manager / Senior Trader / Senior Business Analyst / Internal Auditor
+        "Served as an Internal Auditor, Financial Analyst, ... for over 18 years"
+        Project Manager (Oct 2009 - Apr 2011)
+        Senior Trader (...)
+        ...
+
+    When the broad role is demonstrably an umbrella over at least three following
+    same-company dated subroles, remove the duplicate umbrella job and preserve its
+    exact summary bullet by prepending it once to the first detailed subrole.
+    """
+    roles = [copy.deepcopy(r) for r in (experience or []) if isinstance(r, dict)]
+    if len(roles) < 4:
+        return roles
+
+    result = []
+    i = 0
+    while i < len(roles):
+        role = roles[i]
+        company_key = _normalize_source_match(clean_company_name(role.get("Company", "")))
+        title = clean_job_title(role.get("Title", ""))
+        bullets = role.get("Bullets", [])
+        if isinstance(bullets, str):
+            bullets = [x for x in bullets.split("\n") if str(x).strip()]
+        bullets = bullets if isinstance(bullets, list) else []
+        umbrella_range = _fannie_parse_any_date_range(role.get("Dates", ""))
+
+        # Broad title + very small summary payload is the expected umbrella shape.
+        broad_title = len([x for x in re.split(r"\s*/\s*", title) if x.strip()]) >= 3
+        if not (company_key and broad_title and umbrella_range and len(bullets) <= 2):
+            result.append(role)
+            i += 1
+            continue
+
+        same_company_followers = []
+        j = i + 1
+        while j < len(roles):
+            follower = roles[j]
+            follower_company = _normalize_source_match(clean_company_name(follower.get("Company", "")))
+            if follower_company != company_key:
+                break
+            follower_range = _fannie_parse_any_date_range(follower.get("Dates", ""))
+            if not follower_range:
+                break
+            same_company_followers.append((j, follower, follower_range))
+            j += 1
+
+        if len(same_company_followers) < 3:
+            result.append(role)
+            i += 1
+            continue
+
+        u_start, u_end = umbrella_range
+        us, ue = u_start[0] * 12 + u_start[1], u_end[0] * 12 + u_end[1]
+        contained = []
+        descriptor = _normalize_source_match(
+            " ".join([title] + [str(x) for x in bullets])
+        )
+        title_matches = 0
+        for _, follower, follower_range in same_company_followers:
+            fs = follower_range[0][0] * 12 + follower_range[0][1]
+            fe = follower_range[1][0] * 12 + follower_range[1][1]
+            if fs < us or fe > ue:
+                break
+            contained.append(follower)
+            follower_title = _normalize_source_match(clean_job_title(follower.get("Title", "")))
+            if follower_title and follower_title in descriptor:
+                title_matches += 1
+
+        if len(contained) < 3 or title_matches < 2:
+            result.append(role)
+            i += 1
+            continue
+
+        # Preserve the umbrella's exact source summary once, but not as a duplicate job.
+        first_detail = copy.deepcopy(contained[0])
+        first_bullets = first_detail.get("Bullets", [])
+        if isinstance(first_bullets, str):
+            first_bullets = [x for x in first_bullets.split("\n") if str(x).strip()]
+        first_bullets = list(first_bullets) if isinstance(first_bullets, list) else []
+        existing_keys = {_normalize_source_match(_strip_list_marker_only(x)) for x in first_bullets}
+        umbrella_bullets = [
+            _strip_list_marker_only(x) for x in bullets
+            if _normalize_source_match(_strip_list_marker_only(x))
+        ]
+        prepend = [x for x in umbrella_bullets if _normalize_source_match(x) not in existing_keys]
+        first_detail["Bullets"] = prepend + first_bullets
+        contained[0] = first_detail
+
+        result.extend(contained)
+        # Skip only the detailed roles actually absorbed under this umbrella.
+        # A later same-company role outside the umbrella span must still be processed.
+        i = i + 1 + len(contained)
+
+    return result
+
+
+def _fannie_summary_sentence_values(payload):
+    """Return four Fannie summary sentence fields, with legacy SUMMARY fallback."""
+    payload = payload if isinstance(payload, dict) else {}
+    direct = [str(payload.get(f"SUMMARY{i}", "") or "").strip() for i in range(1, 5)]
+    if any(direct):
+        return direct
+    legacy = str(payload.get("SUMMARY", "") or "").strip()
+    if not legacy:
+        return ["", "", "", ""]
+    pieces = [x.strip() for x in re.split(r"(?<=[.!?])\s+", legacy) if x.strip()]
+    return (pieces + ["", "", "", ""])[:4]
+
+
+def _fannie_finalize_summary_sentence(value):
+    """Safe generated-copy cleanup: punctuation/style only, never candidate facts."""
+    value = _sanitize_ai_generated_text(value)
+    value = re.sub(r"^(?:[•·▪◦●○■□►▸*]|\d+[.)])\s*", "", value).strip()
+    if value and value[-1] not in ".!?":
+        value += "."
+    return value
+
+
+def _fannie_summary_validation_issues(payload, first_name):
+    """Nonblocking QA for the restored four-part Fannie recruiter narrative."""
+    issues = []
+    sentences = _fannie_summary_sentence_values(payload)
+    if len(sentences) != 4 or any(not str(x).strip() for x in sentences):
+        issues.append("SUMMARY must contain exactly four non-empty sentence fields (SUMMARY1-SUMMARY4).")
+        return issues
+
+    cleaned = [_sanitize_ai_generated_text(x) for x in sentences]
+    if first_name and not re.match(rf"^{re.escape(first_name)}\s+is\b", cleaned[0], flags=re.I):
+        issues.append(f'SUMMARY1 must begin naturally with "{first_name} is".')
+
+    prohibited = [
+        (r"\bprogressive (?:professional )?experience\b", "progressive experience"),
+        (r"\bday\s*1\b", "Day 1"),
+        (r"\bimmediate (?:asset|value)\b", "immediate asset/value"),
+        (r"\b(?:perfect|excellent) fit\b", "perfect/excellent fit"),
+        (r"\bproven track record\b", "proven track record"),
+        (r"\bresults[- ]driven\b", "results-driven"),
+        (r"\bseasoned\b", "seasoned"),
+        (r"\bhighly experienced\b", "highly experienced"),
+        (r"\bstrong background\b", "strong background"),
+        (r"\bwill deliver\b", "future promise"),
+    ]
+    for idx, sentence in enumerate(cleaned, 1):
+        words = re.findall(r"\b[A-Za-z0-9][A-Za-z0-9+.#/'-]*\b", sentence)
+        if len(words) < 8:
+            issues.append(f"SUMMARY{idx} is too short to function as a complete recruiter-summary sentence.")
+        if sentence and sentence[-1] not in ".!?":
+            issues.append(f"SUMMARY{idx} must end with sentence punctuation.")
+        if "\u2014" in sentence:
+            issues.append(f"SUMMARY{idx} contains an em dash.")
+        for pattern, label in prohibited:
+            if re.search(pattern, sentence, flags=re.I):
+                issues.append(f"SUMMARY{idx} contains discouraged phrasing: {label}.")
+
+    # Sentence 3 must do more than enumerate tasks. Require at least one signal of
+    # scale, ownership, complexity, implementation, or outcome. This is deliberately
+    # broad and nonfatal; it exists only to trigger a better rewrite when the prose
+    # collapses into a resume list.
+    proof_markers = re.compile(
+        r"\b(?:result\w*|reduc\w*|improv\w*|enabl\w*|ensur\w*|scale|complex\w*|million|billion|enterprise|"
+        r"regulatory|operational|readiness|implementation|migration|modernization|ownership|"
+        r"end[- ]to[- ]end|production|portfolio|budget|risk|compliance)\b",
+        flags=re.I,
+    )
+    if not proof_markers.search(cleaned[2]):
+        issues.append(
+            "SUMMARY3 must explain execution plus why it mattered (impact, scale, complexity, ownership, or business/operational significance), not merely list activities."
+        )
+
+    # Sentence 4 must synthesize evidence back to the target need rather than add
+    # one more disconnected resume fact.
+    closer_markers = re.compile(
+        r"\b(?:support\w*|provid\w*|demonstrat\w*|directly relevant|well[- ]suited|"
+        r"experience in|combination of|success in|expertise in|track record in)\b",
+        flags=re.I,
+    )
+    disconnected_fact = re.match(r"^(?:At|In|While at)\s+", cleaned[3], flags=re.I)
+    if disconnected_fact or not closer_markers.search(cleaned[3]):
+        issues.append(
+            "SUMMARY4 must function as an evidence-based recruiter closer that connects proven experience to the target role's central need, not introduce another disconnected resume fact."
+        )
+
+    return issues
+
+
+def _fannie_skills_validation_issues(payload, raw_text):
+    """Nonfatal QA for Fannie's four-row skills table."""
     issues = []
     payload = payload if isinstance(payload, dict) else {}
-    summary = str(payload.get("SUMMARY", "") or "").strip()
-    if first_name and not re.match(rf"^{re.escape(first_name)}\s+is\b", summary, flags=re.I):
-        issues.append(f'SUMMARY sentence 1 must begin naturally with "{first_name} is".')
-
     seen_details = {}
     seen_categories = set()
     year_pattern = re.compile(r"^(?:<1 year|\d+\+ years), (?:current|(?:19|20)\d{2})$", flags=re.I)
@@ -3890,9 +4169,6 @@ def _fannie_tailoring_validation_issues(payload, first_name, raw_text):
         skill = str(payload.get(f"SKILL{idx}", "") or "").strip()
         years = str(payload.get(f"YEARS{idx}", "") or "").strip()
         if not skill:
-            # Fannie prefers four rows, but an unsupported fourth row must never be
-            # fabricated just to fill the template. Blank is valid when fewer than
-            # four distinct, defensible competencies exist.
             continue
 
         category = re.sub(r"\s*\([^()]*\)\s*$", "", skill).strip()
@@ -3921,7 +4197,6 @@ def _fannie_tailoring_validation_issues(payload, first_name, raw_text):
             else:
                 seen_details[detail] = idx
 
-        # Hidden evidence excerpts, when present, must be verbatim source excerpts.
         evidence = payload.get(f"SKILL{idx}_EVIDENCE", [])
         if isinstance(evidence, str):
             evidence = [evidence]
@@ -3944,6 +4219,13 @@ def _fannie_tailoring_validation_issues(payload, first_name, raw_text):
 
     return issues
 
+
+def _fannie_tailoring_validation_issues(payload, first_name, raw_text):
+    """Compatibility wrapper: summary quality + skills quality, all nonfatal."""
+    return (
+        _fannie_summary_validation_issues(payload, first_name)
+        + _fannie_skills_validation_issues(payload, raw_text)
+    )
 
 def _fannie_safe_years_display(value):
     """Never render malformed values such as '14+ years,' into the Fannie template."""
@@ -5463,11 +5745,19 @@ def fannie_mae_app():
                     data['FullName'] = name
                     first_name = _fannie_first_name(name)
 
-                    # Collapse only adjacent, exact duplicate shared assignments
-                    # (same end client + title + identical bullets + overlapping/touching
-                    # source-supported dates). This fixes staffing-vendor date splits
-                    # without merging genuinely separate roles.
+                    # v58 Fannie presentation cleanup, source-supported only:
+                    # 1) union overlapping/touching date ranges for one shared assignment;
+                    # 2) collapse duplicate shared-vendor representations; and
+                    # 3) remove broad same-company career umbrella rows when the detailed
+                    #    dated subroles are already present, preserving the umbrella summary
+                    #    once in the first detailed role.
+                    data['Experience'] = _fannie_normalize_compound_assignment_dates(
+                        data.get('Experience', [])
+                    )
                     data['Experience'] = _fannie_collapse_duplicate_shared_assignments(
+                        data.get('Experience', [])
+                    )
+                    data['Experience'] = _fannie_collapse_umbrella_career_roles(
                         data.get('Experience', [])
                     )
 
@@ -5506,108 +5796,159 @@ def fannie_mae_app():
                             summary_prompt = f"""
                             Return a valid JSON object ONLY.
 
-                            You are preparing the Fannie Mae Fieldglass candidate SUMMARY and
-                            SKILL & COMPETENCY REQUIREMENTS table. Restore the proven Fannie
-                            presentation style used by successful submissions: concise recruiter
-                            prose, four high-signal skill rows, professional capitalization, and
-                            evidence-based years/last-used values.
-
-                            SOURCE PRIORITY:
-                            1. ORIGINAL RESUME = primary factual source for candidate experience.
-                            2. SUPPLIER TECHNICAL INTERVIEW Q&A = secondary clarification only.
-                            3. SPOTLIGHT CALL TRANSCRIPT = highest-priority hiring-team emphasis.
-                            4. FIELDGLASS CHAT NOTES = next-highest hiring-team emphasis.
-                            5. OFFICIAL JOB DESCRIPTION = broad requirements and ATS terminology.
-
-                            Manager/role sources determine WHAT TO EMPHASIZE. They never create
-                            candidate history. Every candidate skill, tool, responsibility, domain,
-                            tenure, and accomplishment must be supported by candidate evidence.
+                            You are an elite Senior Technical Recruiter preparing a Fannie Mae
+                            Fieldglass candidate submission. Restore the proven Fannie narrative
+                            style used by successful submissions: four connected recruiter-quality
+                            sentences that build a business case, plus four concise high-signal
+                            Skill & Competency rows.
 
                             ========================
-                            SUMMARY - EXACTLY 4 SENTENCES
+                            SOURCE / PRIORITY MODEL
                             ========================
-                            - Sentence 1 MUST begin naturally with "{first_name} is".
-                            - Use the recruiter-entered candidate identity exactly. Never infer a
-                              different name from the resume.
-                            - State the candidate's supported functional identity and most relevant
-                              experience for this requisition.
-                            - Sentence 2 should use the strongest recent or otherwise most relevant
-                              resume evidence for the hiring team's central need.
-                            - Sentence 3 should explain execution: tools, methodologies, scope,
-                              ownership, complexity, testing/support, or measurable impact.
-                            - Sentence 4 should add the strongest remaining resume-proven signal.
-                            - Use natural recruiter language. Do not use progressive experience,
-                              strong background, highly experienced, proven track record,
-                              results-driven, seasoned, Day 1, immediate asset/value, perfect fit,
-                              excellent fit, or promises about future performance.
-                            - Do not use em dashes.
-                            - Do not mention location, rate, availability, or work authorization.
-                            - Preserve exact JD terminology when it is both useful and genuinely
-                              supported by the resume.
+                            CANDIDATE FACTS:
+                            - ORIGINAL RESUME is the primary factual source of candidate experience.
+                            - Supplier Technical Interview Q&A is secondary and may clarify depth or
+                              reinforce experience already supported by the resume. It must not create
+                              unsupported candidate experience.
+
+                            HIRING-TEAM EMPHASIS:
+                            1. SPOTLIGHT CALL TRANSCRIPT = highest-priority manager emphasis.
+                            2. FIELDGLASS CHAT NOTES = next-highest manager/MSP emphasis.
+                            3. OFFICIAL JOB DESCRIPTION = broad requirements and ATS terminology.
+
+                            ATS / TERMINOLOGY COVERAGE:
+                            - The Official Job Description remains the primary source for broad
+                              Fieldglass keyword/phrase coverage.
+                            - Spotlight/Chat Notes should change emphasis and prioritization without
+                              needlessly erasing important JD concepts unless they contradict them.
+                            - Preserve exact JD terminology when it is useful AND genuinely supported
+                              by the candidate's resume/Q&A.
+                            - Never turn manager/JD language into candidate history.
 
                             ========================
-                            FANNIE SKILLS TABLE - EXACTLY 4 HIGH-SIGNAL ROWS WHEN SUPPORTED
+                            THE FANNIE NARRATIVE BLUEPRINT - EXACTLY 4 SENTENCES
                             ========================
-                            The successful Fannie format is:
-                                Competency Area (Supporting Detail, Supporting Detail, Tool)
-                                X+ years, current
-                            or:
-                                X+ years, YYYY
+                            Return SUMMARY1, SUMMARY2, SUMMARY3, and SUMMARY4 as four separate,
+                            complete sentences. Together they must read as ONE polished recruiter
+                            narrative. Every sentence must strengthen the business case for the
+                            candidate rather than merely restating resume facts.
 
-                            ROW SELECTION:
-                            - Treat the four rows as scarce screening space.
-                            - Choose the four most important DISTINCT competencies for this Fannie
-                              requisition that the candidate genuinely demonstrates.
-                            - Spotlight/manager priorities outrank generic JD items when provided.
-                            - Otherwise prioritize the JD's core must-haves/day-to-day work.
-                            - Each row must represent a materially different screening dimension.
-                            - Consolidate closely related concepts instead of creating redundant rows.
-                            - Do not repeat the same supporting detail/tool across multiple rows unless
-                              repetition is genuinely unavoidable. For example, do not place JIRA in
-                              three rows simply because it relates to BA, Agile, and Testing.
-                            - Use up to 6 parenthetical supporting details, but use fewer when fewer
-                              details create a cleaner, stronger row.
-                            - Favor demonstrated work-history evidence over a standalone skill list.
-                            - If fewer than four defensible relevant competencies exist, leave unused
-                              SKILL/YEARS fields blank rather than fabricate filler.
+                            SUMMARY1 - THE ANCHOR / AUTHORITY
+                            - MUST begin naturally with "{first_name} is".
+                            - Identify the candidate's honest target-relevant professional identity,
+                              supported experience/domain depth, and the PRIMARY must-have they solve.
+                            - If the target JD title accurately reflects the candidate's demonstrated
+                              history, you may use it. Otherwise use the strongest truthful professional
+                              identity supported by the resume.
+                            - Total-years language must be source-supported and defensible. Do not
+                              invent precision or use the phrase "progressive experience".
 
-                            DISPLAY / CAPITALIZATION - IMPORTANT:
-                            - Use professional standard capitalization exactly like successful Fannie
-                              submissions: "Data Engineering (Python, SQL, ETL/ELT, Data Validation)"
-                              and "Generative AI & LLM Integration (Prompt Engineering, LLM APIs, FastAPI, Pydantic)".
-                            - Generic competency/detail phrases should use professional Title Case.
-                            - Preserve the canonical capitalization of named tools, platforms,
-                              acronyms, and technologies from the resume/JD, such as JIRA, Power BI,
+                            SUMMARY2 - THE ALIGNMENT / HOOK
+                            - Name the current/most-recent employer when it provides useful relevant
+                              evidence. If an earlier employer/role is substantially stronger evidence
+                              for the target need, use that stronger role instead.
+                            - Highlight the single strongest accomplishment/responsibility showing the
+                              candidate has actually performed the core work this Fannie role requires.
+                            - Show the connection through evidence, not generic "fit" language.
+
+                            SUMMARY3 - THE EXECUTION & IMPACT / PROOF
+                            - Explain HOW the candidate executed the relevant work AND WHY IT MATTERED.
+                            - Include tools/methodologies naturally when useful, but do not write a
+                              comma-separated inventory.
+                            - Emphasize scale, complexity, operational ownership, implementation,
+                              testing/support, regulatory/business significance, measurable impact, or
+                              another source-supported proof point.
+                            - Do not simply list activities. This sentence must add meaning.
+
+                            SUMMARY4 - THE CLOSER / RELEVANCE
+                            - Synthesize the strongest proven signals and connect them back to the
+                              target role's central need in confident recruiter language.
+                            - This must function as a true closing argument, not introduce one more
+                              disconnected resume fact.
+                            - Stay evidence-based. Do NOT promise future performance or use "Day 1",
+                              "immediate asset", "immediate value", "perfect fit", or "excellent fit".
+                            - Good modern closer pattern: "{first_name}'s demonstrated success in [X]
+                              and [Y] provides directly relevant evidence for this role's need to [Z]."
+                              Use the pattern only when the underlying facts are source-supported.
+
+                            ========================
+                            SUMMARY STYLE & FINAL POLISH - STRICT
+                            ========================
+                            - Write like a human recruiter pitching to a knowledgeable colleague:
+                              confident, direct, specific, and factual.
+                            - SHOW, DON'T TELL. Prefer evidence of ownership/execution over adjectives.
+                            - Prefer clear business language over consultant buzzwords.
+                            - Use verbs that naturally fit the work. Do not force dramatic leadership verbs.
+                            - Do not use generic filler such as "strong background", "highly experienced",
+                              "proven track record", "results-driven", "seasoned", "positions them uniquely",
+                              "fits well", or "aligns with".
+                            - Do not use transition crutches such as "Additionally", "Furthermore", or "Moreover".
+                            - Do not mention location, rate, availability, work authorization, or submission logistics.
+                            - Do not use em dashes. Use commas, colons, semicolons, parentheses, or standard hyphens.
+                            - Avoid repeating the same verb/concept across sentences when a cleaner alternative exists.
+                            - Keep tool density readable. Do not turn any sentence into a keyword dump.
+                            - Prefer resume-demonstrated accomplishments and recurring ownership over skills-list mentions.
+                            - Unless the role is explicitly implementation-focused, favor evidence of actual
+                              day-to-day execution, issue resolution, testing, support, governance, compliance,
+                              platform/process ownership, or measurable business outcomes over vague participation.
+
+                            EXAMPLE OF THE NARRATIVE QUALITY / FLOW TO EMULATE:
+                            "Sarah is a Senior Data Engineer with 7+ years of experience architecting cloud-native data migrations in regulated financial environments. Most recently at Capital One, she led an end-to-end legacy data warehouse migration to AWS, providing direct evidence of the scale and governance required for the target cloud initiative. By engineering automated ETL pipelines with Python, PySpark, and Apache Airflow, she processed 5TB of daily transaction data and reduced reporting latency by 40%. Sarah's demonstrated success managing complex data migrations and governance provides directly relevant evidence for this role's AWS modernization goals."
+                            Do not copy facts or wording from this example. Copy only the structure and quality.
+
+                            ========================
+                            FANNIE SKILLS TABLE - PRESERVE v57 ARCHITECTURE
+                            ========================
+                            - EXACTLY 4 high-signal rows when four defensible rows exist.
+                            - Treat the four rows as scarce Fieldglass screening space.
+                            - Prioritize the specific must-have technologies AND methodologies requested
+                              in the JD, with Spotlight/Chat priorities taking precedence when provided.
+                            - Keep rows highly relevant and keyword-rich, but use only candidate-supported evidence.
+                            - Choose four materially different screening dimensions. Consolidate closely
+                              related concepts rather than wasting rows on redundant categories.
+                            - Avoid repeating the same parenthetical detail/tool across rows unless genuinely unavoidable.
+                            - Use up to 6 supporting details, but use fewer when that makes the row cleaner.
+                            - Prefer demonstrated work-history evidence over standalone skill-list mentions.
+                            - Preserve exact JD terminology where supported by the candidate.
+                            - If fewer than four defensible relevant competencies exist, leave unused fields
+                              blank rather than fabricating filler.
+
+                            FORMAT:
+                                "Competency Area (Supporting Detail, Supporting Detail, Tool)"
+
+                            DISPLAY / CAPITALIZATION:
+                            - Use professional standard capitalization exactly like successful Fannie submissions:
+                              "Data Engineering (Python, SQL, ETL/ELT, Data Validation)"
+                              "Generative AI & LLM Integration (Prompt Engineering, LLM APIs, FastAPI, Pydantic)"
+                            - Generic competency/detail phrases use professional Title Case.
+                            - Preserve canonical tool/platform/acronym casing such as JIRA, Power BI,
                               FastAPI, PySpark, ETL/ELT, AWS, SQL, Summit, and Microsoft 365.
-                            - Do not output lower-case presentation such as "requirements elicitation"
-                              or "backlog refinement" inside parentheses when the display form should
-                              be "Requirements Elicitation" or "Backlog Refinement".
 
                             YEARS OF EXPERIENCE + YEAR LAST USED:
-                            - Give the best defensible tenure for THAT competency. Do not bias the
-                              number upward or downward.
+                            - Give the best defensible tenure for THAT competency. Do not bias it high or low.
                             - A long value such as 14+ years is correct when the resume supports it.
-                              Do not reduce it merely because it looks large.
-                            - Do not use total-career years for a competency unless the candidate
-                              genuinely demonstrates that competency across that span.
+                            - Do not substitute total-career years unless the competency truly spans that period.
                             - Do not arbitrarily subtract years from specialized skills.
                             - Use dated work history and explicit source-supported tenure statements.
-                            - "current" means the competency is demonstrated in the current ongoing
-                              role. Otherwise use the most recent supported four-digit year.
-                            - Every populated YEARS value MUST be complete. Valid formats only:
-                              "X+ years, current", "X+ years, YYYY", "<1 year, current", or
-                              "<1 year, YYYY". Never return "14+ years," or any dangling comma.
+                            - "current" means the competency is demonstrated in the current ongoing role.
+                              Otherwise use the most recent supported four-digit year.
+                            - Valid formats only: "X+ years, current", "X+ years, YYYY",
+                              "<1 year, current", or "<1 year, YYYY".
+                            - NEVER return a dangling value such as "14+ years,".
 
                             ZERO-TOLERANCE FACT RULES:
-                            - Never copy a JD-only tool/skill into candidate experience.
+                            - Never copy JD-only tools/skills into candidate experience.
                             - Never infer a specific tool from a broader platform.
-                            - Never inflate ownership, proficiency, years, or recency to match the JD.
-                            - Before returning JSON, verify every candidate claim and every skill-row
-                              detail against the resume/Q&A.
+                            - Never inflate ownership, proficiency, tenure, recency, metrics, or scope.
+                            - Before returning JSON, verify every candidate claim and every skill detail
+                              against the resume/Q&A.
 
                             OUTPUT FORMAT:
                             {{
-                              "SUMMARY": "Exactly four sentences",
+                              "SUMMARY1": "Anchor sentence",
+                              "SUMMARY2": "Alignment / hook sentence",
+                              "SUMMARY3": "Execution + impact / proof sentence",
+                              "SUMMARY4": "Evidence-based closer sentence",
                               "SKILL1": "Competency Area (Supporting Detail, Tool)",
                               "YEARS1": "X+ years, current",
                               "SKILL2": "Competency Area (Supporting Detail, Tool)",
@@ -5648,9 +5989,9 @@ def fannie_mae_app():
                             ORIGINAL RESUME:
                             {raw_text}
                             """
-                            time.sleep(2) 
+                            time.sleep(2)
                             summary_data = {}
-                            
+
                             for attempt in range(6):
                                 if attempt == 0:
                                     current_model = models_to_try[0]
@@ -5660,61 +6001,80 @@ def fannie_mae_app():
                                     current_model = models_to_try[2]
                                 else:
                                     current_model = models_to_try[3]
-                                
+
                                 try:
                                     summary_response = client.models.generate_content(
                                         model=current_model,
                                         contents=summary_prompt,
-                                        config=types.GenerateContentConfig(
-                                            response_mime_type="application/json"
-                                        )
+                                        config=types.GenerateContentConfig(response_mime_type="application/json"),
                                     )
                                     summary_data = repair_and_load_json(summary_response.text)
+                                    # Backward-compatible normalization: if the model ever
+                                    # returns the legacy single SUMMARY field, split it once
+                                    # into the four v58 sentence slots before QA/mapping.
+                                    if isinstance(summary_data, dict) and not any(
+                                        str(summary_data.get(f"SUMMARY{i}", "") or "").strip()
+                                        for i in range(1, 5)
+                                    ):
+                                        legacy_sentences = _fannie_summary_sentence_values(summary_data)
+                                        for idx, sentence in enumerate(legacy_sentences, 1):
+                                            if sentence:
+                                                summary_data[f"SUMMARY{idx}"] = sentence
                                     break
                                 except Exception as api_e:
                                     if "503" in str(api_e) and attempt < 5:
                                         time.sleep(2 ** ((attempt % 2) + 1))
                                         continue
-                                    else:
-                                        raise api_e
+                                    raise
 
-                            # v57: nonfatal Fannie QA/repair. Bad wording, duplicated
-                            # details, or malformed skill-tenure values should be repaired
-                            # rather than becoming recruiter-blocking errors.
-                            fannie_tailoring_issues = _fannie_tailoring_validation_issues(
+                            # ----------------------------------------------------
+                            # v58 SUMMARY-ONLY QA / REPAIR
+                            # ----------------------------------------------------
+                            # Keep the restored narrative architecture isolated from
+                            # skills so a weak summary cannot cause Luna to rewrite an
+                            # already-good skills table.
+                            summary_issues = _fannie_summary_validation_issues(
                                 summary_data,
                                 first_name,
-                                raw_text,
                             )
-                            if fannie_tailoring_issues:
-                                repair_prompt = f"""
-                                Return a valid JSON object ONLY.
+                            if summary_issues:
+                                summary_repair_prompt = f"""
+                                Return a valid JSON object ONLY with SUMMARY1-SUMMARY4.
 
-                                Repair this Fannie Mae SUMMARY/SKILLS payload without changing
-                                candidate facts. The goal is the proven Fannie presentation style,
-                                not a redesign.
+                                Repair ONLY the four Fannie Mae summary sentences. Preserve candidate
+                                facts and do not change/add experience, tools, employers, metrics, dates,
+                                tenure, or responsibilities that are not supported by the source.
 
                                 CANDIDATE FULL NAME: {name}
                                 CANDIDATE FIRST NAME: {first_name}
 
-                                REQUIRED REPAIRS:
-                                {chr(10).join('- ' + issue for issue in fannie_tailoring_issues)}
+                                QUALITY ISSUES TO REPAIR:
+                                {chr(10).join('- ' + issue for issue in summary_issues)}
 
-                                RULES:
-                                - SUMMARY = exactly four concise sentences; sentence 1 begins
-                                  naturally with "{first_name} is".
-                                - Keep four distinct, JD-relevant skill rows when supported.
-                                - Format rows as "Competency Area (Supporting Detail, Tool)".
-                                - Use professional Title Case for generic competency/detail phrases.
-                                - Preserve canonical technology/acronym casing (JIRA, SQL, AWS,
-                                  Power BI, FastAPI, PySpark, ETL/ELT, Summit, Microsoft 365, etc.).
-                                - Avoid repeating the same parenthetical detail across rows unless
-                                  genuinely unavoidable.
-                                - Keep the best defensible skill-specific tenure. Do not force a
-                                  long tenure lower and do not inflate it.
-                                - Every YEARS value must end in either "current" or a four-digit year.
-                                - Do not invent JD-only candidate experience.
-                                - Do not use em dashes.
+                                REQUIRED BLUEPRINT:
+                                - SUMMARY1: Anchor/Authority. Begin naturally with "{first_name} is" and
+                                  establish target-relevant identity + supported experience + primary must-have.
+                                - SUMMARY2: Alignment/Hook. Use the strongest employer/role evidence for the
+                                  central requirement. Current employer is preferred when genuinely relevant;
+                                  earlier experience may be used when materially stronger.
+                                - SUMMARY3: Execution & Impact/Proof. Explain HOW the work was executed AND
+                                  WHY IT MATTERED through source-supported scale, complexity, ownership,
+                                  implementation, support/testing, regulatory significance, or impact.
+                                - SUMMARY4: Closer/Relevance. Synthesize proven evidence back to the target
+                                  role's central need. Do not introduce another disconnected resume fact.
+
+                                STYLE:
+                                - Four complete, connected recruiter-quality sentences.
+                                - Human, direct, specific, evidence-first.
+                                - No Day 1, immediate asset/value, progressive experience, proven track record,
+                                  results-driven, seasoned, highly experienced, strong background, perfect fit,
+                                  excellent fit, or future-performance promises.
+                                - No em dashes.
+                                - Do not mention location, rate, availability, or work authorization.
+                                - Preserve exact useful JD terminology only when candidate-supported.
+
+                                HIRING PRIORITY: Spotlight > Fieldglass Chat Notes > Official JD.
+                                ATS TERMINOLOGY: Official JD remains the broad keyword/phrase source.
 
                                 OFFICIAL JOB DESCRIPTION:
                                 {Job_Description}
@@ -5728,30 +6088,110 @@ def fannie_mae_app():
                                 ORIGINAL RESUME:
                                 {raw_text}
 
-                                DRAFT TO REPAIR:
-                                {json.dumps(summary_data, ensure_ascii=False, indent=2)}
+                                CURRENT SUMMARY DRAFT:
+                                {json.dumps({k: summary_data.get(k, '') for k in ('SUMMARY1','SUMMARY2','SUMMARY3','SUMMARY4')}, ensure_ascii=False, indent=2)}
 
-                                Return the same SUMMARY/SKILL1-4/YEARS1-4 keys, corrected.
+                                OUTPUT:
+                                {{
+                                  "SUMMARY1": "",
+                                  "SUMMARY2": "",
+                                  "SUMMARY3": "",
+                                  "SUMMARY4": ""
+                                }}
                                 """
                                 try:
                                     repair_response = client.models.generate_content(
                                         model=models_to_try[0],
-                                        contents=repair_prompt,
+                                        contents=summary_repair_prompt,
                                         config=types.GenerateContentConfig(response_mime_type="application/json"),
                                     )
-                                    repaired_summary_data = repair_and_load_json(repair_response.text)
-                                    if isinstance(repaired_summary_data, dict) and repaired_summary_data:
-                                        summary_data = repaired_summary_data
+                                    repaired = repair_and_load_json(repair_response.text)
+                                    if isinstance(repaired, dict):
+                                        for key in ("SUMMARY1", "SUMMARY2", "SUMMARY3", "SUMMARY4"):
+                                            if str(repaired.get(key, "") or "").strip():
+                                                summary_data[key] = repaired[key]
                                 except Exception:
-                                    # Production resilience: keep the first grounded draft if
-                                    # the style/skills repair call itself fails.
                                     pass
 
-                            remaining_fannie_issues = _fannie_tailoring_validation_issues(
+                            # ----------------------------------------------------
+                            # v58 SKILLS-ONLY QA / REPAIR
+                            # ----------------------------------------------------
+                            # Preserve the v57 skills architecture. Only repair the
+                            # skills payload when its own narrow checks fail.
+                            skill_issues = _fannie_skills_validation_issues(
                                 summary_data,
-                                first_name,
                                 raw_text,
                             )
+                            if skill_issues:
+                                skill_repair_prompt = f"""
+                                Return a valid JSON object ONLY with SKILL1-4 and YEARS1-4.
+
+                                Repair ONLY the Fannie Skill & Competency rows. Do not alter the summary.
+                                Keep the proven v57 Fannie presentation style.
+
+                                REQUIRED REPAIRS:
+                                {chr(10).join('- ' + issue for issue in skill_issues)}
+
+                                RULES:
+                                - Four distinct, high-value JD/manager-relevant rows when supported.
+                                - Format: "Competency Area (Supporting Detail, Tool)".
+                                - Professional Title Case for generic phrases; preserve canonical tool/acronym casing.
+                                - Avoid repeated parenthetical details across rows unless unavoidable.
+                                - Use only candidate-supported skills/details.
+                                - Preserve exact JD terminology when genuinely supported.
+                                - Give the best defensible skill-specific tenure without upward/downward bias.
+                                - Every YEARS value ends in "current" or a four-digit last-used year.
+                                - Do not invent JD-only experience and do not use em dashes.
+
+                                HIRING PRIORITY: Spotlight > Fieldglass Chat Notes > Official JD.
+                                ATS TERMINOLOGY: Official JD remains the broad keyword/phrase source.
+
+                                OFFICIAL JOB DESCRIPTION:
+                                {Job_Description}
+
+                                FIELDGLASS CHAT NOTES:
+                                {Chat_Notes}
+
+                                SPOTLIGHT CALL TRANSCRIPT:
+                                {Call_Transcript}
+
+                                ORIGINAL RESUME:
+                                {raw_text}
+
+                                CURRENT SKILLS DRAFT:
+                                {json.dumps({k: summary_data.get(k, '') for k in ('SKILL1','YEARS1','SKILL2','YEARS2','SKILL3','YEARS3','SKILL4','YEARS4')}, ensure_ascii=False, indent=2)}
+
+                                OUTPUT:
+                                {{
+                                  "SKILL1": "", "YEARS1": "",
+                                  "SKILL2": "", "YEARS2": "",
+                                  "SKILL3": "", "YEARS3": "",
+                                  "SKILL4": "", "YEARS4": ""
+                                }}
+                                """
+                                try:
+                                    repair_response = client.models.generate_content(
+                                        model=models_to_try[0],
+                                        contents=skill_repair_prompt,
+                                        config=types.GenerateContentConfig(response_mime_type="application/json"),
+                                    )
+                                    repaired = repair_and_load_json(repair_response.text)
+                                    if isinstance(repaired, dict):
+                                        for key in ("SKILL1","YEARS1","SKILL2","YEARS2","SKILL3","YEARS3","SKILL4","YEARS4"):
+                                            if key in repaired:
+                                                summary_data[key] = repaired[key]
+                                except Exception:
+                                    pass
+
+                            remaining_summary_issues = _fannie_summary_validation_issues(
+                                summary_data,
+                                first_name,
+                            )
+                            remaining_skill_issues = _fannie_skills_validation_issues(
+                                summary_data,
+                                raw_text,
+                            )
+                            remaining_fannie_issues = remaining_summary_issues + remaining_skill_issues
                             if remaining_fannie_issues:
                                 notify_formatter_diagnostic(
                                     "Fannie Mae",
@@ -5759,10 +6199,15 @@ def fannie_mae_app():
                                     "Fannie generated summary/skills QA required nonblocking cleanup.",
                                     raw_text=raw_text,
                                     uploaded_filename=resume_file.name,
-                                    technical_details="\n".join(remaining_fannie_issues[:20]),
+                                    technical_details="\n".join(remaining_fannie_issues[:25]),
                                 )
 
-                            mapping["SUMMARY"] = _sanitize_ai_generated_text(summary_data.get("SUMMARY", ""))
+                            summary_sentences = [
+                                _fannie_finalize_summary_sentence(summary_data.get(f"SUMMARY{i}", ""))
+                                for i in range(1, 5)
+                            ]
+                            summary_sentences = [x for x in summary_sentences if x]
+                            mapping["SUMMARY"] = " ".join(summary_sentences)
                             mapping["SKILL1"] = _fannie_polish_skill_display(summary_data.get("SKILL1", ""))
                             mapping["YEARS1"] = _fannie_safe_years_display(summary_data.get("YEARS1", ""))
                             mapping["SKILL2"] = _fannie_polish_skill_display(summary_data.get("SKILL2", ""))
