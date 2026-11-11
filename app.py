@@ -1,5 +1,5 @@
-# v51 SOURCE FIDELITY BUILD - BNSF INTERVIEW SECTION + SUMMARY OUTPUT HARDENING
-# Preserves all v50 BNSF source-authoritative dated-role reconstruction and universal role-anchor fixes while pruning unused BNSF interview Q/A slots/divider lines and cleaning BNSF summary bullet text.
+# v52 GENERATED-CONTENT QUALITY BUILD - SHARED SUMMARY GUARDRAILS + NO EM DASHES
+# Preserves all v51 source-fidelity/client-specific behavior while adding nonfatal modern summary-style repair to legacy four-bullet clients and removing em dashes only from AI-authored display content.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -141,6 +141,166 @@ def clean_bullets(bullet_list):
         if text:
             cleaned.append(text)
     return "\n".join(cleaned)
+
+
+def _sanitize_ai_generated_text(value):
+    """
+    Presentation-only cleanup for AI-authored/tailored output.
+
+    IMPORTANT: Never call this on immutable source-history fields (company/title/
+    dates/work-history bullets). An em dash that exists in the candidate's source
+    resume must remain untouched. This helper is only for generated summaries,
+    generated skill labels/details, and other model-authored display copy.
+    """
+    text = str(value or "")
+    # User writing preference: generated content must not contain em dashes.
+    # A standard hyphen preserves range/contrast meaning more safely than a blind
+    # comma replacement (for example, "2019—2021" -> "2019 - 2021").
+    text = text.replace("\u2014", " - ")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\s*\n\s*", "\n", text)
+    return text.strip()
+
+
+_MODERN_SUMMARY_PROHIBITED_PATTERNS = [
+    (r"^\s*(?:bring|brings|offers|possesses)\b", "Bring/Brings/Offers/Possesses opener"),
+    (r"^\s*(?:deliver|resolve)\b", "imperative Deliver/Resolve opener"),
+    (r"\bprogressive\b(?=(?:\s+\w+){0,4}\s+experience\b)", "progressive experience"),
+    (r"\bproven\s+track\s+record\b", "proven track record"),
+    (r"\bresults[- ]driven\b", "results-driven"),
+    (r"\bseasoned\b", "seasoned"),
+    (r"\badept\s+at\b", "adept at"),
+    (r"\bhighly\s+experienced\b", "highly experienced"),
+    (r"\bstrong\s+background\b", "strong background"),
+    (r"\bperfect\s+fit\b", "perfect fit"),
+    (r"\bexcellent\s+fit\b", "excellent fit"),
+    (r"\bday\s*1\b", "Day 1"),
+    (r"\bwill\s+deliver\b", "will deliver"),
+    (r"\bimmediate\s+(?:value|asset)\b", "immediate value/asset"),
+    (r"\b(?:directly\s+)?aligned\s+to\s+the\s+role(?:'s|’s)?\b", "aligned to the role"),
+    (r"\bpositions?\s+(?:the\s+candidate|them|him|her)\s+uniquely\b", "positions them uniquely"),
+]
+
+
+def _modern_summary_clean_text(value):
+    """Safe, non-factual cleanup before/after the optional modern summary repair."""
+    value = _strip_list_marker_only(value)
+    value = _sanitize_ai_generated_text(value)
+    # Narrow deterministic cleanup only. Anything requiring real rewriting is
+    # handled by the nonfatal AI repair below.
+    value = re.sub(
+        r"\bprogressive\b(?=(?:\s+\w+){0,4}\s+experience\b)",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
+
+
+def _modern_summary_style_issues(summary_data, summary_keys):
+    issues = []
+    for key in summary_keys:
+        value = _modern_summary_clean_text(summary_data.get(key, ""))
+        summary_data[key] = value
+        if not value:
+            issues.append(f"{key} is blank")
+            continue
+        for pattern, label in _MODERN_SUMMARY_PROHIBITED_PATTERNS:
+            if re.search(pattern, value, flags=re.IGNORECASE):
+                issues.append(f"{key} contains discouraged phrasing: {label}")
+        if "\u2014" in value:
+            issues.append(f"{key} contains an em dash")
+    return issues
+
+
+def _apply_modern_summary_guardrails_nonfatal(
+    client,
+    models_to_try,
+    summary_data,
+    raw_text,
+    job_description,
+    qa_text="",
+    client_label="Client",
+    summary_keys=("SUMMARY1", "SUMMARY2", "SUMMARY3", "SUMMARY4"),
+):
+    """
+    Modernize legacy four-bullet recruiter summaries without creating a new
+    production failure mode.
+
+    If style checks fail, ask the active model (GPT-6 Luna in production) to
+    revise only the summary copy. If that repair fails or remains imperfect,
+    return the safely cleaned original draft rather than raising an exception.
+    Historical resume data and client-specific extraction/fidelity logic are not
+    touched.
+    """
+    data = dict(summary_data or {})
+    issues = _modern_summary_style_issues(data, summary_keys)
+    if not issues:
+        return data
+
+    previous = {key: data.get(key, "") for key in summary_keys}
+    schema_lines = ",\n".join(f'  "{key}": ""' for key in summary_keys)
+    repair_prompt = f"""
+You are revising generated {client_label} candidate-submission summary bullets for style only.
+Do not change candidate facts and do not add experience, tools, metrics, employers, dates, or responsibilities that are not supported by the resume or supplied Q&A.
+
+The prior draft triggered these quality checks:
+- {chr(10).join(issues)}
+
+STRICT RULES:
+- Return exactly {len(summary_keys)} non-empty strings using the requested JSON keys.
+- One concise sentence per summary bullet.
+- Do NOT include bullet symbols, numbering, hyphens as list markers, or other list prefixes; the Word template supplies bullets.
+- Do NOT use the candidate's name or third-person pronouns (he/she/they).
+- Write evidence-first statements about demonstrated past/current experience, not commands or future promises.
+- Do NOT begin with Bring, Brings, Offers, Possesses, Deliver, or Resolve.
+- Do NOT describe experience as "progressive experience" or "progressive professional experience".
+- Never use: proven track record, results-driven, seasoned, adept at, highly experienced, strong background, perfect fit, excellent fit, Day 1, will deliver, immediate value, immediate asset, or "aligned to the role's needs" phrasing.
+- Do NOT say what the candidate will do for the client. Describe what the candidate has demonstrated.
+- Do NOT use em dashes. Use commas, colons, semicolons, parentheses, or standard hyphens when punctuation is needed.
+- Keep source-supported metrics/scale only when the resume or supplied Q&A supports them.
+- If a total-years claim is not explicitly stated in the resume, omit the total-years claim rather than calculating it from employment dates.
+
+Previous summary draft:
+{json.dumps(previous, ensure_ascii=False)}
+
+Job Description / Notes:
+{job_description}
+
+Technical Interview Q&A (secondary evidence only):
+{qa_text}
+
+Resume (primary source of truth):
+{raw_text}
+
+Return ONLY valid JSON:
+{{
+{schema_lines}
+}}
+"""
+
+    # Nonfatal by design: two quick repair attempts, then retain cleaned draft.
+    for attempt in range(2):
+        try:
+            current_model = models_to_try[min(attempt, len(models_to_try) - 1)] if models_to_try else None
+            response = client.models.generate_content(
+                model=current_model,
+                contents=repair_prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            repaired = repair_and_load_json(response.text)
+            candidate = dict(data)
+            for key in summary_keys:
+                candidate[key] = _modern_summary_clean_text(repaired.get(key, ""))
+            if not _modern_summary_style_issues(candidate, summary_keys):
+                return candidate
+        except Exception:
+            pass
+
+    # Recruiter continuity is more important than a style-only hard failure.
+    # Return the non-destructively cleaned draft and allow the submission to proceed.
+    return data
 
 
 
@@ -3238,8 +3398,7 @@ def _bnsf_clean_summary_style(value):
     deterministic presentation cleanup is safe here. Historical work-history
     bullets continue to use the strict source-fidelity path unchanged.
     """
-    value = _strip_list_marker_only(value)
-    value = re.sub(r"\s+", " ", str(value or "")).strip()
+    value = _modern_summary_clean_text(value)
 
     # Avoid awkward recruiter-summary openings such as "Bring 14 years..." or
     # "Brings immediate...". The remaining text is still the model's factual
@@ -3998,15 +4157,15 @@ def fannie_mae_app():
                                     else:
                                         raise api_e
 
-                            mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
-                            mapping["SKILL1"] = summary_data.get("SKILL1", "")
-                            mapping["YEARS1"] = summary_data.get("YEARS1", "")
-                            mapping["SKILL2"] = summary_data.get("SKILL2", "")
-                            mapping["YEARS2"] = summary_data.get("YEARS2", "")
-                            mapping["SKILL3"] = summary_data.get("SKILL3", "")
-                            mapping["YEARS3"] = summary_data.get("YEARS3", "")
-                            mapping["SKILL4"] = summary_data.get("SKILL4", "")
-                            mapping["YEARS4"] = summary_data.get("YEARS4", "")
+                            mapping["SUMMARY"] = _sanitize_ai_generated_text(summary_data.get("SUMMARY", ""))
+                            mapping["SKILL1"] = _sanitize_ai_generated_text(summary_data.get("SKILL1", ""))
+                            mapping["YEARS1"] = _sanitize_ai_generated_text(summary_data.get("YEARS1", ""))
+                            mapping["SKILL2"] = _sanitize_ai_generated_text(summary_data.get("SKILL2", ""))
+                            mapping["YEARS2"] = _sanitize_ai_generated_text(summary_data.get("YEARS2", ""))
+                            mapping["SKILL3"] = _sanitize_ai_generated_text(summary_data.get("SKILL3", ""))
+                            mapping["YEARS3"] = _sanitize_ai_generated_text(summary_data.get("YEARS3", ""))
+                            mapping["SKILL4"] = _sanitize_ai_generated_text(summary_data.get("SKILL4", ""))
+                            mapping["YEARS4"] = _sanitize_ai_generated_text(summary_data.get("YEARS4", ""))
                         except Exception as e:
                             st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
 
@@ -12539,55 +12698,55 @@ FULL ORIGINAL RESUME
                     "Site": Site,
                     "Interview": Interview,
                     "Certifications": certifications,
-                    "SUMMARY": final_summary,
-                    "SKILL1": str(
+                    "SUMMARY": _sanitize_ai_generated_text(final_summary),
+                    "SKILL1": _sanitize_ai_generated_text(str(
                         summary_data.get(
                             "SKILL1",
                             "",
                         )
-                    ).strip(),
-                    "SKILLDETAILS1": str(
+                    ).strip()),
+                    "SKILLDETAILS1": _sanitize_ai_generated_text(str(
                         summary_data.get(
                             "SKILLDETAILS1",
                             "",
                         )
-                    ).strip(),
-                    "SKILL2": str(
+                    ).strip()),
+                    "SKILL2": _sanitize_ai_generated_text(str(
                         summary_data.get(
                             "SKILL2",
                             "",
                         )
-                    ).strip(),
-                    "SKILLDETAILS2": str(
+                    ).strip()),
+                    "SKILLDETAILS2": _sanitize_ai_generated_text(str(
                         summary_data.get(
                             "SKILLDETAILS2",
                             "",
                         )
-                    ).strip(),
-                    "SKILL3": str(
+                    ).strip()),
+                    "SKILL3": _sanitize_ai_generated_text(str(
                         summary_data.get(
                             "SKILL3",
                             "",
                         )
-                    ).strip(),
-                    "SKILLDETAILS3": str(
+                    ).strip()),
+                    "SKILLDETAILS3": _sanitize_ai_generated_text(str(
                         summary_data.get(
                             "SKILLDETAILS3",
                             "",
                         )
-                    ).strip(),
-                    "SKILL4": str(
+                    ).strip()),
+                    "SKILL4": _sanitize_ai_generated_text(str(
                         summary_data.get(
                             "SKILL4",
                             "",
                         )
-                    ).strip(),
-                    "SKILLDETAILS4": str(
+                    ).strip()),
+                    "SKILLDETAILS4": _sanitize_ai_generated_text(str(
                         summary_data.get(
                             "SKILLDETAILS4",
                             "",
                         )
-                    ).strip(),
+                    ).strip()),
                 }
 
                 # Education
@@ -13126,17 +13285,17 @@ def peraton_app():
                                     else:
                                         raise api_e
 
-                            mapping["SUMMARY"] = summary_data.get("SUMMARY", "")
-                            mapping["SUMMARY1"] = summary_data.get("SUMMARY1", "")
-                            mapping["SUMMARY2"] = summary_data.get("SUMMARY2", "")
-                            mapping["SUMMARY3"] = summary_data.get("SUMMARY3", "")
-                            mapping["SUMMARY4"] = summary_data.get("SUMMARY4", "")
-                            mapping["SUMMARY5"] = summary_data.get("SUMMARY5", "")
+                            mapping["SUMMARY"] = _sanitize_ai_generated_text(summary_data.get("SUMMARY", ""))
+                            mapping["SUMMARY1"] = _sanitize_ai_generated_text(summary_data.get("SUMMARY1", ""))
+                            mapping["SUMMARY2"] = _sanitize_ai_generated_text(summary_data.get("SUMMARY2", ""))
+                            mapping["SUMMARY3"] = _sanitize_ai_generated_text(summary_data.get("SUMMARY3", ""))
+                            mapping["SUMMARY4"] = _sanitize_ai_generated_text(summary_data.get("SUMMARY4", ""))
+                            mapping["SUMMARY5"] = _sanitize_ai_generated_text(summary_data.get("SUMMARY5", ""))
                             
-                            mapping["SKILL1"] = summary_data.get("SKILL1", "")
-                            mapping["SKILL2"] = summary_data.get("SKILL2", "")
-                            mapping["SKILL3"] = summary_data.get("SKILL3", "")
-                            mapping["SKILL4"] = summary_data.get("SKILL4", "")
+                            mapping["SKILL1"] = _sanitize_ai_generated_text(summary_data.get("SKILL1", ""))
+                            mapping["SKILL2"] = _sanitize_ai_generated_text(summary_data.get("SKILL2", ""))
+                            mapping["SKILL3"] = _sanitize_ai_generated_text(summary_data.get("SKILL3", ""))
+                            mapping["SKILL4"] = _sanitize_ai_generated_text(summary_data.get("SKILL4", ""))
 
                         except Exception as e:
                             st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
@@ -13209,10 +13368,8 @@ def capital_one_extract_source_total_experience_claim(raw_text):
 
 
 def capital_one_clean_summary_style(value):
-    """Strip model-added list markers because the Capital One template owns bullet formatting."""
-    value = _strip_list_marker_only(value)
-    value = re.sub(r"\s+", " ", str(value or "")).strip()
-    return value
+    """Strip model-added list markers and normalize generated punctuation for Capital One."""
+    return _modern_summary_clean_text(value)
 
 
 def capital_one_summary_style_issues(summary_data, raw_text):
@@ -13689,14 +13846,14 @@ def capital_one_app():
                             mapping["SUMMARY2"] = capital_one_clean_summary_style(summary_data.get("SUMMARY2", ""))
                             mapping["SUMMARY3"] = capital_one_clean_summary_style(summary_data.get("SUMMARY3", ""))
                             mapping["SUMMARY4"] = capital_one_clean_summary_style(summary_data.get("SUMMARY4", ""))
-                            mapping["SKILL1"] = summary_data.get("SKILL1", "")
-                            mapping["YEARS1"] = summary_data.get("YEARS1", "")
-                            mapping["SKILL2"] = summary_data.get("SKILL2", "")
-                            mapping["YEARS2"] = summary_data.get("YEARS2", "")
-                            mapping["SKILL3"] = summary_data.get("SKILL3", "")
-                            mapping["YEARS3"] = summary_data.get("YEARS3", "")
-                            mapping["SKILL4"] = summary_data.get("SKILL4", "")
-                            mapping["YEARS4"] = summary_data.get("YEARS4", "")
+                            mapping["SKILL1"] = _sanitize_ai_generated_text(summary_data.get("SKILL1", ""))
+                            mapping["YEARS1"] = _sanitize_ai_generated_text(summary_data.get("YEARS1", ""))
+                            mapping["SKILL2"] = _sanitize_ai_generated_text(summary_data.get("SKILL2", ""))
+                            mapping["YEARS2"] = _sanitize_ai_generated_text(summary_data.get("YEARS2", ""))
+                            mapping["SKILL3"] = _sanitize_ai_generated_text(summary_data.get("SKILL3", ""))
+                            mapping["YEARS3"] = _sanitize_ai_generated_text(summary_data.get("YEARS3", ""))
+                            mapping["SKILL4"] = _sanitize_ai_generated_text(summary_data.get("SKILL4", ""))
+                            mapping["YEARS4"] = _sanitize_ai_generated_text(summary_data.get("YEARS4", ""))
                         except Exception as e:
                             st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
 
@@ -13949,10 +14106,10 @@ def adusa_app():
                             Generate exactly 4 distinct bullet points mapped to SUMMARY1 through SUMMARY4. 
                             CRITICAL RULE: DO NOT use the candidate's name or 3rd person pronouns (he/she/they) in ANY of the bullet points. Start each bullet with a strong action verb or direct statement.
                             
-                            - SUMMARY1 (The Anchor): What is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
+                            - SUMMARY1 (The Anchor): Start with a factual experience/expertise statement tied to the primary must-have. If the resume explicitly states a total-years figure, use that exact figure; otherwise omit total career years. Never calculate total career years from employment dates.
                             - SUMMARY2 (The Alignment): Explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
                             - SUMMARY3 (The Execution & Impact): How did they build it, and why does it matter? Weave specific tools/methodologies into an "Execution Statement" that highlights complexity, scale, or business impact.
-                            - SUMMARY4 (The Closer): Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
+                            - SUMMARY4 (Additional Evidence): Add another demonstrated, resume-supported capability relevant to the role. Describe past/current evidence only; do not make a Day 1 promise or predict future value.
 
                             ========================
                             STYLE & TONE RULES (STRICT)
@@ -13961,6 +14118,9 @@ def adusa_app():
                             - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
                             - LEADERSHIP VERBS: Use high-authority active verbs (e.g., 'Engineered', 'Optimized', 'Architected', 'Spearheaded').
                             - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely."
+                            - MODERN SUMMARY GUARDRAILS: Never use progressive experience, Bring/Brings, Offers, Possesses, proven track record, results-driven, seasoned, adept at, Day 1, will deliver, immediate value/asset, perfect fit, excellent fit, or "aligned to the role's needs" phrasing.
+                            - EVIDENCE-FIRST: Describe demonstrated past/current experience rather than commands, promises, or predictions. Do not begin a bullet with Deliver or Resolve.
+                            - PUNCTUATION: Do not use em dashes in generated summary text. Use commas, colons, semicolons, parentheses, or standard hyphens.
                             - Do NOT repeat or restate the job description.
 
                             ========================
@@ -14058,18 +14218,28 @@ def adusa_app():
                                     else:
                                         raise api_e
 
-                            mapping["SUMMARY1"] = summary_data.get("SUMMARY1", "")
-                            mapping["SUMMARY2"] = summary_data.get("SUMMARY2", "")
-                            mapping["SUMMARY3"] = summary_data.get("SUMMARY3", "")
-                            mapping["SUMMARY4"] = summary_data.get("SUMMARY4", "")
-                            mapping["SKILL1"] = summary_data.get("SKILL1", "")
-                            mapping["YEARS1"] = summary_data.get("YEARS1", "")
-                            mapping["SKILL2"] = summary_data.get("SKILL2", "")
-                            mapping["YEARS2"] = summary_data.get("YEARS2", "")
-                            mapping["SKILL3"] = summary_data.get("SKILL3", "")
-                            mapping["YEARS3"] = summary_data.get("YEARS3", "")
-                            mapping["SKILL4"] = summary_data.get("SKILL4", "")
-                            mapping["YEARS4"] = summary_data.get("YEARS4", "")
+                            summary_data = _apply_modern_summary_guardrails_nonfatal(
+                                client=client,
+                                models_to_try=models_to_try,
+                                summary_data=summary_data,
+                                raw_text=raw_text,
+                                job_description=Job_Description_Notes_etc,
+                                qa_text=f"Q1: {Question_1}\nA1: {Answer_1}\nQ2: {Question_2}\nA2: {Answer_2}\nQ3: {Question_3}\nA3: {Answer_3}\nQ4: {Question_4}\nA4: {Answer_4}\nQ5: {Question_5}\nA5: {Answer_5}",
+                                client_label="ADUSA",
+                            )
+
+                            mapping["SUMMARY1"] = _modern_summary_clean_text(summary_data.get("SUMMARY1", ""))
+                            mapping["SUMMARY2"] = _modern_summary_clean_text(summary_data.get("SUMMARY2", ""))
+                            mapping["SUMMARY3"] = _modern_summary_clean_text(summary_data.get("SUMMARY3", ""))
+                            mapping["SUMMARY4"] = _modern_summary_clean_text(summary_data.get("SUMMARY4", ""))
+                            mapping["SKILL1"] = _sanitize_ai_generated_text(summary_data.get("SKILL1", ""))
+                            mapping["YEARS1"] = _sanitize_ai_generated_text(summary_data.get("YEARS1", ""))
+                            mapping["SKILL2"] = _sanitize_ai_generated_text(summary_data.get("SKILL2", ""))
+                            mapping["YEARS2"] = _sanitize_ai_generated_text(summary_data.get("YEARS2", ""))
+                            mapping["SKILL3"] = _sanitize_ai_generated_text(summary_data.get("SKILL3", ""))
+                            mapping["YEARS3"] = _sanitize_ai_generated_text(summary_data.get("YEARS3", ""))
+                            mapping["SKILL4"] = _sanitize_ai_generated_text(summary_data.get("SKILL4", ""))
+                            mapping["YEARS4"] = _sanitize_ai_generated_text(summary_data.get("YEARS4", ""))
                         except Exception as e:
                             st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
 
@@ -14297,10 +14467,10 @@ def cbre_app():
                             Generate exactly 4 distinct bullet points mapped to SUMMARY1 through SUMMARY4. 
                             CRITICAL RULE: DO NOT use the candidate's name or 3rd person pronouns (he/she/they) in ANY of the bullet points. Start each bullet with a strong action verb or direct statement.
                             
-                            - SUMMARY1 (The Anchor): What is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
+                            - SUMMARY1 (The Anchor): Start with a factual experience/expertise statement tied to the primary must-have. If the resume explicitly states a total-years figure, use that exact figure; otherwise omit total career years. Never calculate total career years from employment dates.
                             - SUMMARY2 (The Alignment): Explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
                             - SUMMARY3 (The Execution & Impact): How did they build it, and why does it matter? Weave specific tools/methodologies into an "Execution Statement" that highlights complexity, scale, or business impact.
-                            - SUMMARY4 (The Closer): Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
+                            - SUMMARY4 (Additional Evidence): Add another demonstrated, resume-supported capability relevant to the role. Describe past/current evidence only; do not make a Day 1 promise or predict future value.
 
                             ========================
                             STYLE & TONE RULES (STRICT)
@@ -14309,6 +14479,9 @@ def cbre_app():
                             - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
                             - LEADERSHIP VERBS: Use high-authority active verbs (e.g., 'Engineered', 'Optimized', 'Architected', 'Spearheaded').
                             - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely."
+                            - MODERN SUMMARY GUARDRAILS: Never use progressive experience, Bring/Brings, Offers, Possesses, proven track record, results-driven, seasoned, adept at, Day 1, will deliver, immediate value/asset, perfect fit, excellent fit, or "aligned to the role's needs" phrasing.
+                            - EVIDENCE-FIRST: Describe demonstrated past/current experience rather than commands, promises, or predictions. Do not begin a bullet with Deliver or Resolve.
+                            - PUNCTUATION: Do not use em dashes in generated summary text. Use commas, colons, semicolons, parentheses, or standard hyphens.
                             - Do NOT repeat or restate the job description.
 
                             ========================
@@ -14406,18 +14579,28 @@ def cbre_app():
                                     else:
                                         raise api_e
 
-                            mapping["SUMMARY1"] = summary_data.get("SUMMARY1", "")
-                            mapping["SUMMARY2"] = summary_data.get("SUMMARY2", "")
-                            mapping["SUMMARY3"] = summary_data.get("SUMMARY3", "")
-                            mapping["SUMMARY4"] = summary_data.get("SUMMARY4", "")
-                            mapping["SKILL1"] = summary_data.get("SKILL1", "")
-                            mapping["YEARS1"] = summary_data.get("YEARS1", "")
-                            mapping["SKILL2"] = summary_data.get("SKILL2", "")
-                            mapping["YEARS2"] = summary_data.get("YEARS2", "")
-                            mapping["SKILL3"] = summary_data.get("SKILL3", "")
-                            mapping["YEARS3"] = summary_data.get("YEARS3", "")
-                            mapping["SKILL4"] = summary_data.get("SKILL4", "")
-                            mapping["YEARS4"] = summary_data.get("YEARS4", "")
+                            summary_data = _apply_modern_summary_guardrails_nonfatal(
+                                client=client,
+                                models_to_try=models_to_try,
+                                summary_data=summary_data,
+                                raw_text=raw_text,
+                                job_description=Job_Description_Notes_etc,
+                                qa_text=f"Q1: {Question_1}\nA1: {Answer_1}\nQ2: {Question_2}\nA2: {Answer_2}\nQ3: {Question_3}\nA3: {Answer_3}\nQ4: {Question_4}\nA4: {Answer_4}\nQ5: {Question_5}\nA5: {Answer_5}",
+                                client_label="CBRE",
+                            )
+
+                            mapping["SUMMARY1"] = _modern_summary_clean_text(summary_data.get("SUMMARY1", ""))
+                            mapping["SUMMARY2"] = _modern_summary_clean_text(summary_data.get("SUMMARY2", ""))
+                            mapping["SUMMARY3"] = _modern_summary_clean_text(summary_data.get("SUMMARY3", ""))
+                            mapping["SUMMARY4"] = _modern_summary_clean_text(summary_data.get("SUMMARY4", ""))
+                            mapping["SKILL1"] = _sanitize_ai_generated_text(summary_data.get("SKILL1", ""))
+                            mapping["YEARS1"] = _sanitize_ai_generated_text(summary_data.get("YEARS1", ""))
+                            mapping["SKILL2"] = _sanitize_ai_generated_text(summary_data.get("SKILL2", ""))
+                            mapping["YEARS2"] = _sanitize_ai_generated_text(summary_data.get("YEARS2", ""))
+                            mapping["SKILL3"] = _sanitize_ai_generated_text(summary_data.get("SKILL3", ""))
+                            mapping["YEARS3"] = _sanitize_ai_generated_text(summary_data.get("YEARS3", ""))
+                            mapping["SKILL4"] = _sanitize_ai_generated_text(summary_data.get("SKILL4", ""))
+                            mapping["YEARS4"] = _sanitize_ai_generated_text(summary_data.get("YEARS4", ""))
                         except Exception as e:
                             st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
 
@@ -14915,10 +15098,10 @@ def bnsf_app():
                             CRITICAL RULE: DO NOT use the candidate's name or 3rd person pronouns (he/she/they) in ANY of the summary strings. Start each with a strong action verb or direct factual statement.
                             Do NOT begin a summary with "Bring", "Brings", "Offers", or "Possesses".
                             
-                            - SUMMARY1 (The Anchor): What is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
+                            - SUMMARY1 (The Anchor): Start with a factual experience/expertise statement tied to the primary must-have. If the resume explicitly states a total-years figure, use that exact figure; otherwise omit total career years. Never calculate total career years from employment dates.
                             - SUMMARY2 (The Alignment): Explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
                             - SUMMARY3 (The Execution & Impact): How did they build it, and why does it matter? Weave specific tools/methodologies into an "Execution Statement" that highlights complexity, scale, or business impact.
-                            - SUMMARY4 (The Closer): Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
+                            - SUMMARY4 (Additional Evidence): Add another demonstrated, resume-supported capability relevant to the role. Describe past/current evidence only; do not make a Day 1 promise or predict future value.
 
                             ========================
                             STYLE & TONE RULES (STRICT)
@@ -14927,6 +15110,9 @@ def bnsf_app():
                             - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
                             - LEADERSHIP VERBS: Use high-authority active verbs (e.g., 'Engineered', 'Optimized', 'Architected', 'Spearheaded').
                             - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely."
+                            - MODERN SUMMARY GUARDRAILS: Never use progressive experience, Bring/Brings, Offers, Possesses, proven track record, results-driven, seasoned, adept at, Day 1, will deliver, immediate value/asset, perfect fit, excellent fit, or "aligned to the role's needs" phrasing.
+                            - EVIDENCE-FIRST: Describe demonstrated past/current experience rather than commands, promises, or predictions. Do not begin a bullet with Deliver or Resolve.
+                            - PUNCTUATION: Do not use em dashes in generated summary text. Use commas, colons, semicolons, parentheses, or standard hyphens.
                             - Do NOT repeat or restate the job description.
 
                             ========================
@@ -15024,18 +15210,28 @@ def bnsf_app():
                                     else:
                                         raise api_e
 
+                            summary_data = _apply_modern_summary_guardrails_nonfatal(
+                                client=client,
+                                models_to_try=models_to_try,
+                                summary_data=summary_data,
+                                raw_text=raw_text,
+                                job_description=Job_Description_Notes_etc,
+                                qa_text=f"Q1: {Question_1}\nA1: {Answer_1}\nQ2: {Question_2}\nA2: {Answer_2}\nQ3: {Question_3}\nA3: {Answer_3}\nQ4: {Question_4}\nA4: {Answer_4}\nQ5: {Question_5}\nA5: {Answer_5}",
+                                client_label="BNSF",
+                            )
+
                             mapping["SUMMARY1"] = _bnsf_clean_summary_style(summary_data.get("SUMMARY1", ""))
                             mapping["SUMMARY2"] = _bnsf_clean_summary_style(summary_data.get("SUMMARY2", ""))
                             mapping["SUMMARY3"] = _bnsf_clean_summary_style(summary_data.get("SUMMARY3", ""))
                             mapping["SUMMARY4"] = _bnsf_clean_summary_style(summary_data.get("SUMMARY4", ""))
-                            mapping["SKILL1"] = summary_data.get("SKILL1", "")
-                            mapping["YEARS1"] = summary_data.get("YEARS1", "")
-                            mapping["SKILL2"] = summary_data.get("SKILL2", "")
-                            mapping["YEARS2"] = summary_data.get("YEARS2", "")
-                            mapping["SKILL3"] = summary_data.get("SKILL3", "")
-                            mapping["YEARS3"] = summary_data.get("YEARS3", "")
-                            mapping["SKILL4"] = summary_data.get("SKILL4", "")
-                            mapping["YEARS4"] = summary_data.get("YEARS4", "")
+                            mapping["SKILL1"] = _sanitize_ai_generated_text(summary_data.get("SKILL1", ""))
+                            mapping["YEARS1"] = _sanitize_ai_generated_text(summary_data.get("YEARS1", ""))
+                            mapping["SKILL2"] = _sanitize_ai_generated_text(summary_data.get("SKILL2", ""))
+                            mapping["YEARS2"] = _sanitize_ai_generated_text(summary_data.get("YEARS2", ""))
+                            mapping["SKILL3"] = _sanitize_ai_generated_text(summary_data.get("SKILL3", ""))
+                            mapping["YEARS3"] = _sanitize_ai_generated_text(summary_data.get("YEARS3", ""))
+                            mapping["SKILL4"] = _sanitize_ai_generated_text(summary_data.get("SKILL4", ""))
+                            mapping["YEARS4"] = _sanitize_ai_generated_text(summary_data.get("YEARS4", ""))
                         except Exception as e:
                             st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
 
@@ -15256,10 +15452,10 @@ def dallas_generic_app():
                             Generate exactly 4 distinct bullet points mapped to SUMMARY1 through SUMMARY4. 
                             CRITICAL RULE: DO NOT use the candidate's name or 3rd person pronouns (he/she/they) in ANY of the bullet points. Start each bullet with a strong action verb or direct statement.
                             
-                            - SUMMARY1 (The Anchor): What is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
+                            - SUMMARY1 (The Anchor): Start with a factual experience/expertise statement tied to the primary must-have. If the resume explicitly states a total-years figure, use that exact figure; otherwise omit total career years. Never calculate total career years from employment dates.
                             - SUMMARY2 (The Alignment): Explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
                             - SUMMARY3 (The Execution & Impact): How did they build it, and why does it matter? Weave specific tools/methodologies into an "Execution Statement" that highlights complexity, scale, or business impact.
-                            - SUMMARY4 (The Closer): Based on their past execution, what specific value will they deliver on Day 1 in THIS new role?
+                            - SUMMARY4 (Additional Evidence): Add another demonstrated, resume-supported capability relevant to the role. Describe past/current evidence only; do not make a Day 1 promise or predict future value.
 
                             ========================
                             STYLE & TONE RULES (STRICT)
@@ -15268,6 +15464,9 @@ def dallas_generic_app():
                             - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
                             - LEADERSHIP VERBS: Use high-authority active verbs (e.g., 'Engineered', 'Optimized', 'Architected', 'Spearheaded').
                             - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely."
+                            - MODERN SUMMARY GUARDRAILS: Never use progressive experience, Bring/Brings, Offers, Possesses, proven track record, results-driven, seasoned, adept at, Day 1, will deliver, immediate value/asset, perfect fit, excellent fit, or "aligned to the role's needs" phrasing.
+                            - EVIDENCE-FIRST: Describe demonstrated past/current experience rather than commands, promises, or predictions. Do not begin a bullet with Deliver or Resolve.
+                            - PUNCTUATION: Do not use em dashes in generated summary text. Use commas, colons, semicolons, parentheses, or standard hyphens.
                             - Do NOT repeat or restate the job description.
 
                             ========================
@@ -15365,18 +15564,28 @@ def dallas_generic_app():
                                     else:
                                         raise api_e
 
-                            mapping["SUMMARY1"] = summary_data.get("SUMMARY1", "")
-                            mapping["SUMMARY2"] = summary_data.get("SUMMARY2", "")
-                            mapping["SUMMARY3"] = summary_data.get("SUMMARY3", "")
-                            mapping["SUMMARY4"] = summary_data.get("SUMMARY4", "")
-                            mapping["SKILL1"] = summary_data.get("SKILL1", "")
-                            mapping["YEARS1"] = summary_data.get("YEARS1", "")
-                            mapping["SKILL2"] = summary_data.get("SKILL2", "")
-                            mapping["YEARS2"] = summary_data.get("YEARS2", "")
-                            mapping["SKILL3"] = summary_data.get("SKILL3", "")
-                            mapping["YEARS3"] = summary_data.get("YEARS3", "")
-                            mapping["SKILL4"] = summary_data.get("SKILL4", "")
-                            mapping["YEARS4"] = summary_data.get("YEARS4", "")
+                            summary_data = _apply_modern_summary_guardrails_nonfatal(
+                                client=client,
+                                models_to_try=models_to_try,
+                                summary_data=summary_data,
+                                raw_text=raw_text,
+                                job_description=Job_Description_Notes_etc,
+                                qa_text=f"Q1: {Question_1}\nA1: {Answer_1}\nQ2: {Question_2}\nA2: {Answer_2}\nQ3: {Question_3}\nA3: {Answer_3}\nQ4: {Question_4}\nA4: {Answer_4}\nQ5: {Question_5}\nA5: {Answer_5}",
+                                client_label="Dallas Generic",
+                            )
+
+                            mapping["SUMMARY1"] = _modern_summary_clean_text(summary_data.get("SUMMARY1", ""))
+                            mapping["SUMMARY2"] = _modern_summary_clean_text(summary_data.get("SUMMARY2", ""))
+                            mapping["SUMMARY3"] = _modern_summary_clean_text(summary_data.get("SUMMARY3", ""))
+                            mapping["SUMMARY4"] = _modern_summary_clean_text(summary_data.get("SUMMARY4", ""))
+                            mapping["SKILL1"] = _sanitize_ai_generated_text(summary_data.get("SKILL1", ""))
+                            mapping["YEARS1"] = _sanitize_ai_generated_text(summary_data.get("YEARS1", ""))
+                            mapping["SKILL2"] = _sanitize_ai_generated_text(summary_data.get("SKILL2", ""))
+                            mapping["YEARS2"] = _sanitize_ai_generated_text(summary_data.get("YEARS2", ""))
+                            mapping["SKILL3"] = _sanitize_ai_generated_text(summary_data.get("SKILL3", ""))
+                            mapping["YEARS3"] = _sanitize_ai_generated_text(summary_data.get("YEARS3", ""))
+                            mapping["SKILL4"] = _sanitize_ai_generated_text(summary_data.get("SKILL4", ""))
+                            mapping["YEARS4"] = _sanitize_ai_generated_text(summary_data.get("YEARS4", ""))
                         except Exception as e:
                             st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
 
@@ -15504,10 +15713,8 @@ def deloitte_extract_source_total_experience_claim(raw_text):
 
 
 def deloitte_clean_summary_style(value):
-    """Apply only safe presentation cleanup to a generated Deloitte summary bullet."""
-    value = _strip_list_marker_only(value)
-    value = re.sub(r"\s+", " ", str(value or "")).strip()
-    return value
+    """Apply only safe presentation cleanup to generated Deloitte narrative text."""
+    return _modern_summary_clean_text(value)
 
 
 def deloitte_summary_style_issues(summary_data, raw_text):
@@ -18051,15 +18258,15 @@ def deloitte_app():
                                         continue
                                     raise
 
-                            mapping["PROFESSIONAL_SUMMARY"] = rfp_data.get("PROFESSIONAL_SUMMARY", "")
+                            mapping["PROFESSIONAL_SUMMARY"] = deloitte_clean_summary_style(rfp_data.get("PROFESSIONAL_SUMMARY", ""))
                             for i in range(1, 6):
-                                mapping[f"KEY_STRENGTH{i}"] = rfp_data.get(f"KEY_STRENGTH{i}", "")
+                                mapping[f"KEY_STRENGTH{i}"] = deloitte_clean_summary_style(rfp_data.get(f"KEY_STRENGTH{i}", ""))
                             for i in range(1, 6):
-                                mapping[f"KEY_HIGHLIGHT{i}"] = rfp_data.get(f"KEY_HIGHLIGHT{i}", "")
+                                mapping[f"KEY_HIGHLIGHT{i}"] = deloitte_clean_summary_style(rfp_data.get(f"KEY_HIGHLIGHT{i}", ""))
                             for i in range(1, 9):
                                 if mapping.get(f"SKILL{i}", ""):
-                                    mapping[f"YEARS{i}"] = str(rfp_data.get(f"YEARS{i}", "") or "").strip()
-                                    mapping[f"SKILL{i}COMPANIES"] = str(rfp_data.get(f"SKILL{i}COMPANIES", "") or "").strip()
+                                    mapping[f"YEARS{i}"] = _sanitize_ai_generated_text(str(rfp_data.get(f"YEARS{i}", "") or "").strip())
+                                    mapping[f"SKILL{i}COMPANIES"] = _sanitize_ai_generated_text(str(rfp_data.get(f"SKILL{i}COMPANIES", "") or "").strip())
 
                             mapping["EVALUATION_ROWS"] = deloitte_rfp_generate_evaluation_rows(
                                 client=client,
@@ -18238,16 +18445,16 @@ def deloitte_app():
                                         else:
                                             raise api_e
 
-                                mapping["SUMMARY1"] = summary_data.get("SUMMARY1", "")
-                                mapping["SUMMARY2"] = summary_data.get("SUMMARY2", "")
-                                mapping["SUMMARY3"] = summary_data.get("SUMMARY3", "")
-                                mapping["SUMMARY4"] = summary_data.get("SUMMARY4", "")
-                                mapping["SUMMARY5"] = summary_data.get("SUMMARY5", "")
+                                mapping["SUMMARY1"] = deloitte_clean_summary_style(summary_data.get("SUMMARY1", ""))
+                                mapping["SUMMARY2"] = deloitte_clean_summary_style(summary_data.get("SUMMARY2", ""))
+                                mapping["SUMMARY3"] = deloitte_clean_summary_style(summary_data.get("SUMMARY3", ""))
+                                mapping["SUMMARY4"] = deloitte_clean_summary_style(summary_data.get("SUMMARY4", ""))
+                                mapping["SUMMARY5"] = deloitte_clean_summary_style(summary_data.get("SUMMARY5", ""))
                                 
                                 for i in range(1, 9):
-                                    mapping[f"SKILL{i}"] = summary_data.get(f"SKILL{i}", "")
-                                    mapping[f"YEARS{i}"] = summary_data.get(f"YEARS{i}", "")
-                                    mapping[f"SKILL{i}COMPANIES"] = summary_data.get(f"SKILL{i}COMPANIES", "")
+                                    mapping[f"SKILL{i}"] = _sanitize_ai_generated_text(summary_data.get(f"SKILL{i}", ""))
+                                    mapping[f"YEARS{i}"] = _sanitize_ai_generated_text(summary_data.get(f"YEARS{i}", ""))
+                                    mapping[f"SKILL{i}COMPANIES"] = _sanitize_ai_generated_text(summary_data.get(f"SKILL{i}COMPANIES", ""))
                                     
                             except Exception as e:
                                 st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
@@ -18539,7 +18746,7 @@ def navy_clean_summary_style(value):
     Deterministically remove common AI-sounding resume phrasing from Navy Federal
     summary bullets and standardize whole-year experience anchors to X+ years.
     """
-    value = re.sub(r"\s+", " ", str(value or "")).strip()
+    value = _sanitize_ai_generated_text(value)
 
     # "Progressive experience" is valid English but reads formulaic/AI-generated
     # in recruiter summaries. Navy Federal uses the simpler human phrasing.
@@ -21248,18 +21455,18 @@ FULL ORIGINAL RESUME:
                     "Remote": Work_Arrangement,
                     "WorkAuthorization": Work_Authorization,
                     "Certifications": certifications,
-                    "SUMMARY1": str(summary_data.get("SUMMARY1", "") or "").strip(),
-                    "SUMMARY2": str(summary_data.get("SUMMARY2", "") or "").strip(),
-                    "SUMMARY3": str(summary_data.get("SUMMARY3", "") or "").strip(),
-                    "SUMMARY4": str(summary_data.get("SUMMARY4", "") or "").strip(),
-                    "SKILL1": str(summary_data.get("SKILL1", "") or "").strip(),
-                    "SKILLDETAILS1": str(summary_data.get("SKILLDETAILS1", "") or "").strip(),
-                    "SKILL2": str(summary_data.get("SKILL2", "") or "").strip(),
-                    "SKILLDETAILS2": str(summary_data.get("SKILLDETAILS2", "") or "").strip(),
-                    "SKILL3": str(summary_data.get("SKILL3", "") or "").strip(),
-                    "SKILLDETAILS3": str(summary_data.get("SKILLDETAILS3", "") or "").strip(),
-                    "SKILL4": str(summary_data.get("SKILL4", "") or "").strip(),
-                    "SKILLDETAILS4": str(summary_data.get("SKILLDETAILS4", "") or "").strip(),
+                    "SUMMARY1": navy_clean_summary_style(summary_data.get("SUMMARY1", "")),
+                    "SUMMARY2": navy_clean_summary_style(summary_data.get("SUMMARY2", "")),
+                    "SUMMARY3": navy_clean_summary_style(summary_data.get("SUMMARY3", "")),
+                    "SUMMARY4": navy_clean_summary_style(summary_data.get("SUMMARY4", "")),
+                    "SKILL1": _sanitize_ai_generated_text(str(summary_data.get("SKILL1", "") or "").strip()),
+                    "SKILLDETAILS1": _sanitize_ai_generated_text(str(summary_data.get("SKILLDETAILS1", "") or "").strip()),
+                    "SKILL2": _sanitize_ai_generated_text(str(summary_data.get("SKILL2", "") or "").strip()),
+                    "SKILLDETAILS2": _sanitize_ai_generated_text(str(summary_data.get("SKILLDETAILS2", "") or "").strip()),
+                    "SKILL3": _sanitize_ai_generated_text(str(summary_data.get("SKILL3", "") or "").strip()),
+                    "SKILLDETAILS3": _sanitize_ai_generated_text(str(summary_data.get("SKILLDETAILS3", "") or "").strip()),
+                    "SKILL4": _sanitize_ai_generated_text(str(summary_data.get("SKILL4", "") or "").strip()),
+                    "SKILLDETAILS4": _sanitize_ai_generated_text(str(summary_data.get("SKILLDETAILS4", "") or "").strip()),
                 }
 
                 # Education — never default completion to Yes.
