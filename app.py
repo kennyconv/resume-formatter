@@ -1,8 +1,8 @@
-# v54 SOURCE FIDELITY BUILD - FANNIE COMPOUND ROLE-HEADER COVERAGE HARDENING
-# Preserves all v53 behavior while preventing Adobe-fused Fannie role metadata/subsection headers from being misclassified as omitted responsibility content.
+# v55 PRODUCTION RESILIENCE BUILD - REPAIR-FIRST SUBMISSION MODE + DIAGNOSTIC ALERTS
+# Preserves all v54 client-specific behavior while making source-fidelity structural uncertainty nonblocking in production: strict QA first, deterministic source-first fallback second, warning/diagnostic instead of recruiter-blocking false positives.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
-# PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
+# PDF/DOCX extraction, source re-anchoring, strict QA plus repair-first production fallback.
 # Final Navy Word output may collapse multiple validated roles from one condensed source block into one section with exact company-prefixed bullets.
 
 import streamlit as st
@@ -21,13 +21,14 @@ import copy
 import time
 import subprocess
 import smtplib
+import threading
 import hashlib
 import difflib
 import tempfile
 import unicodedata
 from email.message import EmailMessage
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime
 
 # ====================================================================
 # --- STREAMLIT UI & PASSWORD LOGIC ---
@@ -2436,7 +2437,7 @@ def _remove_section_level_dates_from_condensed_roles(experience, blocks, role_an
             role['Dates'] = ''
 
 
-def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
+def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatter"):
     """
     Fail-closed historical-resume verification used by every client.
 
@@ -2966,6 +2967,623 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
 
     result['Experience'] = experience
     return result
+
+
+# ====================================================================
+# --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
+# ====================================================================
+
+_FORMATTER_BUILD_VERSION = "v55"
+
+
+def _formatter_source_filename(raw_text=""):
+    entry = _SOURCE_FIDELITY_REGISTRY.get(_source_key(raw_text), {}) if raw_text else {}
+    return os.path.basename(str(entry.get("file_path", "") or "")).strip()
+
+
+def _formatter_source_format(raw_text=""):
+    entry = _SOURCE_FIDELITY_REGISTRY.get(_source_key(raw_text), {}) if raw_text else {}
+    return str(entry.get("source_format", "") or "").strip()
+
+
+def _diagnostic_secret(name, default=""):
+    try:
+        value = st.secrets.get(name, default)
+    except Exception:
+        value = default
+    return value
+
+
+def _diagnostic_email_enabled():
+    value = _diagnostic_secret("FORMATTER_DIAGNOSTIC_EMAIL_ENABLED", True)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().casefold() not in {"0", "false", "no", "off", "disabled"}
+
+
+def _formatter_diagnostic_config():
+    """
+    Resolve diagnostic email settings without exposing secrets to the UI.
+
+    Dedicated FORMATTER_* secrets are preferred. For backward compatibility, the
+    existing Freddie Gmail sender/app-password may be reused when dedicated values
+    have not been added yet. The default recipient is the account owner requested
+    for formatter diagnostics.
+    """
+    if not _diagnostic_email_enabled():
+        return None
+
+    sender = str(
+        _diagnostic_secret(
+            "FORMATTER_DIAGNOSTIC_EMAIL_SENDER",
+            _diagnostic_secret("FREDDIE_EMAIL_SENDER", "kennyconv@gmail.com"),
+        )
+        or ""
+    ).strip()
+    recipient = str(
+        _diagnostic_secret(
+            "FORMATTER_DIAGNOSTIC_EMAIL_RECIPIENT",
+            "kennyconv@gmail.com",
+        )
+        or ""
+    ).strip()
+    app_password = str(
+        _diagnostic_secret(
+            "FORMATTER_DIAGNOSTIC_EMAIL_APP_PASSWORD",
+            _diagnostic_secret("FREDDIE_EMAIL_APP_PASSWORD", ""),
+        )
+        or ""
+    ).replace(" ", "").strip()
+
+    if not sender or not recipient or not app_password:
+        return None
+
+    return {
+        "sender": sender,
+        "recipient": recipient,
+        "app_password": app_password,
+    }
+
+
+def _send_formatter_diagnostic_email(config, subject, body):
+    """SMTP worker. Never called on the Streamlit critical path directly."""
+    try:
+        msg = EmailMessage()
+        msg["From"] = config["sender"]
+        msg["To"] = config["recipient"]
+        msg["Subject"] = subject
+        msg.set_content(body)
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=8) as smtp:
+            smtp.login(config["sender"], config["app_password"])
+            smtp.send_message(msg)
+    except Exception:
+        # Diagnostics must never become a production dependency or recruiter blocker.
+        pass
+
+
+def notify_formatter_diagnostic(
+    client_name,
+    severity,
+    message,
+    raw_text="",
+    uploaded_filename="",
+    technical_details="",
+):
+    """
+    Fire-and-forget privacy-minimized formatter diagnostic.
+
+    Intentionally excludes resume contents, recruiter-entered JD/notes/Q&A, email,
+    phone number, and generated document contents. Filename is included because it
+    is the minimum practical identifier for reproducing a recruiter-reported run.
+    """
+    config = _formatter_diagnostic_config()
+    if config is None:
+        return
+
+    client = str(client_name or "Resume Formatter").strip() or "Resume Formatter"
+    level = str(severity or "INFO").strip().upper()
+    filename = str(uploaded_filename or _formatter_source_filename(raw_text) or "Unknown").strip()
+    source_format = _formatter_source_format(raw_text) or "Unknown"
+    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    run_seed = f"{timestamp}|{client}|{level}|{filename}|{message}"
+    run_id = hashlib.sha256(run_seed.encode("utf-8", errors="ignore")).hexdigest()[:12]
+
+    subject = f"Formatter {level} [{_FORMATTER_BUILD_VERSION}] - {client} - {run_id}"
+    body_lines = [
+        f"Formatter build: {_FORMATTER_BUILD_VERSION}",
+        f"Severity: {level}",
+        f"Client: {client}",
+        f"Run ID: {run_id}",
+        f"Timestamp: {timestamp}",
+        f"Uploaded filename: {filename}",
+        f"Source format: {source_format}",
+        "",
+        "Diagnostic message:",
+        str(message or "").strip(),
+    ]
+    if str(technical_details or "").strip():
+        body_lines.extend(["", "Technical details:", str(technical_details).strip()])
+    body_lines.extend(
+        [
+            "",
+            "Privacy note: This diagnostic intentionally does NOT include the resume attachment,",
+            "resume text, recruiter-entered JD/notes/Q&A, candidate contact information, or generated document.",
+        ]
+    )
+
+    try:
+        threading.Thread(
+            target=_send_formatter_diagnostic_email,
+            args=(config, subject, "\n".join(body_lines)),
+            daemon=True,
+        ).start()
+    except Exception:
+        pass
+
+
+def _looks_like_short_role_subheading(text):
+    """Conservative helper for source-first fallback only; never edits source text."""
+    value = _strip_list_marker_only(str(text or "").strip())
+    if not value or len(value) > 90 or re.search(r"[.!?;:]$", value):
+        return False
+    words = re.findall(r"[A-Za-z][A-Za-z0-9&/+.-]*", value)
+    if not (1 <= len(words) <= 8):
+        return False
+    # Known subsection/header nouns seen in resumes. Avoid generic action verbs.
+    return bool(
+        re.search(
+            r"\b(?:administration|analysis|responsibilities|accomplishments|highlights|"
+            r"governance|operations|leadership|management|delivery|testing|support|"
+            r"projects?|initiatives?|implementation|transformation|consulting)\b",
+            value,
+            flags=re.I,
+        )
+    )
+
+
+def _resilient_role_anchors(experience, blocks):
+    """Best-effort monotonic role anchors used only after strict QA has already failed."""
+    anchors = []
+    search_from = _initial_experience_search_start(blocks)
+
+    for role_index, role in enumerate(experience or []):
+        if not isinstance(role, dict):
+            anchors.append(None)
+            continue
+
+        anchor = _find_role_anchor(role, blocks, start_index=search_from)
+        shared = False
+
+        if anchor is None and anchors and anchors[-1] is not None:
+            previous_anchor = anchors[-1]
+            retry = _find_role_anchor(role, blocks, start_index=previous_anchor)
+            if (
+                retry == previous_anchor
+                and role_index > 0
+                and isinstance(experience[role_index - 1], dict)
+                and _shared_block_role_order_supported(
+                    experience[role_index - 1],
+                    role,
+                    blocks[previous_anchor].get("text", ""),
+                )
+            ):
+                anchor = retry
+                shared = True
+
+        # Last-resort exact metadata search from the beginning. This is still source
+        # anchored; it does not invent a role or infer an employer semantically.
+        if anchor is None:
+            anchor = _find_role_anchor(role, blocks, start_index=0)
+
+        if anchor is not None and anchors:
+            prior = next((a for a in reversed(anchors) if a is not None), None)
+            if prior is not None and anchor < prior:
+                anchor = None
+
+        anchors.append(anchor)
+        if anchor is not None:
+            search_from = anchor if shared else min(anchor + 1, len(blocks))
+
+    return anchors
+
+
+def _next_distinct_anchor(role_index, anchors, default_end):
+    current = anchors[role_index] if role_index < len(anchors) else None
+    if current is None:
+        return default_end
+    for value in anchors[role_index + 1:]:
+        if value is not None and value > current:
+            return value
+    return default_end
+
+
+def _resilient_source_items_for_role(experience, role_index, blocks, anchors, client_name):
+    """
+    Build role history directly from parsed source after strict verification fails.
+
+    This deliberately prefers omission over invention: every returned item is exact
+    source text. It does not use AI paraphrases as historical resume bullets.
+    """
+    if role_index >= len(experience) or role_index >= len(anchors):
+        return []
+    role = experience[role_index]
+    anchor = anchors[role_index]
+    if not isinstance(role, dict) or anchor is None or anchor < 0 or anchor >= len(blocks):
+        return []
+
+    # Condensed/shared-block roles: use the proven role-owned segment only.
+    if anchors.count(anchor) > 1:
+        payload = _shared_block_payload_for_role(experience, role_index, blocks, anchors)
+        if payload and _shared_block_payload_is_substantive(role, payload):
+            return [_strip_list_marker_only(payload)]
+        return []
+
+    start = anchor + 1
+    end = _next_distinct_anchor(role_index, anchors, len(blocks))
+
+    # Do not cross into a major non-experience section.
+    for idx in range(start, end):
+        text = str(blocks[idx].get("text", "") or "").strip()
+        if _looks_like_section_heading(text) and re.search(
+            r"\b(?:education|certifications?|skills|technical skills|awards?|references?|"
+            r"additional experience|earlier experience|professional experience|community involvement)\b",
+            text,
+            flags=re.I,
+        ):
+            end = idx
+            break
+
+    interval = []
+    is_fannie = str(client_name or "").strip().casefold() == "fannie mae"
+    for idx in range(start, end):
+        block = blocks[idx]
+        text = str(block.get("text", "") or "").strip()
+        if not text:
+            continue
+        if _likely_role_metadata_block(text, role):
+            continue
+        if is_fannie and _looks_like_fannie_compound_role_header(text, role):
+            continue
+        if not block.get("is_list") and _looks_like_short_role_subheading(text):
+            continue
+        interval.append((idx, block))
+
+    list_items = [(idx, block) for idx, block in interval if block.get("is_list")]
+    source_items = []
+
+    if list_items:
+        first_list_idx = list_items[0][0]
+        # Preserve substantial narrative context before the first list item, but
+        # exclude short labels/headings. Long narrative is exact source text.
+        for idx, block in interval:
+            if idx >= first_list_idx:
+                break
+            text = _strip_list_marker_only(block.get("text", ""))
+            if len(text) >= 80 and not _looks_like_short_role_subheading(text):
+                source_items.append(text)
+
+        # Preserve exact list items. For the narrow Fannie Adobe artifact where a
+        # short subsection label is fused onto the final visual bullet, use an AI
+        # bullet only as exact-prefix evidence to recover the source-owned bullet
+        # boundary. The emitted text still comes from the source, not from AI.
+        role_ai_bullets = role.get("Bullets", [])
+        if isinstance(role_ai_bullets, str):
+            role_ai_bullets = [x for x in role_ai_bullets.split("\n") if str(x).strip()]
+        if not isinstance(role_ai_bullets, list):
+            role_ai_bullets = []
+
+        for item_idx, block in list_items:
+            item_text = _strip_list_marker_only(block.get("text", ""))
+            if is_fannie and item_text and role_ai_bullets:
+                for candidate in role_ai_bullets:
+                    match_idx, match_block = _best_fannie_pdf_bullet_before_inline_subheading_match(
+                        candidate,
+                        blocks,
+                        min_index=item_idx,
+                        used=set(range(item_idx)),
+                    )
+                    if match_block is not None and match_idx == item_idx:
+                        item_text = _strip_list_marker_only(match_block.get("text", ""))
+                        break
+            if item_text:
+                source_items.append(item_text)
+    else:
+        for _, block in interval:
+            text = _strip_list_marker_only(block.get("text", ""))
+            if len(text) >= 80 and not _looks_like_short_role_subheading(text):
+                source_items.append(text)
+
+    # Stable de-duplication, exact text only.
+    deduped = []
+    seen = set()
+    for item in source_items:
+        key = _normalize_source_match(item)
+        if key and key not in seen:
+            deduped.append(item)
+            seen.add(key)
+    return deduped
+
+
+def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_error):
+    """
+    v55 Submission Mode fallback.
+
+    Historical fields are accepted only when source-supported. Work bullets are
+    rebuilt from exact parsed source whenever an anchor can be established. The
+    fallback intentionally does not enforce perfect structural coverage, because
+    that is the source of most recruiter-blocking false positives.
+    """
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{client_name} extraction did not return a usable resume object.")
+
+    blocks = _source_blocks_for_text(raw_text)
+    if not blocks:
+        raise RuntimeError(
+            f"{client_name} source-fidelity verification could not access the parsed resume structure."
+        )
+
+    result = copy.deepcopy(data)
+    warnings = [f"Strict QA fallback activated: {strict_error}"]
+
+    # Candidate name: keep only direct source/filename support.
+    full_name = re.sub(r"\s+", " ", str(result.get("FullName", "") or "")).strip()
+    if full_name:
+        filename = _formatter_source_filename(raw_text)
+        if not (
+            _source_supports_display_value(full_name, blocks, allow_substring=True)
+            or _normalize_source_match(full_name) in _normalize_source_match(filename)
+        ):
+            warnings.append(f"Unverified candidate name removed from output: {full_name}")
+            full_name = ""
+    result["FullName"] = full_name
+
+    # Education: omit unsupported AI fields instead of blocking the run.
+    verified_education = []
+    education = result.get("Education", [])
+    if isinstance(education, list):
+        for item in education:
+            if not isinstance(item, dict):
+                continue
+            school = clean_school(item.get("School", ""))
+            degree = str(item.get("Degree", "") or "").strip()
+            school_ok = (not school) or _source_supports_display_value(school, blocks)
+            degree_ok = (
+                (not degree)
+                or _source_supports_display_value(degree, blocks)
+                or _normalize_source_match(degree) in _normalize_source_match(raw_text)
+            )
+            if not (school_ok and degree_ok):
+                warnings.append(
+                    "Unsupported education item omitted in Submission Mode: "
+                    + " / ".join(x for x in [school, degree] if x)
+                )
+                continue
+            if (
+                str(client_name or "").strip().casefold() == "navy federal"
+                and not _education_entry_has_source_context(school, degree, blocks)
+            ):
+                continue
+            clean_item = dict(item)
+            clean_item["School"] = school
+            clean_item["Degree"] = degree
+            verified_education.append(clean_item)
+    result["Education"] = verified_education
+
+    experience = result.get("Experience", [])
+    if not isinstance(experience, list):
+        raise RuntimeError(f"{client_name} extraction returned an invalid Experience list.")
+
+    experience = [copy.deepcopy(role) for role in experience if isinstance(role, dict)]
+    anchors = _resilient_role_anchors(experience, blocks)
+
+    for role_index, role in enumerate(experience):
+        role_num = role_index + 1
+        company = clean_company_name(role.get("Company", ""))
+        title = clean_job_title(role.get("Title", ""))
+
+        if company and not _source_supports_display_value(company, blocks):
+            warnings.append(f"Role {role_num}: unsupported company removed: {company}")
+            company = ""
+        if title and not (
+            _source_supports_display_value(title, blocks)
+            or _source_supports_split_job_title(title, blocks)
+        ):
+            warnings.append(f"Role {role_num}: unsupported title removed: {title}")
+            title = ""
+
+        role["Company"] = company
+        role["Title"] = title
+
+        dates = str(role.get("Dates", "") or "").strip()
+        anchor = anchors[role_index] if role_index < len(anchors) else None
+        if dates and anchor is not None:
+            try:
+                _validate_role_date_precision(role, blocks, anchor, client_name, role_num)
+            except Exception:
+                warnings.append(f"Role {role_num}: unsupported/increased date precision removed: {dates}")
+                role["Dates"] = ""
+        elif dates and _normalize_source_match(dates) not in _normalize_source_match(raw_text):
+            warnings.append(f"Role {role_num}: unverified date text removed: {dates}")
+            role["Dates"] = ""
+
+        source_items = _resilient_source_items_for_role(
+            experience,
+            role_index,
+            blocks,
+            anchors,
+            client_name,
+        )
+
+        if source_items:
+            role["Bullets"] = source_items
+        else:
+            # No reliable role interval: retain only AI bullets that can be restored
+            # to an exact/near-exact source item anywhere in the source, in order.
+            bullets = role.get("Bullets", [])
+            if isinstance(bullets, str):
+                bullets = [x for x in bullets.split("\n") if str(x).strip()]
+            if not isinstance(bullets, list):
+                bullets = []
+
+            restored = []
+            used = set()
+            min_idx = max(0, anchor or 0)
+            for bullet in bullets:
+                idx, block = _best_source_block_match(
+                    bullet,
+                    blocks,
+                    min_index=min_idx,
+                    used=used,
+                )
+                if block is None:
+                    warnings.append(
+                        f"Role {role_num}: unsupported AI bullet omitted: "
+                        f"{str(bullet)[:160]}"
+                    )
+                    continue
+                exact = _strip_list_marker_only(block.get("text", ""))
+                restored.append(exact)
+                source_indices = list(block.get("_source_indices", [idx]) or [idx])
+                used.update(source_indices)
+                min_idx = max(source_indices) + 1
+            role["Bullets"] = restored
+
+        # Historical Environment/Technologies must be explicitly source-labeled.
+        env = str(role.get("Environment", "") or "").strip()
+        if env:
+            env_clean = re.sub(
+                r"^(?:environment|technologies)\s*:\s*",
+                "",
+                _strip_list_marker_only(env),
+                flags=re.I,
+            ).strip()
+            supported = False
+            for block in blocks:
+                source = _strip_list_marker_only(str(block.get("text", "") or "").strip())
+                match = re.match(r"^(?:environment|technologies)\s*:\s*(.+)$", source, flags=re.I)
+                if match and _normalize_source_match(match.group(1)) == _normalize_source_match(env_clean):
+                    supported = True
+                    role["Environment"] = match.group(1).strip()
+                    break
+            if not supported:
+                warnings.append(f"Role {role_num}: unsupported Environment/Technologies removed")
+                role["Environment"] = ""
+
+        if "Responsible" in role:
+            bullets_now = role.get("Bullets", [])
+            role["Responsible"] = (
+                f"Responsible for: {bullets_now[0]}" if isinstance(bullets_now, list) and bullets_now else ""
+            )
+
+    # Preserve Navy's section-level date protection in fallback mode.
+    if str(client_name or "").strip().casefold() == "navy federal":
+        try:
+            _remove_section_level_dates_from_condensed_roles(experience, blocks, anchors)
+        except Exception:
+            pass
+
+    # Certifications: strip unsupported status; omit unverifiable credential names.
+    certs = result.get("Certifications", "")
+    cert_items = (
+        [str(x).strip() for x in certs if str(x).strip()]
+        if isinstance(certs, list)
+        else [x.strip() for x in re.split(r"\s*[,;]\s*", str(certs or "")) if x.strip()]
+    )
+    source_cert_context = _source_certification_context(blocks)
+    source_status_terms = _certification_status_terms(source_cert_context)
+    clean_certs = []
+    for item in cert_items:
+        cleaned = item
+        if not source_status_terms:
+            cleaned = re.sub(
+                r"\s*[-–—:]?\s*\b(?:in progress|pursuing|pending|expected|anticipated)\b.*$",
+                "",
+                cleaned,
+                flags=re.I,
+            ).strip(" ,-–—:")
+        base = re.sub(
+            r"\s*[-–—:]?\s*\b(?:in progress|pursuing|pending|expected|anticipated)\b.*$",
+            "",
+            cleaned,
+            flags=re.I,
+        ).strip()
+        if base and _source_supports_display_value(base, blocks, allow_substring=True):
+            clean_certs.append(cleaned)
+        elif cleaned:
+            warnings.append(f"Unverifiable certification omitted: {cleaned}")
+
+    result["Certifications"] = clean_certs if isinstance(certs, list) else ", ".join(clean_certs)
+    result["Experience"] = experience
+    result["_FidelityWarnings"] = warnings
+    return result, warnings
+
+
+def _is_fundamental_fidelity_failure(message):
+    text = str(message or "").casefold()
+    return any(
+        phrase in text
+        for phrase in [
+            "extraction did not return a usable resume object",
+            "could not access the parsed resume structure",
+            "extraction returned an invalid experience list",
+        ]
+    )
+
+
+def _strict_qa_mode_enabled():
+    value = _diagnostic_secret("FORMATTER_STRICT_QA_MODE", False)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().casefold() in {"1", "true", "yes", "on", "enabled"}
+
+
+def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
+    """
+    v55 production policy:
+      1. Run the existing strict verifier unchanged.
+      2. Hard-fail only when trustworthy source data is fundamentally unavailable.
+      3. For structural/coverage uncertainty, rebuild historical content from exact
+         source blocks and continue with a visible warning + private diagnostic.
+    """
+    if _strict_qa_mode_enabled():
+        return _enforce_source_fidelity_strict(data, raw_text, client_name)
+
+    try:
+        return _enforce_source_fidelity_strict(data, raw_text, client_name)
+    except Exception as strict_error:
+        if _is_fundamental_fidelity_failure(strict_error):
+            # Let the client app's outer exception handler send the single fatal
+            # diagnostic so one failed run does not generate duplicate emails.
+            raise
+
+        try:
+            recovered, warnings = _resilient_source_fidelity_fallback(
+                data,
+                raw_text,
+                client_name,
+                strict_error,
+            )
+        except Exception as fallback_error:
+            # Fatal diagnostics are emitted once by the client app's outer handler.
+            raise RuntimeError(
+                f"{client_name} could not safely recover from a resume source-structure issue: {fallback_error}"
+            ) from fallback_error
+
+        warning_text = str(strict_error)
+        notify_formatter_diagnostic(
+            client_name,
+            "WARNING",
+            warning_text,
+            raw_text=raw_text,
+            technical_details="\n".join(str(x) for x in warnings[:25]),
+        )
+        st.warning(
+            "⚠️ Source-structure QA warning: the strict audit could not perfectly reconcile "
+            "this resume's formatting. The formatter switched to Submission Mode, kept only "
+            "source-supported historical content, and continued. Please review the generated "
+            "work history before submission."
+        )
+        return recovered
 
 def repair_and_load_json(raw_text):
     text = raw_text.strip()
@@ -4430,6 +5048,10 @@ def fannie_mae_app():
                         pass
 
                 except Exception as e:
+                    notify_formatter_diagnostic(
+                        "Fannie Mae", "FATAL", str(e),
+                        uploaded_filename=getattr(locals().get("resume_file"), "name", ""),
+                    )
                     st.error(f"❌ Process Failed: {str(e)}")
 
 
@@ -13222,6 +13844,10 @@ FULL ORIGINAL RESUME
                 )
 
             except Exception as e:
+                notify_formatter_diagnostic(
+                    "Freddie Mac", "FATAL", str(e),
+                    uploaded_filename=getattr(locals().get("resume_file"), "name", ""),
+                )
                 st.error(
                     f"❌ Freddie Mac processing failed: {str(e)}"
                 )
@@ -13561,6 +14187,10 @@ def peraton_app():
                         pass
 
                 except Exception as e:
+                    notify_formatter_diagnostic(
+                        "Peraton", "FATAL", str(e),
+                        uploaded_filename=getattr(locals().get("resume_file"), "name", ""),
+                    )
                     st.error(f"❌ Process Failed: {str(e)}")
 
 
@@ -14144,6 +14774,10 @@ def capital_one_app():
                         pass
 
                 except Exception as e:
+                    notify_formatter_diagnostic(
+                        "Capital One", "FATAL", str(e),
+                        uploaded_filename=getattr(locals().get("resume_file"), "name", ""),
+                    )
                     st.error(f"❌ Process Failed: {str(e)}")
 
 
@@ -14504,6 +15138,10 @@ def adusa_app():
                         pass
 
                 except Exception as e:
+                    notify_formatter_diagnostic(
+                        "ADUSA", "FATAL", str(e),
+                        uploaded_filename=getattr(locals().get("resume_file"), "name", ""),
+                    )
                     st.error(f"❌ Process Failed: {str(e)}")
 
 
@@ -14865,6 +15503,10 @@ def cbre_app():
                         pass
 
                 except Exception as e:
+                    notify_formatter_diagnostic(
+                        "CBRE", "FATAL", str(e),
+                        uploaded_filename=getattr(locals().get("resume_file"), "name", ""),
+                    )
                     st.error(f"❌ Process Failed: {str(e)}")
 
 
@@ -15496,6 +16138,10 @@ def bnsf_app():
                         pass
 
                 except Exception as e:
+                    notify_formatter_diagnostic(
+                        "BNSF", "FATAL", str(e),
+                        uploaded_filename=getattr(locals().get("resume_file"), "name", ""),
+                    )
                     st.error(f"❌ Process Failed: {str(e)}")
 
 
@@ -15850,6 +16496,10 @@ def dallas_generic_app():
                         pass
 
                 except Exception as e:
+                    notify_formatter_diagnostic(
+                        "Dallas Generic", "FATAL", str(e),
+                        uploaded_filename=getattr(locals().get("resume_file"), "name", ""),
+                    )
                     st.error(f"❌ Process Failed: {str(e)}")
 
 
@@ -18741,6 +19391,10 @@ def deloitte_app():
                         pass
 
                 except Exception as e:
+                    notify_formatter_diagnostic(
+                        "Deloitte", "FATAL", str(e),
+                        uploaded_filename=getattr(locals().get("resume_file"), "name", ""),
+                    )
                     st.error(f"❌ Process Failed: {str(e)}")
 
 
@@ -21790,6 +22444,10 @@ FULL ORIGINAL RESUME:
                 st.success("✅ Navy Federal submission is ready.")
 
             except Exception as e:
+                notify_formatter_diagnostic(
+                    "Navy Federal", "FATAL", str(e),
+                    uploaded_filename=getattr(locals().get("resume_file"), "name", ""),
+                )
                 st.error(
                     f"❌ Navy Federal processing failed: {str(e)}"
                 )
