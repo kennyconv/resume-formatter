@@ -1,5 +1,5 @@
-# v52 GENERATED-CONTENT QUALITY BUILD - SHARED SUMMARY GUARDRAILS + NO EM DASHES
-# Preserves all v51 source-fidelity/client-specific behavior while adding nonfatal modern summary-style repair to legacy four-bullet clients and removing em dashes only from AI-authored display content.
+# v53 SOURCE FIDELITY BUILD - FANNIE TITLE/DATE SUBROLES + PDF INLINE-SUBHEADING RECOVERY
+# Preserves all v52 behavior while preventing metadata-only shared Fannie subroles from being misread as omitted narrative and recovering exact final PDF bullets fused to a following subheading.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -993,6 +993,109 @@ def _candidate_is_redundant_with_restored_source_block(candidate, restored_block
     return False
 
 
+def _looks_like_short_inline_role_subheading(value):
+    """Recognize a short structural subheading accidentally fused to a PDF bullet."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip(" |:-–—")
+    if not text or len(text) > 80 or re.search(r"[.!?]$", text):
+        return False
+    words = re.findall(r"[A-Za-z][A-Za-z&/+.-]*", text)
+    if not (1 <= len(words) <= 7) or re.search(r"\d", text):
+        return False
+
+    # Strongest signal: common resume role-subsection labels.
+    if re.fullmatch(
+        r"(?:business analysis|task order administration|project management|program management|"
+        r"financial analysis|technical analysis|operations|governance|testing|quality assurance|"
+        r"change management|stakeholder management|requirements|implementation|support)",
+        text,
+        flags=re.I,
+    ):
+        return True
+
+    # Conservative generic fallback for concise Title Case / ALL-CAPS labels.
+    significant = [w for w in words if w.casefold() not in {"and", "or", "of", "the", "for", "to"}]
+    if not significant:
+        return False
+    return all(
+        token.isupper() or (token[:1].isupper() and token[1:].islower())
+        for token in significant
+    )
+
+
+def _best_fannie_pdf_bullet_before_inline_subheading_match(candidate, blocks, min_index=0, used=None):
+    """
+    Exact-only recovery for a narrow Adobe PDF artifact seen in Fannie resumes.
+
+    A final visual bullet can be split across paragraphs and/or fused with the next
+    short role subheading, e.g. "... executive level reports and presentations"
+    followed by "Business Analysis". The ordinary whole-block matcher correctly
+    refuses to emit the heading as part of the bullet, but that can create a false
+    rejection even when the candidate bullet is exact source text.
+
+    Safety constraints:
+    - Fannie caller only;
+    - the first source block must be a true list item;
+    - candidate must be an exact normalized PREFIX of a 1-3 block source span;
+    - the only trailing source text may be a short heading-like label; and
+    - the block immediately after the recovered span must be another true list item,
+      proving that the trailing label structurally introduces the next bullet group.
+    """
+    used = set(used or set())
+    target = _normalize_source_match(_strip_list_marker_only(candidate))
+    if len(target) < 20:
+        return None, None
+
+    for start_idx in range(max(0, int(min_index or 0)), len(blocks)):
+        if start_idx in used or not blocks[start_idx].get('is_list'):
+            continue
+
+        pieces = []
+        source_indices = []
+        for end_idx in range(start_idx, min(len(blocks), start_idx + 3)):
+            if end_idx in used:
+                break
+            piece = _strip_list_marker_only(str(blocks[end_idx].get('text', '') or '').strip())
+            if not piece:
+                break
+            if end_idx > start_idx and _looks_like_section_heading(piece):
+                break
+
+            pieces.append(piece)
+            source_indices.append(end_idx)
+            combined_raw = re.sub(r"\s+", " ", " ".join(pieces)).strip()
+            source_norm, raw_map = _normalized_source_with_raw_map(combined_raw)
+            if not source_norm or not raw_map or not source_norm.startswith(target):
+                # A longer continuation cannot recover a prefix mismatch once the
+                # first source text has already diverged from the exact candidate.
+                if end_idx == start_idx and not target.startswith(source_norm):
+                    break
+                continue
+
+            remainder_norm = source_norm[len(target):].strip()
+            if not remainder_norm:
+                # Exact whole-span cases are already handled by the ordinary matcher.
+                continue
+
+            next_idx = end_idx + 1
+            if next_idx >= len(blocks) or not blocks[next_idx].get('is_list'):
+                continue
+            if not _looks_like_short_inline_role_subheading(remainder_norm):
+                continue
+
+            raw_end = raw_map[len(target) - 1] + 1
+            exact_source = combined_raw[:raw_end].strip()
+            if _normalize_source_match(exact_source) != target:
+                continue
+
+            synthetic = dict(blocks[start_idx])
+            synthetic['text'] = exact_source
+            synthetic['_source_indices'] = list(source_indices)
+            synthetic['_fannie_inline_subheading_recovery'] = True
+            return start_idx, synthetic
+
+    return None, None
+
+
 def _source_supports_display_value(value, blocks, allow_substring=True):
     target = _normalize_source_match(value)
     if not target:
@@ -1489,21 +1592,39 @@ def _shared_block_payload_for_role(experience, role_index, blocks, role_anchors)
 
 
 def _shared_block_payload_is_substantive(role, payload):
-    """Return True when a role-owned shared-block payload contains narrative content beyond only its title."""
+    """Return True only when a shared role-owned payload contains narrative beyond role metadata."""
     payload_text = str(payload or '').strip()
     payload_norm = _normalize_source_match(payload_text)
     if len(payload_norm) < 8:
         return False
 
-    # A condensed entry that contains only the job title is metadata, not a bullet.
-    title_norm = _normalize_source_match(clean_job_title((role or {}).get('Title', '')))
+    role = role or {}
+    title_norm = _normalize_source_match(clean_job_title(role.get('Title', '')))
+    dates_norm = _normalize_source_match(str(role.get('Dates', '') or '').strip())
+
+    # v53: Some long-tenure resumes list several subroles as metadata-only lines,
+    # e.g. "Financial Analyst (Jan 1998 - Jan 2001)". If two such roles happen
+    # to share one parsed PDF/Word block, the shared-block coverage audit must not
+    # demand that the title/date line also be rendered as an accomplishment bullet.
+    # Remove only exact source-supported role metadata and inspect what remains.
+    remainder = payload_norm
+    if title_norm:
+        remainder = remainder.replace(title_norm, '', 1)
+    if dates_norm:
+        remainder = remainder.replace(dates_norm, '', 1)
+    remainder = re.sub(r"[\s()\[\]{}|:/,;._-]+", " ", remainder).strip()
+    if not remainder:
+        return False
+
+    # Preserve the older title-only protection as a second guard.
     payload_core = re.sub(r"[.!?;:,]+$", "", payload_norm).strip()
     title_core = re.sub(r"[.!?;:,]+$", "", title_norm).strip()
     if title_core and payload_core == title_core:
         return False
 
-    # Require at least a small amount of alphabetic narrative signal.
-    words = re.findall(r"[A-Za-z][A-Za-z0-9+/#.&-]*", payload_text)
+    # Require at least a small amount of alphabetic narrative signal after metadata
+    # removal. This keeps true shared-block responsibilities fail-closed.
+    words = re.findall(r"[A-Za-z][A-Za-z0-9+/#.&-]*", remainder)
     return len(words) >= 3
 
 
@@ -1523,6 +1644,10 @@ def _validate_shared_block_role_coverage(experience, blocks, role_anchors, clien
         payload = _shared_block_payload_for_role(experience, role_index, blocks, role_anchors)
         payload_norm = _normalize_source_match(payload)
         if len(payload_norm) < 8:
+            continue
+        # v53: title/date-only subrole lines are structural metadata, not omitted
+        # narrative. Only genuine role-owned narrative is subject to this audit.
+        if not _shared_block_payload_is_substantive(role, payload):
             continue
 
         represented = []
@@ -2529,6 +2654,19 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
                         min_index=role_min,
                         used=global_used,
                     )
+                    # v53 Fannie PDF hardening: recover an exact final bullet when
+                    # Adobe structurally fuses the next short role subheading to the
+                    # bullet span. This is exact-only and does not relax fuzzy matching.
+                    if (
+                        block is None
+                        and str(client_name or '').strip().casefold() == 'fannie mae'
+                    ):
+                        idx, block = _best_fannie_pdf_bullet_before_inline_subheading_match(
+                            candidate,
+                            blocks,
+                            min_index=role_min,
+                            used=global_used,
+                        )
 
                 if block is None:
                     raise RuntimeError(
