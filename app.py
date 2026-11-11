@@ -1,5 +1,5 @@
 # v49 SOURCE FIDELITY BUILD - BNSF DATED-ROLE OMISSION RECOVERY
-# Preserves all v48 behavior while deterministically recovering clearly structured dated BNSF roles that AI extraction omits, without weakening source-fidelity validation.
+# Preserves all v49 behavior while making complete, strongly structured BNSF dated work history source-authoritative so AI cannot omit a clearly documented role.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -954,6 +954,13 @@ def _find_role_anchor(role, blocks, start_index=0):
     # Additional Experience sections (Company on one line, Title on the next).
     if company:
         for idx in range(start_index, len(blocks)):
+            # A preferred company/title anchor is meant to identify role metadata,
+            # never an accomplishment bullet from the preceding role that merely
+            # mentions the next employer. Keep list items eligible for the scored
+            # fallback below so genuinely condensed Earlier/Additional Experience
+            # roles encoded inside one bullet still remain discoverable.
+            if blocks[idx].get('is_list'):
+                continue
             source = _normalize_source_match(blocks[idx].get('text', ''))
             if not source or company not in source:
                 continue
@@ -14479,67 +14486,107 @@ def _bnsf_role_matches_structured_header(role, header):
     return True
 
 
+def _bnsf_structured_dated_roles_are_complete(blocks, headers):
+    """
+    Return True only when the detected pipe-delimited dated headers appear to cover
+    the COMPLETE dated Professional Experience structure.
+
+    This is the safety gate for source-authoritative BNSF work history. We require:
+    - at least two detected structured roles;
+    - every detected role to contain substantive exact source content;
+    - every plausible dated header in the experience region to be one of the
+      structured headers we detected; and
+    - no ambiguous extra dated role header that would be silently dropped.
+
+    If any of those conditions fail, BNSF falls back to the normal AI extraction +
+    fail-closed source-fidelity validator rather than guessing.
+    """
+    if not blocks or not headers or len(headers) < 2:
+        return False
+
+    detected_anchors = {int(h.get('anchor', -1)) for h in headers}
+    if -1 in detected_anchors:
+        return False
+
+    # Every source-authoritative role must carry at least one exact source item.
+    if any(not list(h.get('Bullets', []) or []) for h in headers):
+        return False
+
+    month = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|\d{1,2})"
+    endpoint = rf"(?:(?:{month})[ /-]+)?(?:19|20)\d{{2}}"
+    date_range = re.compile(
+        rf"{endpoint}\s*(?:[-–—]|\bto\b)\s*(?:{endpoint}|present|current)\s*$",
+        flags=re.I,
+    )
+
+    experience_start = _initial_experience_search_start(blocks)
+    experience_end = len(blocks)
+
+    # Stop only at a major section that appears AFTER Professional Experience.
+    for idx in range(experience_start, len(blocks)):
+        value = str(blocks[idx].get('text', '') or '').strip()
+        if not _looks_like_section_heading(value):
+            continue
+        if re.search(
+            r"\b(?:education|certifications?|certificates?|skills|technical skills|awards?|references?|projects?)\b",
+            value,
+            flags=re.I,
+        ):
+            experience_end = idx
+            break
+
+    plausible_dated_headers = set()
+    for idx in range(experience_start, experience_end):
+        block = blocks[idx]
+        value = str(block.get('text', '') or '').strip()
+        if (
+            not value
+            or block.get('is_list')
+            or len(value) > 300
+            or _looks_like_section_heading(value)
+        ):
+            continue
+        if date_range.search(value):
+            plausible_dated_headers.add(idx)
+
+    # Strongest possible guard: every plausible dated role-header line in the
+    # experience section must be one of our structured detections, and vice versa.
+    return plausible_dated_headers == detected_anchors
+
+
 def _repair_bnsf_omitted_structured_dated_roles(data, raw_text):
     """
-    Deterministically restore a clearly structured dated BNSF role omitted by AI.
+    Make strongly structured BNSF work history source-authoritative.
 
-    The normal fail-closed validator remains authoritative. This helper merely
-    reconstructs missing role objects from exact source headers + exact source bullets
-    before enforce_source_fidelity runs. It activates only when every AI-extracted
-    role can be uniquely mapped to the detected dated source-header sequence; if the
-    structure is ambiguous, it makes no change and lets validation fail normally.
+    v49 attempted to insert only missing roles while preserving AI-returned roles.
+    That still depended on every AI role mapping cleanly to the source before repair
+    could activate. A harmless AI normalization difference could therefore make the
+    helper back out and allow a real middle role to remain omitted.
+
+    v50 removes that dependency for the narrow, provable structure BNSF resumes such
+    as Shakeel's use:
+        Title | Company – City, State | Month YYYY – Month YYYY
+        <exact Word list bullets>
+
+    When the complete Professional Experience section passes the strict structural
+    coverage gate above, the source itself determines Company, Title, Dates, and
+    Bullets for EVERY role. No JD wording, AI paraphrase, or semantic inference is
+    used. The normal universal source-fidelity validator still runs afterward.
+
+    If the complete structure cannot be proven, this function changes nothing and
+    the existing fail-closed validation path remains authoritative.
     """
     if not isinstance(data, dict):
         return data
 
-    experience = data.get('Experience', [])
-    if not isinstance(experience, list) or not experience:
-        return data
-
     blocks = _source_blocks_for_text(raw_text)
     headers = _bnsf_detect_structured_dated_roles(blocks)
-    if not headers or len(headers) <= len(experience):
+    if not _bnsf_structured_dated_roles_are_complete(blocks, headers):
         return data
 
-    used_role_indexes = set()
-    matched_by_header = {}
-
-    for header_idx, header in enumerate(headers):
-        matches = [
-            role_idx
-            for role_idx, role in enumerate(experience)
-            if role_idx not in used_role_indexes
-            and _bnsf_role_matches_structured_header(role, header)
-        ]
-        if len(matches) == 1:
-            matched_by_header[header_idx] = matches[0]
-            used_role_indexes.add(matches[0])
-        elif len(matches) > 1:
-            # Exact title + years should normally be unique. Ambiguity means the
-            # deterministic repair is not safe enough to apply.
-            return data
-
-    # Auto-repair only when every AI-returned role maps cleanly into this structured
-    # source sequence. Unmapped AI roles may represent a format this helper does not
-    # understand, so fail closed rather than reordering or dropping them.
-    if len(used_role_indexes) != len(experience):
-        return data
-
-    missing_header_indexes = [
-        idx for idx in range(len(headers)) if idx not in matched_by_header
-    ]
-    if not missing_header_indexes:
-        return data
-
-    repaired_experience = []
-    for header_idx, header in enumerate(headers):
-        if header_idx in matched_by_header:
-            repaired_experience.append(copy.deepcopy(experience[matched_by_header[header_idx]]))
-            continue
-
-        # Exact source reconstruction. No JD terms, inferred bullets, or generated
-        # wording are introduced here.
-        repaired_experience.append({
+    source_experience = []
+    for header in headers:
+        source_experience.append({
             'Company': header['Company'],
             'Title': header['Title'],
             'Bullets': list(header.get('Bullets', []) or []),
@@ -14548,7 +14595,7 @@ def _repair_bnsf_omitted_structured_dated_roles(data, raw_text):
         })
 
     repaired = copy.deepcopy(data)
-    repaired['Experience'] = repaired_experience
+    repaired['Experience'] = source_experience
     return repaired
 
 
