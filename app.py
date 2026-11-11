@@ -1,5 +1,5 @@
-# v56 FANNIE RESTORATION BUILD - NAME RECOVERY + SKILLS/TENURE HARDENING + SUBMISSION-MODE CLEANUP + OPTIONAL FULL DIAGNOSTICS
-# Preserves v55 production resilience while restoring Fannie-specific candidate-name handling, evidence-based skills/tenure behavior, PDF subsection-boundary cleanup, and deterministic empty interview-section removal.
+# v57 FANNIE STABILIZATION BUILD - AUTHORITATIVE NAME INPUT + PROVEN SKILLS STYLE + SHARED-ASSIGNMENT COLLAPSE
+# Preserves v55/v56 production resilience, diagnostics, blank-QA removal, and PDF boundary cleanup while making Fannie candidate identity deterministic and restoring the proven skills-table presentation.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, strict QA plus repair-first production fallback.
@@ -2973,7 +2973,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v56"
+_FORMATTER_BUILD_VERSION = "v57"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -3031,6 +3031,7 @@ _DIAGNOSTIC_CLIENT_PREFIXES = {
 
 
 _DIAGNOSTIC_FIELD_LABELS = {
+    "name": "Candidate Name",
     "loc": "Current Location",
     "loc_name": "Location Name",
     "rem": "Remote / Onsite / Hybrid",
@@ -3688,6 +3689,190 @@ def _fannie_skill_detail_tokens(skill_value):
     ]
 
 
+
+def _fannie_display_title_case_phrase(value):
+    """Professional display casing for Fannie skill labels/details without damaging acronyms/brands."""
+    value = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not value:
+        return ""
+
+    small_words = {"and", "or", "of", "to", "for", "in", "on", "with", "via", "the", "a", "an"}
+
+    def cap_token(token, position):
+        if not token:
+            return token
+        # Preserve tokens that already carry meaningful internal/technical casing,
+        # all-caps acronyms, numbers, slash compounds, dot names, plus/hash names, etc.
+        alpha = re.sub(r"[^A-Za-z]", "", token)
+        if (
+            (alpha and (alpha.isupper() or (any(c.isupper() for c in alpha[1:]))))
+            or any(ch in token for ch in "/+.#")
+            or re.search(r"\d", token)
+        ):
+            return token
+
+        low = token.casefold()
+        if position > 0 and low in small_words:
+            return low
+
+        # Hyphenated generic phrases: fixed-income -> Fixed-Income.
+        if "-" in token:
+            parts = token.split("-")
+            return "-".join(
+                (part[:1].upper() + part[1:]) if part else part
+                for part in parts
+            )
+        return token[:1].upper() + token[1:]
+
+    tokens = value.split(" ")
+    return " ".join(cap_token(tok, idx) for idx, tok in enumerate(tokens))
+
+
+def _fannie_polish_skill_display(value):
+    """
+    Restore the long-standing Fannie skills-table presentation style:
+    professional capitalization for category/detail phrases while preserving
+    canonical technology/acronym casing such as FastAPI, PySpark, Power BI,
+    ETL/ELT, JIRA, LLM APIs, Node.js, etc.
+    """
+    value = _sanitize_ai_generated_text(value)
+    if not value:
+        return ""
+    match = re.match(r"^(.*?)\s*\(([^()]*)\)\s*$", value)
+    if not match:
+        return _fannie_display_title_case_phrase(value)
+
+    category = _fannie_display_title_case_phrase(match.group(1).strip())
+    details = []
+    for raw in re.split(r"\s*,\s*", match.group(2).strip()):
+        raw = raw.strip()
+        if raw:
+            details.append(_fannie_display_title_case_phrase(raw))
+    return f"{category} ({', '.join(details)})" if details else category
+
+
+def _fannie_skill_display_needs_polish(value):
+    """Detect obvious lower-case presentation drift in Fannie generated skill rows."""
+    value = str(value or "").strip()
+    if not value:
+        return False
+    polished = _fannie_polish_skill_display(value)
+    return polished != _sanitize_ai_generated_text(value)
+
+
+def _fannie_parse_date_endpoint(value, is_end=False):
+    """Parse a source-supported month/year or year endpoint for safe duplicate-role collapsing."""
+    value = re.sub(r"\s+", " ", str(value or "")).strip().replace("–", "-").replace("—", "-")
+    if not value:
+        return None
+    if re.search(r"\b(?:present|current|now)\b", value, flags=re.I):
+        now = date.today()
+        return (now.year, now.month, "current")
+
+    months = {
+        'jan': 1, 'january': 1, 'feb': 2, 'february': 2, 'mar': 3, 'march': 3,
+        'apr': 4, 'april': 4, 'may': 5, 'jun': 6, 'june': 6, 'jul': 7, 'july': 7,
+        'aug': 8, 'august': 8, 'sep': 9, 'sept': 9, 'september': 9,
+        'oct': 10, 'october': 10, 'nov': 11, 'november': 11, 'dec': 12, 'december': 12,
+    }
+    m = re.search(r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(19\d{2}|20\d{2})\b", value, flags=re.I)
+    if m:
+        return (int(m.group(2)), months[m.group(1).casefold().rstrip('.')], 'month')
+    y = re.search(r"\b(19\d{2}|20\d{2})\b", value)
+    if y:
+        return (int(y.group(1)), 12 if is_end else 1, 'year')
+    return None
+
+
+def _fannie_parse_date_range(value):
+    """Return (start, end, precision) only for defensible source date ranges."""
+    raw = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not raw:
+        return None
+    parts = re.split(r"\s+(?:to|through|thru)\s+|\s*[–—-]\s*", raw, maxsplit=1, flags=re.I)
+    if len(parts) != 2:
+        return None
+    start = _fannie_parse_date_endpoint(parts[0], is_end=False)
+    end = _fannie_parse_date_endpoint(parts[1], is_end=True)
+    if not start or not end:
+        return None
+    # Merge only like precision or current-ended month/year spans. This avoids
+    # inventing month precision when the source only supplied years.
+    if start[2] != 'month' or end[2] not in {'month', 'current'}:
+        return None
+    return start, end
+
+
+def _fannie_format_month_endpoint(point):
+    year, month, precision = point
+    if precision == 'current':
+        return 'Present'
+    names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    return f"{names[month - 1]} {year}"
+
+
+def _fannie_collapse_duplicate_shared_assignments(experience):
+    """
+    Fannie-only cleanup for one end-client/title/shared-bullet assignment represented
+    by multiple adjacent staffing-vendor/date lines in the source. Collapse only when:
+      * company is the same,
+      * title is the same,
+      * the full bullet block is exactly the same after source normalization, and
+      * the dated periods overlap or touch.
+    This does not merge merely similar roles.
+    """
+    roles = [copy.deepcopy(r) for r in (experience or []) if isinstance(r, dict)]
+    if len(roles) < 2:
+        return roles
+
+    def bullets_key(role):
+        bullets = role.get('Bullets', [])
+        if isinstance(bullets, str):
+            bullets = [x for x in bullets.split('\n') if str(x).strip()]
+        if not isinstance(bullets, list):
+            return ()
+        return tuple(_normalize_source_match(_strip_list_marker_only(x)) for x in bullets if _normalize_source_match(x))
+
+    result = []
+    for role in roles:
+        if not result:
+            result.append(role)
+            continue
+        prior = result[-1]
+        same_company = _normalize_source_match(clean_company_name(prior.get('Company', ''))) == _normalize_source_match(clean_company_name(role.get('Company', '')))
+        same_title = _normalize_source_match(clean_job_title(prior.get('Title', ''))) == _normalize_source_match(clean_job_title(role.get('Title', '')))
+        prior_bullets = bullets_key(prior)
+        role_bullets = bullets_key(role)
+        same_bullets = bool(prior_bullets) and prior_bullets == role_bullets
+        same_env = _normalize_source_match(prior.get('Environment', '')) == _normalize_source_match(role.get('Environment', ''))
+
+        if not (same_company and same_title and same_bullets and same_env):
+            result.append(role)
+            continue
+
+        r1 = _fannie_parse_date_range(prior.get('Dates', ''))
+        r2 = _fannie_parse_date_range(role.get('Dates', ''))
+        if not r1 or not r2:
+            result.append(role)
+            continue
+
+        s1, e1 = r1
+        s2, e2 = r2
+        s1n, e1n = s1[0] * 12 + s1[1], e1[0] * 12 + e1[1]
+        s2n, e2n = s2[0] * 12 + s2[1], e2[0] * 12 + e2[1]
+        if max(s1n, s2n) > min(e1n, e2n) + 1:
+            result.append(role)
+            continue
+
+        start = s1 if s1n <= s2n else s2
+        end = e1 if e1n >= e2n else e2
+        prior['Dates'] = f"{_fannie_format_month_endpoint(start)} - {_fannie_format_month_endpoint(end)}"
+        # Keep prior company/title/bullets exactly once. Any nonempty metadata that
+        # differs would have prevented the merge above.
+
+    return result
+
+
 def _fannie_tailoring_validation_issues(payload, first_name, raw_text):
     """Nonfatal QA for Fannie's generated summary/skills payload."""
     issues = []
@@ -3720,6 +3905,11 @@ def _fannie_tailoring_validation_issues(payload, first_name, raw_text):
             issues.append(
                 f"YEARS{idx} must be exactly 'X+ years, current' or 'X+ years, YYYY' "
                 f"(or '<1 year, ...'); received: {years or '[blank]'}."
+            )
+
+        if _fannie_skill_display_needs_polish(skill):
+            issues.append(
+                f"SKILL{idx} should use professional display capitalization for competency/detail phrases while preserving canonical technology casing."
             )
 
         for detail in _fannie_skill_detail_tokens(skill):
@@ -3784,11 +3974,14 @@ def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_erro
     result = copy.deepcopy(data)
     warnings = [f"Strict QA fallback activated: {strict_error}"]
 
-    # Candidate name: keep direct source/filename support. Fannie additionally
-    # restores its original source/header -> filename fallback behavior so a
-    # Submission-Mode warning can never silently blank the template name/filename.
+    # Candidate name: keep direct source/filename support for clients that derive
+    # identity from the resume. Fannie v57 intentionally excludes AI/source name
+    # inference from Submission Mode because the recruiter-entered fm_name field is
+    # authoritative and is applied after fidelity verification.
     full_name = re.sub(r"\s+", " ", str(result.get("FullName", "") or "")).strip()
-    if full_name:
+    if str(client_name or "").strip().casefold() == "fannie mae":
+        full_name = ""
+    elif full_name:
         filename = _formatter_source_filename(raw_text)
         if not (
             _source_supports_display_value(full_name, blocks, allow_substring=True)
@@ -3796,10 +3989,6 @@ def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_erro
         ):
             warnings.append(f"Unverified candidate name removed from output: {full_name}")
             full_name = ""
-    if str(client_name or "").strip().casefold() == "fannie mae" and not full_name:
-        full_name = _fannie_recover_candidate_name(result, raw_text, _formatter_source_filename(raw_text))
-        if full_name:
-            warnings.append(f"Fannie candidate name recovered deterministically: {full_name}")
     result["FullName"] = full_name
 
     # Education: omit unsupported AI fields instead of blocking the run.
@@ -5054,6 +5243,10 @@ def fannie_mae_app():
         API_KEY = render_ai_api_configuration("fannie")
 
     st.header("📋 Candidate Information")
+    Candidate_Name = st.text_input(
+        "Candidate Name (as it should appear on the Fannie submission)",
+        key="fm_name",
+    )
     col1, col2 = st.columns(2)
     with col1:
         Current_Location_City_ST = st.text_input("Current Location (City, ST)", key="fm_loc")
@@ -5184,6 +5377,8 @@ def fannie_mae_app():
     if st.button("🚀 Generate Fannie Mae Submission", type="primary"):
         if not API_KEY:
             st.error("❌ Error: Please configure the API key for the selected AI provider in the sidebar.")
+        elif not Candidate_Name.strip():
+            st.error("❌ Error: Please enter the candidate's name exactly as it should appear on the Fannie submission.")
         elif not resume_file:
             st.error("❌ Error: Please upload a resume.")
         elif not os.path.exists(TEMPLATE_FILENAME):
@@ -5202,7 +5397,7 @@ def fannie_mae_app():
                     Return a valid JSON object ONLY.
 
                     RULES:
-                    1. Name: Pull from the top/header and preserve the source spelling/capitalization. If the name is completely missing or unreadable in the text, extract it from the provided FILENAME without inventing or correcting the name.
+                    1. Candidate Name: DO NOT infer or extract the candidate name. Fannie uses a recruiter-entered authoritative name field outside this extraction step. Return FullName as an empty string.
                     2. Company Name Cleaning: Display only the primary end-client/employer name that is explicitly supported by the resume. Remove trailing location text. When the resume explicitly labels an End Client/Client separately from a staffing/vendor company, use that stated client name. Do NOT guess or invent an end-client when the source does not identify one.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
@@ -5258,16 +5453,23 @@ def fannie_mae_app():
                             else:
                                 raise e
 
+                    # Fannie v57: the recruiter-entered candidate name is authoritative.
+                    # Keep AI name inference completely out of source-fidelity decisions.
+                    if isinstance(data, dict):
+                        data['FullName'] = ''
                     data = enforce_source_fidelity(data, raw_text, 'Fannie Mae')
 
-                    # v56: Fannie has always derived the candidate name from the
-                    # uploaded resume/header, with filename fallback. Do this
-                    # deterministically even when Submission Mode had to recover
-                    # the historical work structure.
-                    name = _fannie_recover_candidate_name(data, raw_text, resume_file.name)
-                    if name:
-                        data['FullName'] = name
+                    name = re.sub(r"\s+", " ", Candidate_Name.strip())
+                    data['FullName'] = name
                     first_name = _fannie_first_name(name)
+
+                    # Collapse only adjacent, exact duplicate shared assignments
+                    # (same end client + title + identical bullets + overlapping/touching
+                    # source-supported dates). This fixes staffing-vendor date splits
+                    # without merging genuinely separate roles.
+                    data['Experience'] = _fannie_collapse_duplicate_shared_assignments(
+                        data.get('Experience', [])
+                    )
 
                     mapping = {
                         "FullName": name, "Location": Current_Location_City_ST, "Remote": Remote_or_Onsite,
@@ -5302,228 +5504,136 @@ def fannie_mae_app():
                     if Job_Description.strip():
                         try:
                             summary_prompt = f"""
-                            You are an elite, no-nonsense Senior Technical Recruiter writing an executive submission summary for a Fieldglass portal. 
-                            The summary should read like an experienced recruiter verbally explaining to the hiring manager why this candidate deserves an interview. Your goal is to make a punchy, evidence-based business case for why this candidate will succeed, optimized for both human reading and ATS exact-match parsing.
+                            Return a valid JSON object ONLY.
+
+                            You are preparing the Fannie Mae Fieldglass candidate SUMMARY and
+                            SKILL & COMPETENCY REQUIREMENTS table. Restore the proven Fannie
+                            presentation style used by successful submissions: concise recruiter
+                            prose, four high-signal skill rows, professional capitalization, and
+                            evidence-based years/last-used values.
+
+                            SOURCE PRIORITY:
+                            1. ORIGINAL RESUME = primary factual source for candidate experience.
+                            2. SUPPLIER TECHNICAL INTERVIEW Q&A = secondary clarification only.
+                            3. SPOTLIGHT CALL TRANSCRIPT = highest-priority hiring-team emphasis.
+                            4. FIELDGLASS CHAT NOTES = next-highest hiring-team emphasis.
+                            5. OFFICIAL JOB DESCRIPTION = broad requirements and ATS terminology.
+
+                            Manager/role sources determine WHAT TO EMPHASIZE. They never create
+                            candidate history. Every candidate skill, tool, responsibility, domain,
+                            tenure, and accomplishment must be supported by candidate evidence.
 
                             ========================
-                            JD vs. MANAGER INPUT (CRITICAL)
+                            SUMMARY - EXACTLY 4 SENTENCES
                             ========================
-
-                            You are receiving up to three sources of information:
-
-                            1. Official Job Description
-                            2. Spotlight Call Transcript
-                            3. Fieldglass Chat Notes
-
-                            OFFICIAL JOB DESCRIPTION:
-                            Primary source for ATS keyword coverage and phrase matching.
-
-                            SPOTLIGHT CALL + CHAT NOTES:
-                            Primary source for hiring manager priorities and emphasis.
-
-                            If manager input contradicts or removes a requirement from the Job Description, follow the manager.
-
-                            Preserve strong coverage of the Official Job Description because automated shortlisting is assumed to rely primarily on Job Description terminology.
-
-                            Never highlight technical skills or responsibilities that the manager explicitly negated.
-
-                            ========================
-                            ATS COVERAGE RULE (CRITICAL)
-                            ========================
-
-                            Assume the Fieldglass AI shortlisting engine evaluates candidates primarily against the Official Job Description.
-
-                            Therefore:
-                            - The Official Job Description is the primary source for keyword coverage and phrase matching.
-                            - Spotlight Call transcripts and Chat Notes should influence emphasis and prioritization, but should not reduce coverage of important Job Description concepts.
-                            - Preserve exact terminology from the Job Description whenever supported by the resume.
-                            - Prefer exact Job Description terminology over synonyms when both are supported by the resume.
-                            - Exact phrase overlap is preferred whenever it does not distort the truth.
-                            - When multiple resume experiences are equally relevant, prefer the one that produces the greatest overlap with Job Description terminology and concepts.
+                            - Sentence 1 MUST begin naturally with "{first_name} is".
+                            - Use the recruiter-entered candidate identity exactly. Never infer a
+                              different name from the resume.
+                            - State the candidate's supported functional identity and most relevant
+                              experience for this requisition.
+                            - Sentence 2 should use the strongest recent or otherwise most relevant
+                              resume evidence for the hiring team's central need.
+                            - Sentence 3 should explain execution: tools, methodologies, scope,
+                              ownership, complexity, testing/support, or measurable impact.
+                            - Sentence 4 should add the strongest remaining resume-proven signal.
+                            - Use natural recruiter language. Do not use progressive experience,
+                              strong background, highly experienced, proven track record,
+                              results-driven, seasoned, Day 1, immediate asset/value, perfect fit,
+                              excellent fit, or promises about future performance.
+                            - Do not use em dashes.
+                            - Do not mention location, rate, availability, or work authorization.
+                            - Preserve exact JD terminology when it is both useful and genuinely
+                              supported by the resume.
 
                             ========================
-                            THE NARRATIVE BLUEPRINT (4 Sentences Max)
+                            FANNIE SKILLS TABLE - EXACTLY 4 HIGH-SIGNAL ROWS WHEN SUPPORTED
                             ========================
-                            Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
-                            - Sentence 1: The Anchor (Authority). It MUST begin exactly and naturally with "{first_name} is". State the candidate's supported functional identity, total professional experience when date-driven evidence allows it, and the dominant resume-proven expertise most relevant to the primary Job Description need. Never substitute "the candidate", a pronoun, or a generic "With X years..." opening for the candidate's first name.
-                            - Sentence 2: The Alignment (The Hook). You MUST explicitly name the current employer unless an earlier role provides substantially stronger evidence for the target role. Highlight the most relevant accomplishment or responsibility that demonstrates success performing the core duties of this role. Show why this experience provides strong evidence they can perform the responsibilities of the target position.
-                            - Sentence 3: The Execution & Impact (The Proof). Explain how they executed the work and why it mattered. Highlight the scale, complexity, operational ownership, or business impact. Weave tools and methodologies naturally into the sentence. DO NOT write a comma-separated list of tools. DO NOT repeat verbs from Sentence 2.
-                            - Sentence 4: The Closer. Summarize the strongest additional resume-proven signal that matters to this role and explain its relevance factually. Do not promise future performance, use "Day 1" language, or call the candidate an "immediate asset". Do NOT mention the physical location/city.
+                            The successful Fannie format is:
+                                Competency Area (Supporting Detail, Supporting Detail, Tool)
+                                X+ years, current
+                            or:
+                                X+ years, YYYY
 
-                            CRITICAL ATS HACK: Across these 4 sentences, you MUST seamlessly embed 2-3 exact phrases from the Job Description (including soft skills like "changing priorities" or "system analysis") to maximize the Fieldglass match score. Do not force them if they ruin the sentence flow, but prioritize exact phrase matching where supported by the resume.
+                            ROW SELECTION:
+                            - Treat the four rows as scarce screening space.
+                            - Choose the four most important DISTINCT competencies for this Fannie
+                              requisition that the candidate genuinely demonstrates.
+                            - Spotlight/manager priorities outrank generic JD items when provided.
+                            - Otherwise prioritize the JD's core must-haves/day-to-day work.
+                            - Each row must represent a materially different screening dimension.
+                            - Consolidate closely related concepts instead of creating redundant rows.
+                            - Do not repeat the same supporting detail/tool across multiple rows unless
+                              repetition is genuinely unavoidable. For example, do not place JIRA in
+                              three rows simply because it relates to BA, Agile, and Testing.
+                            - Use up to 6 parenthetical supporting details, but use fewer when fewer
+                              details create a cleaner, stronger row.
+                            - Favor demonstrated work-history evidence over a standalone skill list.
+                            - If fewer than four defensible relevant competencies exist, leave unused
+                              SKILL/YEARS fields blank rather than fabricate filler.
 
-                            ========================
-                            STYLE & TONE RULES (STRICT)
-                            ========================
-                            - Write like a human pitching to a colleague. Confident, direct, and factual.
-                            - TECH MATCHING: Strictly align the tools you highlight with the JD. If the JD asks for AWS, highlight AWS. Do not highlight competing tech (like Azure or GCP) just because it's prominent in the resume, unless it is their only experience.
-                            - LOCATION NEUTRAL: Never mention the physical location (e.g., Reston, VA, onsite, hybrid) in the summary.
-                            - SHOW, DON'T TELL. 
-                              🔴 Bad: "John's background in AWS makes him a great fit for this role."
-                              🟢 Good: "Because John spent the last three years building highly available data lakes in AWS, he can immediately step in to optimize your current infrastructure."
-                            - Do NOT use generic filler: "strong background," "highly experienced," "positions them uniquely," "exceptionally well-prepared," "fits well," "aligns with," "enterprise-grade platforms."
-                            - Do NOT use transition crutches: "Additionally," "Furthermore," "Moreover."
-                            - Do NOT repeat or restate the job description.
-                            - Prefer clear business language over consultant buzzwords.
-                            - Favor evidence and ownership over dramatic wording.
-                            - Use verbs that naturally fit the work performed. Do not force "leadership verbs."
+                            DISPLAY / CAPITALIZATION - IMPORTANT:
+                            - Use professional standard capitalization exactly like successful Fannie
+                              submissions: "Data Engineering (Python, SQL, ETL/ELT, Data Validation)"
+                              and "Generative AI & LLM Integration (Prompt Engineering, LLM APIs, FastAPI, Pydantic)".
+                            - Generic competency/detail phrases should use professional Title Case.
+                            - Preserve the canonical capitalization of named tools, platforms,
+                              acronyms, and technologies from the resume/JD, such as JIRA, Power BI,
+                              FastAPI, PySpark, ETL/ELT, AWS, SQL, Summit, and Microsoft 365.
+                            - Do not output lower-case presentation such as "requirements elicitation"
+                              or "backlog refinement" inside parentheses when the display form should
+                              be "Requirements Elicitation" or "Backlog Refinement".
 
-                            ========================
-                            EXAMPLE OF A PERFECT SUMMARY
-                            ========================
-                            "Sarah is a Senior Data Engineer with 7+ years of experience delivering cloud and data-engineering solutions in regulated financial environments. Most recently at Capital One, she led an end-to-end migration of a legacy on-prem data warehouse to AWS, providing direct evidence of experience relevant to this team's cloud initiative. She engineered automated ETL pipelines with Python, PySpark, and Apache Airflow that processed 5TB of daily transaction data and reduced reporting latency by 40%. Her hands-on AWS migration, data-pipeline, and governance experience directly supports the core delivery needs of this role."
+                            YEARS OF EXPERIENCE + YEAR LAST USED:
+                            - Give the best defensible tenure for THAT competency. Do not bias the
+                              number upward or downward.
+                            - A long value such as 14+ years is correct when the resume supports it.
+                              Do not reduce it merely because it looks large.
+                            - Do not use total-career years for a competency unless the candidate
+                              genuinely demonstrates that competency across that span.
+                            - Do not arbitrarily subtract years from specialized skills.
+                            - Use dated work history and explicit source-supported tenure statements.
+                            - "current" means the competency is demonstrated in the current ongoing
+                              role. Otherwise use the most recent supported four-digit year.
+                            - Every populated YEARS value MUST be complete. Valid formats only:
+                              "X+ years, current", "X+ years, YYYY", "<1 year, current", or
+                              "<1 year, YYYY". Never return "14+ years," or any dangling comma.
 
-                            ========================
-                            🔴 Q&A USAGE RULES (CRITICAL)
-                            ========================
-                            - The resume is the PRIMARY source of truth for experience.
-                            - The technical interview Q&A is SECONDARY and should only be used to:
-                              • clarify depth
-                              • add supporting detail
-                              • reinforce experience already shown in the resume
+                            ZERO-TOLERANCE FACT RULES:
+                            - Never copy a JD-only tool/skill into candidate experience.
+                            - Never infer a specific tool from a broader platform.
+                            - Never inflate ownership, proficiency, years, or recency to match the JD.
+                            - Before returning JSON, verify every candidate claim and every skill-row
+                              detail against the resume/Q&A.
 
-                            DO NOT:
-                            - Base the summary primarily on Q&A responses.
-                            - Introduce tools, systems, or concepts that are only mentioned in Q&A but not supported by the resume.
-                            - Overweight theoretical or idealized answers from Q&A.
-
-                            If there is any conflict: 👉 prioritize the resume over Q&A.
-                            The summary should reflect what the candidate has DONE, not just what they can describe.
-
-                            ========================
-                            EXPERIENCE PRIORITY RULE (CRITICAL)
-                            ========================
-
-                            Prefer accomplishments explicitly demonstrated in experience bullets over technologies listed only in the skills section.
-
-                            Favor things the candidate built, created, supported, deployed, maintained, optimized, or owned rather than technologies merely listed in a skills inventory.
-
-                            Prefer recent and recurring responsibilities over isolated projects whenever both are supported by the resume.
-
-                            When multiple experiences are relevant, prefer the experience that overlaps with the largest number of Job Description requirements and responsibilities.
-
-                            ========================
-                            OPERATIONAL OWNERSHIP RULE
-                            ========================
-
-                            Prefer recurring responsibilities and direct ownership over one-time projects or transformation initiatives.
-
-                            Unless the role is explicitly implementation-focused, prioritize evidence of day-to-day execution, production support, issue resolution, audits, compliance, platform ownership, and measurable business outcomes over project participation or consulting activities.
-
-                            ========================
-                            SKILL & COMPETENCY REQUIREMENTS - EXACTLY 4 HIGH-SIGNAL ROWS WHEN SUPPORTED
-                            ========================
-                            The four rows are scarce Fieldglass screening space. Build them as four DISTINCT competency dimensions, not four variations of the same tool.
-
-                            LEFT COLUMN RULES:
-                            - Format: "Competency Area (Supporting Detail1, Supporting Detail2, ...)".
-                            - The competency area should be concise, professional, and directly relevant to an important JD/manager requirement the resume genuinely supports.
-                            - Supporting details may be tools, platforms, methodologies, artifacts, domain concepts, or adjacent capabilities that prove the competency.
-                            - Use no more than 6 supporting details, and use fewer when fewer materially strengthen the row.
-                            - Do NOT repeat the same supporting detail across multiple rows unless repetition is genuinely unavoidable. For example, do not put JIRA in three rows just because it can relate to Business Analysis, Agile, and Testing. Place it in the ONE row where it adds the most screening value, then use different source-supported details to distinguish the other rows.
-                            - Each row must represent a materially different screening dimension. Avoid redundant category pairs such as "Business Analysis" and "Requirements Analysis" when one stronger consolidated row would free a slot for another supported requirement.
-                            - Prefer exact JD terminology when the resume supports it, but never import candidate experience from the JD, Chat Notes, or Spotlight transcript.
-                            - If fewer than four defensible relevant competencies exist, leave unused SKILL/YEARS fields blank rather than fabricating filler.
-
-                            CANDIDATE-EVIDENCE RULE - ABSOLUTE:
-                            - The resume is the PRIMARY factual source. Technical-interview Q&A may clarify experience already grounded in the resume but may not create a new skill.
-                            - Job Description, Chat Notes, and Spotlight transcript determine WHAT TO PRIORITIZE. They do NOT create candidate experience.
-                            - Every competency and every parenthetical detail must be supported by actual candidate evidence.
-                            - Prefer demonstrated experience in dated work-history bullets over a standalone skills inventory.
-
-                            YEARS OF EXPERIENCE + YEAR LAST USED - EVIDENCE-BASED, NOT ARTIFICIALLY HIGH OR LOW:
-                            - Current date: {date.today().strftime('%B %Y')}.
-                            - Calculate EACH row's years from the best defensible evidence for THAT competency.
-                            - A value such as "14+ years" is perfectly valid when the resume actually supports roughly 14 or more years of that competency. Do NOT reduce a legitimate long tenure merely because it looks large.
-                            - Do NOT use the candidate's total career span for an individual competency unless the resume supports that competency across that span.
-                            - Do NOT give a foundational skill its maximum career years merely because it is foundational.
-                            - Do NOT subtract arbitrary years from a specialized skill. There is no downward-bias rule. The goal is the most accurate defensible tenure, whether that is 1 year, 14 years, 25 years, or another supported value.
-                            - When a competency is clearly part of a dated role, the role's relevant tenure may count even if the resume does not repeat the competency in every bullet or every year of that role.
-                            - When a competency is supported across multiple dated roles, combine the non-overlapping supported periods and round DOWN to completed whole years.
-                            - An explicit resume statement of tenure (for example, "14+ years of Summit experience") may be used when it is source-supported and not contradicted by the dated history.
-                            - If the resume genuinely does not provide enough evidence to defend an exact tenure, use the closest defensible lower-bound value; do not invent precision.
-                            - Use "current" ONLY when the competency is demonstrated in the candidate's current/most-recent ongoing role.
-                            - Otherwise use the four-digit year of the most recent dated role that demonstrates that competency.
-                            - The key defect to prevent is a missing recency value. Exact output format: "X+ years, current" or "X+ years, YYYY". If supported experience is under one completed year, use "<1 year, current" or "<1 year, YYYY". NEVER return a dangling value such as "14+ years,".
-
-                            HIDDEN EVIDENCE FIELDS - REQUIRED FOR QA:
-                            - For each SKILL row, return SKILL#_EVIDENCE with 1-3 short VERBATIM excerpts from the resume proving the competency/details.
-                            - Return SKILL#_DATE_EVIDENCE with the VERBATIM dated role header(s) or date-bearing source excerpts used to calculate that row's tenure/last-used value.
-                            - These evidence fields are for formatter QA only and are NOT written into the Word document.
-
-                            ========================
-                            🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
-                            ========================
-                            1. THE RESUME IS THE ONLY PRIMARY SOURCE OF TRUTH. Do not copy a skill/tool from the JD and assign it to the candidate unless candidate evidence supports it.
-                            2. DO NOT INFER A SPECIFIC TOOL FROM A BROADER PLATFORM. If the JD asks for Redshift and the resume only says AWS, do not output Redshift.
-                            3. DO NOT INFLATE YEARS, RECENCY, OWNERSHIP, OR PROFICIENCY TO MATCH THE JD.
-                            4. Before output, verify every summary claim, skill, supporting detail, years value, and recency value against candidate evidence.
-                            5. Do not elevate manager language into candidate history.
-
-                            ========================
-                            🧠 FINAL POLISH CHECKLIST (ONE PASS ONLY)
-                            ========================
-                            Before outputting the JSON, evaluate your drafted SUMMARY and SKILLS against these 7 checks:
-                            1. SIMPLIFIED: No run-on sentences or unnecessary filler.
-                            2. HUMAN TONE: No generic claims like "highly experienced."
-                            3. TOOL DENSITY: Maximum 3 tools per sentence.
-                            4. NO REPETITION: Do not repeat verbs or concepts across sentences.
-                            5. THE PITCH: Ensure a natural, confident recruiter tone.
-                            6. CURRENT JOB: Did you explicitly name their most recent employer in Sentence 2?
-                            7. ACCURATE MATH: Is each SKILL row's tenure based only on the dated role(s) that explicitly support THAT competency, with a defensible last-used value?
-                            8. OWNERSHIP TEST: Did I emphasize what the candidate repeatedly owned and executed, rather than simply the most impressive-sounding project?
-                            9. ATS COVERAGE TEST: Did I naturally incorporate the most important technologies, responsibilities, and terminology from the Official Job Description that are supported by the resume?
-                            10. EVIDENCE TEST: Would every skill, tool, accomplishment, and responsibility in the summary survive a side-by-side comparison against the actual resume?
-                            11. JD OVERLAP TEST: Did I emphasize the experiences that provide the strongest overlap with the Official Job Description rather than simply the most impressive accomplishments?
-                            12. DISTINCT-ROW TEST: Does each of the four Skills rows represent a materially different screening dimension?
-                            13. DUPLICATE-DETAIL TEST: Did I avoid repeating the same supporting tool/detail across rows unless unavoidable?
-
-                            Output only the final, polished JSON.
-
-                            ========================
-                            OUTPUT FORMAT (STRICT)
-                            ========================
-                            Return ONLY valid JSON:
-
+                            OUTPUT FORMAT:
                             {{
-                              "SUMMARY": "4 sentence summary following the blueprint",
-                              "SKILL1": "Competency Area (supporting details)",
+                              "SUMMARY": "Exactly four sentences",
+                              "SKILL1": "Competency Area (Supporting Detail, Tool)",
                               "YEARS1": "X+ years, current",
-                              "SKILL1_EVIDENCE": ["verbatim resume excerpt"],
-                              "SKILL1_DATE_EVIDENCE": ["verbatim dated role/date excerpt"],
-                              "SKILL2": "Competency Area (supporting details)",
+                              "SKILL2": "Competency Area (Supporting Detail, Tool)",
                               "YEARS2": "X+ years, YYYY",
-                              "SKILL2_EVIDENCE": ["verbatim resume excerpt"],
-                              "SKILL2_DATE_EVIDENCE": ["verbatim dated role/date excerpt"],
-                              "SKILL3": "Competency Area (supporting details)",
+                              "SKILL3": "Competency Area (Supporting Detail, Tool)",
                               "YEARS3": "X+ years, current",
-                              "SKILL3_EVIDENCE": ["verbatim resume excerpt"],
-                              "SKILL3_DATE_EVIDENCE": ["verbatim dated role/date excerpt"],
-                              "SKILL4": "Competency Area (supporting details)",
-                              "YEARS4": "X+ years, YYYY",
-                              "SKILL4_EVIDENCE": ["verbatim resume excerpt"],
-                              "SKILL4_DATE_EVIDENCE": ["verbatim dated role/date excerpt"]
+                              "SKILL4": "Competency Area (Supporting Detail, Tool)",
+                              "YEARS4": "X+ years, YYYY"
                             }}
 
-                            ========================
-                            INPUT DATA
-                            ========================
-                            CANDIDATE FULL NAME (already recovered from source/filename):
+                            CANDIDATE FULL NAME (authoritative recruiter input):
                             {name}
 
-                            CANDIDATE FIRST NAME (Sentence 1 must begin with this exact first name + " is"):
+                            CANDIDATE FIRST NAME:
                             {first_name}
 
-                            Official Job Description:
+                            OFFICIAL JOB DESCRIPTION:
                             {Job_Description}
 
-                            Fieldglass Chat Notes:
+                            FIELDGLASS CHAT NOTES:
                             {Chat_Notes}
 
-                            Spotlight Call Transcript:
+                            SPOTLIGHT CALL TRANSCRIPT:
                             {Call_Transcript}
 
-                            Technical Interview Q&A:
+                            TECHNICAL INTERVIEW Q&A:
                             Q1: {Question_1}
                             A1: {Answer_1}
                             Q2: {Question_2}
@@ -5535,7 +5645,7 @@ def fannie_mae_app():
                             Q5: {Question_5}
                             A5: {Answer_5}
 
-                            Resume:
+                            ORIGINAL RESUME:
                             {raw_text}
                             """
                             time.sleep(2) 
@@ -5568,7 +5678,7 @@ def fannie_mae_app():
                                     else:
                                         raise api_e
 
-                            # v56: nonfatal Fannie QA/repair. Bad wording, duplicated
+                            # v57: nonfatal Fannie QA/repair. Bad wording, duplicated
                             # details, or malformed skill-tenure values should be repaired
                             # rather than becoming recruiter-blocking errors.
                             fannie_tailoring_issues = _fannie_tailoring_validation_issues(
@@ -5580,8 +5690,9 @@ def fannie_mae_app():
                                 repair_prompt = f"""
                                 Return a valid JSON object ONLY.
 
-                                You are repairing a Fannie Mae Fieldglass candidate summary/skills payload.
-                                Do NOT change any historical resume facts. The resume is the factual source.
+                                Repair this Fannie Mae SUMMARY/SKILLS payload without changing
+                                candidate facts. The goal is the proven Fannie presentation style,
+                                not a redesign.
 
                                 CANDIDATE FULL NAME: {name}
                                 CANDIDATE FIRST NAME: {first_name}
@@ -5589,22 +5700,21 @@ def fannie_mae_app():
                                 REQUIRED REPAIRS:
                                 {chr(10).join('- ' + issue for issue in fannie_tailoring_issues)}
 
-                                NONNEGOTIABLE RULES:
-                                - SUMMARY must be exactly four concise sentences in one paragraph.
-                                - Sentence 1 must begin exactly and naturally with "{first_name} is".
-                                - Four Skills rows only when four distinct, defensible JD-relevant competencies exist.
-                                - Each row must represent a different screening dimension.
-                                - Format each row as "Competency Area (supporting details)" with at most 6 details.
-                                - Do not repeat the same supporting detail across rows unless unavoidable; place a tool such as JIRA in the single row where it adds the most screening value.
-                                - Each YEARS value must reflect the best defensible tenure for that competency. Do not force the number lower merely because it is large.
-                                - A long value such as 14+ years is valid when the resume supports it through dated roles or an explicit source-supported tenure statement.
-                                - Do not use total-career years for a skill unless the resume supports that skill across the relevant span, and do not subtract arbitrary years from specialized skills.
-                                - If a competency is clearly part of a dated role, the relevant role tenure may count without requiring the same term to be repeated in every bullet.
-                                - Use current only if the competency is demonstrated in the current ongoing role; otherwise use the latest supporting year.
-                                - Exact YEARS formats: "X+ years, current", "X+ years, YYYY", "<1 year, current", or "<1 year, YYYY". Never leave the recency portion blank.
-                                - Return 1-3 verbatim SKILL#_EVIDENCE excerpts and verbatim SKILL#_DATE_EVIDENCE excerpts for each populated row.
-                                - Do not invent JD-only experience.
-                                - Do not use em dashes in generated text.
+                                RULES:
+                                - SUMMARY = exactly four concise sentences; sentence 1 begins
+                                  naturally with "{first_name} is".
+                                - Keep four distinct, JD-relevant skill rows when supported.
+                                - Format rows as "Competency Area (Supporting Detail, Tool)".
+                                - Use professional Title Case for generic competency/detail phrases.
+                                - Preserve canonical technology/acronym casing (JIRA, SQL, AWS,
+                                  Power BI, FastAPI, PySpark, ETL/ELT, Summit, Microsoft 365, etc.).
+                                - Avoid repeating the same parenthetical detail across rows unless
+                                  genuinely unavoidable.
+                                - Keep the best defensible skill-specific tenure. Do not force a
+                                  long tenure lower and do not inflate it.
+                                - Every YEARS value must end in either "current" or a four-digit year.
+                                - Do not invent JD-only candidate experience.
+                                - Do not use em dashes.
 
                                 OFFICIAL JOB DESCRIPTION:
                                 {Job_Description}
@@ -5621,7 +5731,7 @@ def fannie_mae_app():
                                 DRAFT TO REPAIR:
                                 {json.dumps(summary_data, ensure_ascii=False, indent=2)}
 
-                                Return the same JSON keys as the draft, corrected.
+                                Return the same SUMMARY/SKILL1-4/YEARS1-4 keys, corrected.
                                 """
                                 try:
                                     repair_response = client.models.generate_content(
@@ -5653,13 +5763,13 @@ def fannie_mae_app():
                                 )
 
                             mapping["SUMMARY"] = _sanitize_ai_generated_text(summary_data.get("SUMMARY", ""))
-                            mapping["SKILL1"] = _sanitize_ai_generated_text(summary_data.get("SKILL1", ""))
+                            mapping["SKILL1"] = _fannie_polish_skill_display(summary_data.get("SKILL1", ""))
                             mapping["YEARS1"] = _fannie_safe_years_display(summary_data.get("YEARS1", ""))
-                            mapping["SKILL2"] = _sanitize_ai_generated_text(summary_data.get("SKILL2", ""))
+                            mapping["SKILL2"] = _fannie_polish_skill_display(summary_data.get("SKILL2", ""))
                             mapping["YEARS2"] = _fannie_safe_years_display(summary_data.get("YEARS2", ""))
-                            mapping["SKILL3"] = _sanitize_ai_generated_text(summary_data.get("SKILL3", ""))
+                            mapping["SKILL3"] = _fannie_polish_skill_display(summary_data.get("SKILL3", ""))
                             mapping["YEARS3"] = _fannie_safe_years_display(summary_data.get("YEARS3", ""))
-                            mapping["SKILL4"] = _sanitize_ai_generated_text(summary_data.get("SKILL4", ""))
+                            mapping["SKILL4"] = _fannie_polish_skill_display(summary_data.get("SKILL4", ""))
                             mapping["YEARS4"] = _fannie_safe_years_display(summary_data.get("YEARS4", ""))
                         except Exception as e:
                             st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
