@@ -1,5 +1,5 @@
-# v55 PRODUCTION RESILIENCE BUILD - REPAIR-FIRST SUBMISSION MODE + DIAGNOSTIC ALERTS
-# Preserves all v54 client-specific behavior while making source-fidelity structural uncertainty nonblocking in production: strict QA first, deterministic source-first fallback second, warning/diagnostic instead of recruiter-blocking false positives.
+# v56 FANNIE RESTORATION BUILD - NAME RECOVERY + SKILLS/TENURE HARDENING + SUBMISSION-MODE CLEANUP + OPTIONAL FULL DIAGNOSTICS
+# Preserves v55 production resilience while restoring Fannie-specific candidate-name handling, evidence-based skills/tenure behavior, PDF subsection-boundary cleanup, and deterministic empty interview-section removal.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, strict QA plus repair-first production fallback.
@@ -2973,7 +2973,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v55"
+_FORMATTER_BUILD_VERSION = "v56"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -2999,6 +2999,175 @@ def _diagnostic_email_enabled():
     if isinstance(value, bool):
         return value
     return str(value).strip().casefold() not in {"0", "false", "no", "off", "disabled"}
+
+
+def _diagnostic_full_context_enabled():
+    """
+    Optional reproduction-mode diagnostics.
+
+    Disabled by default because enabling it sends recruiter-entered client data and
+    the uploaded candidate resume to the configured diagnostic mailbox. The account
+    owner can explicitly enable it with:
+        FORMATTER_DIAGNOSTIC_FULL_CONTEXT = true
+    """
+    value = _diagnostic_secret("FORMATTER_DIAGNOSTIC_FULL_CONTEXT", False)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().casefold() in {"1", "true", "yes", "on", "enabled"}
+
+
+_DIAGNOSTIC_CLIENT_PREFIXES = {
+    "fannie mae": "fm",
+    "freddie mac": "fred",
+    "peraton": "per",
+    "capital one": "co",
+    "adusa": "ad",
+    "cbre": "cb",
+    "bnsf": "bn",
+    "dallas generic": "dg",
+    "deloitte": "del",
+    "navy federal": "navy",
+}
+
+
+_DIAGNOSTIC_FIELD_LABELS = {
+    "loc": "Current Location",
+    "loc_name": "Location Name",
+    "rem": "Remote / Onsite / Hybrid",
+    "form": "Former Client Worker / Employee",
+    "link": "LinkedIn / GitHub / Portfolio Link",
+    "start": "Availability to Start",
+    "mgr": "Manager Name",
+    "dates": "Dates Worked",
+    "rate": "Rate",
+    "status": "Status",
+    "auth": "Work Authorization",
+    "onsite": "Available Onsite",
+    "site": "Onsite Location(s)",
+    "int": "Interview Availability",
+    "spon": "Sponsorship",
+    "elig": "Rehire Eligibility",
+    "candidate_clarifications": "Candidate Clarifications",
+    "internal_notes": "Internal Notes",
+    "jd": "Job Description",
+    "notes": "Notes",
+    "trans": "Spotlight / Call Transcript",
+    "req_selector": "Selected Requisition",
+    "legal": "Candidate Legal Name",
+    "pref": "Preferred Name",
+    "toff": "Upcoming Scheduled Time Off",
+    "skills": "Skills Matrix",
+    "full_name": "Full Legal Name",
+    "location": "Work Location",
+    "remote": "Work Arrangement",
+    "work_auth": "Work Authorization",
+}
+
+
+def _diagnostic_field_label(session_key, prefix):
+    suffix = session_key[len(prefix) + 1:] if session_key.startswith(prefix + "_") else session_key
+    if re.fullmatch(r"q[1-5]", suffix):
+        return f"Question {suffix[1:]}"
+    if re.fullmatch(r"a[1-5]", suffix):
+        return f"Answer {suffix[1:]}"
+    return _DIAGNOSTIC_FIELD_LABELS.get(
+        suffix,
+        suffix.replace("_", " ").strip().title(),
+    )
+
+
+def _diagnostic_form_snapshot(client_name):
+    """
+    Return the selected client's user-entered/session widget values only.
+
+    API keys, passwords, Streamlit secrets, uploaded-file bytes, cached objects,
+    and other clients' stale form values are intentionally excluded.
+    """
+    prefix = _DIAGNOSTIC_CLIENT_PREFIXES.get(
+        str(client_name or "").strip().casefold()
+    )
+    if not prefix:
+        return []
+
+    rows = []
+    try:
+        session_items = list(st.session_state.items())
+    except Exception:
+        return rows
+
+    for key, value in sorted(session_items, key=lambda item: str(item[0])):
+        key = str(key)
+        if not key.startswith(prefix + "_"):
+            continue
+        if key == f"{prefix}_res":
+            continue
+
+        # Only serialize simple form values. Never stringify file objects, dataframes,
+        # connections, callbacks, or other runtime objects into a diagnostic email.
+        if value is None:
+            display = ""
+        elif isinstance(value, (str, int, float, bool)):
+            display = str(value)
+        elif isinstance(value, (list, tuple)) and all(
+            isinstance(x, (str, int, float, bool)) for x in value
+        ):
+            display = ", ".join(str(x) for x in value)
+        else:
+            continue
+
+        rows.append((_diagnostic_field_label(key, prefix), display))
+
+    return rows
+
+
+def _diagnostic_resume_attachment(client_name, raw_text=""):
+    """
+    Capture the uploaded resume bytes while the current Streamlit run still owns them.
+
+    A 15 MB cap keeps the diagnostic message safely below typical Gmail attachment
+    limits after MIME encoding.
+    """
+    prefix = _DIAGNOSTIC_CLIENT_PREFIXES.get(
+        str(client_name or "").strip().casefold()
+    )
+    filename = _formatter_source_filename(raw_text)
+    data = None
+    mime_type = "application/octet-stream"
+
+    if prefix:
+        try:
+            uploaded = st.session_state.get(f"{prefix}_res")
+        except Exception:
+            uploaded = None
+        if uploaded is not None:
+            try:
+                filename = str(getattr(uploaded, "name", "") or filename or "resume")
+                mime_type = str(getattr(uploaded, "type", "") or mime_type)
+                data = uploaded.getvalue()
+            except Exception:
+                data = None
+
+    if data is None and raw_text:
+        try:
+            entry = _SOURCE_FIDELITY_REGISTRY.get(_source_key(raw_text), {})
+            file_path = str(entry.get("file_path", "") or "")
+            if file_path and os.path.exists(file_path):
+                filename = os.path.basename(file_path) or filename or "resume"
+                with open(file_path, "rb") as handle:
+                    data = handle.read()
+        except Exception:
+            data = None
+
+    if not data:
+        return None, ""
+    if len(data) > 15 * 1024 * 1024:
+        return None, f"Resume attachment skipped because it exceeded the 15 MB diagnostic limit ({len(data)} bytes)."
+
+    return {
+        "filename": filename or "resume",
+        "data": data,
+        "mime_type": mime_type,
+    }, ""
 
 
 def _formatter_diagnostic_config():
@@ -3045,7 +3214,7 @@ def _formatter_diagnostic_config():
     }
 
 
-def _send_formatter_diagnostic_email(config, subject, body):
+def _send_formatter_diagnostic_email(config, subject, body, attachment=None):
     """SMTP worker. Never called on the Streamlit critical path directly."""
     try:
         msg = EmailMessage()
@@ -3053,6 +3222,21 @@ def _send_formatter_diagnostic_email(config, subject, body):
         msg["To"] = config["recipient"]
         msg["Subject"] = subject
         msg.set_content(body)
+
+        if attachment and attachment.get("data"):
+            mime_type = str(attachment.get("mime_type", "") or "application/octet-stream")
+            maintype, subtype = (
+                mime_type.split("/", 1)
+                if "/" in mime_type
+                else ("application", "octet-stream")
+            )
+            msg.add_attachment(
+                attachment["data"],
+                maintype=maintype or "application",
+                subtype=subtype or "octet-stream",
+                filename=str(attachment.get("filename", "") or "resume"),
+            )
+
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=8) as smtp:
             smtp.login(config["sender"], config["app_password"])
             smtp.send_message(msg)
@@ -3070,11 +3254,12 @@ def notify_formatter_diagnostic(
     technical_details="",
 ):
     """
-    Fire-and-forget privacy-minimized formatter diagnostic.
+    Fire-and-forget formatter diagnostic.
 
-    Intentionally excludes resume contents, recruiter-entered JD/notes/Q&A, email,
-    phone number, and generated document contents. Filename is included because it
-    is the minimum practical identifier for reproducing a recruiter-reported run.
+    Default mode is privacy-minimized. When FORMATTER_DIAGNOSTIC_FULL_CONTEXT=true,
+    the email additionally contains the selected client's current form values and
+    attaches the uploaded resume so a later warning can be reproduced without
+    tracking down the recruiter who ran it.
     """
     config = _formatter_diagnostic_config()
     if config is None:
@@ -3103,22 +3288,67 @@ def notify_formatter_diagnostic(
     ]
     if str(technical_details or "").strip():
         body_lines.extend(["", "Technical details:", str(technical_details).strip()])
-    body_lines.extend(
-        [
-            "",
-            "Privacy note: This diagnostic intentionally does NOT include the resume attachment,",
-            "resume text, recruiter-entered JD/notes/Q&A, candidate contact information, or generated document.",
-        ]
-    )
+
+    attachment = None
+    attachment_note = ""
+    if _diagnostic_full_context_enabled():
+        form_snapshot = _diagnostic_form_snapshot(client)
+        body_lines.extend(["", "REPRODUCTION CONTEXT (FULL DIAGNOSTIC MODE):"])
+        if form_snapshot:
+            for label, value in form_snapshot:
+                body_lines.extend(
+                    [
+                        "",
+                        f"{label}:",
+                        value if value else "[blank]",
+                    ]
+                )
+        else:
+            body_lines.append("[No client form values were available in session state.]")
+
+        attachment, attachment_note = _diagnostic_resume_attachment(
+            client,
+            raw_text=raw_text,
+        )
+        if attachment:
+            body_lines.extend(
+                [
+                    "",
+                    f"Resume attachment: {attachment.get('filename', 'resume')}",
+                ]
+            )
+        elif attachment_note:
+            body_lines.extend(["", attachment_note])
+
+        body_lines.extend(
+            [
+                "",
+                "Data-handling note: Full diagnostic mode includes recruiter-entered client data",
+                "and may attach candidate PII from the uploaded resume. Use this mode only when",
+                "the configured diagnostic mailbox is approved for that information.",
+            ]
+        )
+    else:
+        body_lines.extend(
+            [
+                "",
+                "Privacy note: Full diagnostic context is OFF. This email intentionally does NOT include",
+                "the resume attachment, resume text, recruiter-entered JD/notes/Q&A, candidate contact",
+                "information, or generated document.",
+                "Set FORMATTER_DIAGNOSTIC_FULL_CONTEXT=true to include the selected client's form values",
+                "and attach the uploaded resume on future warning/fatal diagnostics.",
+            ]
+        )
 
     try:
         threading.Thread(
             target=_send_formatter_diagnostic_email,
-            args=(config, subject, "\n".join(body_lines)),
+            args=(config, subject, "\n".join(body_lines), attachment),
             daemon=True,
         ).start()
     except Exception:
         pass
+
 
 
 def _looks_like_short_role_subheading(text):
@@ -3275,6 +3505,15 @@ def _resilient_source_items_for_role(experience, role_index, blocks, anchors, cl
         for item_idx, block in list_items:
             item_text = _strip_list_marker_only(block.get("text", ""))
             if is_fannie and item_text and role_ai_bullets:
+                # v56: first try a direct exact-prefix boundary trim. This handles
+                # Adobe cases where the next subsection label is fused to the same
+                # source list block but the following paragraph loses list metadata.
+                item_text = _fannie_trim_inline_subheading_from_source_item(
+                    item_text,
+                    role_ai_bullets,
+                )
+                # Keep the stricter multi-block recovery as a second path for
+                # wrapped bullets spread across adjacent Adobe paragraphs.
                 for candidate in role_ai_bullets:
                     match_idx, match_block = _best_fannie_pdf_bullet_before_inline_subheading_match(
                         candidate,
@@ -3304,6 +3543,226 @@ def _resilient_source_items_for_role(experience, role_index, blocks, anchors, cl
     return deduped
 
 
+
+def _fannie_plausible_person_name(value):
+    """Conservative Fannie candidate-name test used only for source/filename recovery."""
+    candidate = re.sub(r"\s+", " ", _strip_list_marker_only(str(value or "")).strip()).strip(" |:-–—")
+    if not candidate or len(candidate) > 80:
+        return False
+    if re.search(r"[@\d]|https?://|www\.", candidate, flags=re.I):
+        return False
+    if _looks_like_section_heading(candidate):
+        return False
+
+    tokens = re.findall(r"[A-Za-z][A-Za-z'’.-]*", candidate)
+    if not (2 <= len(tokens) <= 5):
+        return False
+
+    low = candidate.casefold()
+    banned = {
+        "professional summary", "executive summary", "career summary", "resume", "curriculum vitae",
+        "professional experience", "work experience", "employment history", "technical skills",
+        "education", "certifications", "contact information", "candidate information",
+    }
+    if low in banned:
+        return False
+    if re.search(r"\b(?:engineer|developer|manager|analyst|architect|consultant|specialist|director|scrum|agile|project)\b", low):
+        # A header line that is mostly a job title should not be mistaken for the name.
+        return False
+    return True
+
+
+def _fannie_name_from_filename(filename):
+    """Recover a human-looking name from the original Fannie upload filename."""
+    value = os.path.basename(str(filename or "")).strip()
+    value = re.sub(r"^temp_", "", value, flags=re.I)
+    value = os.path.splitext(value)[0]
+    value = re.sub(r"\s*\(\d+\)\s*$", "", value)
+    value = value.replace("_", " ")
+
+    # Remove common trailing date/version stamps such as 202610, 20261015, 2026-10,
+    # or a bare four-digit year. Do not strip digits from inside a legitimate name.
+    value = re.sub(r"\s+(?:19|20)\d{2}(?:[- ]?\d{2}){0,2}\s*$", "", value)
+    value = re.sub(r"\s+(?:19|20)\d{4,6}\s*$", "", value)
+    value = re.sub(
+        r"\b(?:resume|cv|fannie|fannie mae|formatted|submission|candidate)\b",
+        " ",
+        value,
+        flags=re.I,
+    )
+    value = re.sub(r"\s+", " ", value).strip(" -_|")
+    return value if _fannie_plausible_person_name(value) else ""
+
+
+def _fannie_recover_candidate_name(data, raw_text, uploaded_filename=""):
+    """
+    Restore Fannie's original name behavior deterministically:
+      1. keep a source-supported extracted FullName;
+      2. otherwise scan the resume/header source blocks; and
+      3. finally use the upload filename as the explicit Fannie fallback.
+    """
+    blocks = _source_blocks_for_text(raw_text)
+    existing = ""
+    if isinstance(data, dict):
+        existing = re.sub(r"\s+", " ", str(data.get("FullName", "") or "")).strip()
+    if existing and _fannie_plausible_person_name(existing):
+        if (
+            _source_supports_display_value(existing, blocks, allow_substring=True)
+            or _normalize_source_match(existing) in _normalize_source_match(uploaded_filename)
+        ):
+            return existing
+
+    # Names normally live in the first few structural blocks. Stay near the top so
+    # an employer/contact buried later in the resume cannot become the candidate name.
+    top_blocks = [
+        re.sub(r"\s+", " ", str(block.get("text", "") or "")).strip()
+        for block in blocks[:12]
+        if str(block.get("text", "") or "").strip()
+    ]
+    for candidate in top_blocks:
+        if _fannie_plausible_person_name(candidate):
+            return candidate
+
+    # Some converters split first and last names into adjacent one-token blocks.
+    for idx in range(max(0, len(top_blocks) - 1)):
+        left = top_blocks[idx].strip()
+        right = top_blocks[idx + 1].strip()
+        combined = f"{left} {right}".strip()
+        if (
+            len(re.findall(r"[A-Za-z][A-Za-z'’.-]*", left)) == 1
+            and len(re.findall(r"[A-Za-z][A-Za-z'’.-]*", right)) == 1
+            and _fannie_plausible_person_name(combined)
+        ):
+            return combined
+
+    filename_name = _fannie_name_from_filename(uploaded_filename or _formatter_source_filename(raw_text))
+    if filename_name:
+        return filename_name
+    return ""
+
+
+def _fannie_first_name(full_name):
+    parts = re.findall(r"[A-Za-z][A-Za-z'’.-]*", str(full_name or "").strip())
+    return parts[0] if parts else ""
+
+
+def _fannie_trim_inline_subheading_from_source_item(source_text, ai_bullets):
+    """
+    Submission-Mode cleanup for an exact source bullet fused with the next Fannie
+    subsection label (for example, "... presentations Business Analysis").
+
+    The AI text is used only as exact-prefix boundary evidence. The returned bullet
+    remains exact source text, never a paraphrase. Unlike the stricter v53 matcher,
+    this recovery does not require the following Adobe block to retain list metadata.
+    """
+    source_text = _strip_list_marker_only(str(source_text or "").strip())
+    source_norm, raw_map = _normalized_source_with_raw_map(source_text)
+    if not source_norm or not raw_map:
+        return source_text
+
+    candidates = ai_bullets if isinstance(ai_bullets, list) else []
+    for candidate in candidates:
+        target = _normalize_source_match(_strip_list_marker_only(candidate))
+        if len(target) < 20 or not source_norm.startswith(target) or source_norm == target:
+            continue
+        remainder = source_norm[len(target):].strip()
+        if not _looks_like_short_inline_role_subheading(remainder):
+            continue
+        raw_end = raw_map[len(target) - 1] + 1
+        exact_source = source_text[:raw_end].strip()
+        if _normalize_source_match(exact_source) == target:
+            return exact_source
+    return source_text
+
+
+def _fannie_skill_detail_tokens(skill_value):
+    """Return normalized parenthetical details from one Fannie skills-table row."""
+    value = str(skill_value or "").strip()
+    match = re.search(r"\(([^()]*)\)\s*$", value)
+    if not match:
+        return []
+    return [
+        _normalize_source_match(part)
+        for part in re.split(r"\s*,\s*", match.group(1))
+        if _normalize_source_match(part)
+    ]
+
+
+def _fannie_tailoring_validation_issues(payload, first_name, raw_text):
+    """Nonfatal QA for Fannie's generated summary/skills payload."""
+    issues = []
+    payload = payload if isinstance(payload, dict) else {}
+    summary = str(payload.get("SUMMARY", "") or "").strip()
+    if first_name and not re.match(rf"^{re.escape(first_name)}\s+is\b", summary, flags=re.I):
+        issues.append(f'SUMMARY sentence 1 must begin naturally with "{first_name} is".')
+
+    seen_details = {}
+    seen_categories = set()
+    year_pattern = re.compile(r"^(?:<1 year|\d+\+ years), (?:current|(?:19|20)\d{2})$", flags=re.I)
+    source_norm = _normalize_source_match(raw_text)
+
+    for idx in range(1, 5):
+        skill = str(payload.get(f"SKILL{idx}", "") or "").strip()
+        years = str(payload.get(f"YEARS{idx}", "") or "").strip()
+        if not skill:
+            # Fannie prefers four rows, but an unsupported fourth row must never be
+            # fabricated just to fill the template. Blank is valid when fewer than
+            # four distinct, defensible competencies exist.
+            continue
+
+        category = re.sub(r"\s*\([^()]*\)\s*$", "", skill).strip()
+        category_norm = _normalize_source_match(category)
+        if category_norm and category_norm in seen_categories:
+            issues.append(f"SKILL{idx} duplicates another competency category: {category}.")
+        seen_categories.add(category_norm)
+
+        if not year_pattern.fullmatch(years):
+            issues.append(
+                f"YEARS{idx} must be exactly 'X+ years, current' or 'X+ years, YYYY' "
+                f"(or '<1 year, ...'); received: {years or '[blank]'}."
+            )
+
+        for detail in _fannie_skill_detail_tokens(skill):
+            if detail in seen_details:
+                issues.append(
+                    f"Supporting detail '{detail}' is repeated in SKILL{seen_details[detail]} and SKILL{idx}; "
+                    "keep it in the single row where it adds the most screening value unless repetition is unavoidable."
+                )
+            else:
+                seen_details[detail] = idx
+
+        # Hidden evidence excerpts, when present, must be verbatim source excerpts.
+        evidence = payload.get(f"SKILL{idx}_EVIDENCE", [])
+        if isinstance(evidence, str):
+            evidence = [evidence]
+        if isinstance(evidence, list):
+            for excerpt in evidence:
+                excerpt_norm = _normalize_source_match(excerpt)
+                if excerpt_norm and excerpt_norm not in source_norm:
+                    issues.append(f"SKILL{idx} cites evidence not found verbatim in the resume.")
+                    break
+
+        date_evidence = payload.get(f"SKILL{idx}_DATE_EVIDENCE", [])
+        if isinstance(date_evidence, str):
+            date_evidence = [date_evidence]
+        if isinstance(date_evidence, list):
+            for excerpt in date_evidence:
+                excerpt_norm = _normalize_source_match(excerpt)
+                if excerpt_norm and excerpt_norm not in source_norm:
+                    issues.append(f"SKILL{idx} cites dated-role evidence not found verbatim in the resume.")
+                    break
+
+    return issues
+
+
+def _fannie_safe_years_display(value):
+    """Never render malformed values such as '14+ years,' into the Fannie template."""
+    value = _sanitize_ai_generated_text(value)
+    if re.fullmatch(r"(?:<1 year|\d+\+ years), (?:current|(?:19|20)\d{2})", value, flags=re.I):
+        return value
+    return ""
+
+
 def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_error):
     """
     v55 Submission Mode fallback.
@@ -3325,7 +3784,9 @@ def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_erro
     result = copy.deepcopy(data)
     warnings = [f"Strict QA fallback activated: {strict_error}"]
 
-    # Candidate name: keep only direct source/filename support.
+    # Candidate name: keep direct source/filename support. Fannie additionally
+    # restores its original source/header -> filename fallback behavior so a
+    # Submission-Mode warning can never silently blank the template name/filename.
     full_name = re.sub(r"\s+", " ", str(result.get("FullName", "") or "")).strip()
     if full_name:
         filename = _formatter_source_filename(raw_text)
@@ -3335,6 +3796,10 @@ def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_erro
         ):
             warnings.append(f"Unverified candidate name removed from output: {full_name}")
             full_name = ""
+    if str(client_name or "").strip().casefold() == "fannie mae" and not full_name:
+        full_name = _fannie_recover_candidate_name(result, raw_text, _formatter_source_filename(raw_text))
+        if full_name:
+            warnings.append(f"Fannie candidate name recovered deterministically: {full_name}")
     result["FullName"] = full_name
 
     # Education: omit unsupported AI fields instead of blocking the run.
@@ -4273,6 +4738,50 @@ def _bnsf_clean_summary_style(value):
     return value
 
 
+
+def _prepare_fannie_interview_section(doc, mapping):
+    """
+    Make Fannie's trailing Supplier Technical Interview Results section deterministic.
+
+    - zero complete Q/A pairs -> remove the entire trailing section;
+    - keep only complete pairs (both question and answer populated);
+    - compact non-contiguous pairs into sequential Q1/A1, Q2/A2, ...; and
+    - remove unused placeholder paragraphs so no empty numbered slots remain.
+    """
+    if "FormerFM" not in mapping:
+        return
+
+    completed = []
+    for idx in range(1, 6):
+        question = str(mapping.get(f"Q{idx}", "") or "").strip()
+        answer = str(mapping.get(f"A{idx}", "") or "").strip()
+        if question and answer:
+            completed.append((question, answer))
+
+    for idx in range(1, 6):
+        if idx <= len(completed):
+            mapping[f"Q{idx}"], mapping[f"A{idx}"] = completed[idx - 1]
+        else:
+            mapping[f"Q{idx}"] = ""
+            mapping[f"A{idx}"] = ""
+
+    if not completed:
+        _remove_trailing_document_section(doc, "SUPPLIER TECHNICAL INTERVIEW RESULTS")
+        return
+
+    keep_count = len(completed)
+    for paragraph in list(doc.paragraphs):
+        matches = re.findall(r"\{\{([QA])(\d)\}\}", str(paragraph.text or ""), flags=re.I)
+        if not matches:
+            continue
+        slot_numbers = [int(number) for _, number in matches]
+        if slot_numbers and min(slot_numbers) > keep_count:
+            try:
+                delete_paragraph(paragraph)
+            except Exception:
+                pass
+
+
 def _prepare_bnsf_interview_section(doc, mapping):
     """
     Make the BNSF Supplier Technical Interview Results section match the actual
@@ -4352,6 +4861,7 @@ def _prepare_bnsf_interview_section(doc, mapping):
 def process_word_doc(temp_path, mapping, out_path):
     doc = docx.Document(temp_path)
     expand_experience_placeholders(doc, mapping)
+    _prepare_fannie_interview_section(doc, mapping)
     _prepare_bnsf_interview_section(doc, mapping)
     ensure_experience_spacing(doc, mapping)
     
@@ -4401,7 +4911,7 @@ def process_word_doc(temp_path, mapping, out_path):
         # heading/decorative rules may live in tables/shapes rather than normal
         # paragraphs, so remove the entire trailing section from the heading onward.
         trailing_qa_removed = False
-        if "FormerCapitalOne" in mapping or "FormerBNSF" in mapping:
+        if "FormerCapitalOne" in mapping or "FormerBNSF" in mapping or "FormerFM" in mapping:
             trailing_qa_removed = _remove_trailing_document_section(
                 doc,
                 "SUPPLIER TECHNICAL INTERVIEW RESULTS",
@@ -4750,7 +5260,15 @@ def fannie_mae_app():
 
                     data = enforce_source_fidelity(data, raw_text, 'Fannie Mae')
 
-                    name = str(data.get('FullName', '') or '').strip()
+                    # v56: Fannie has always derived the candidate name from the
+                    # uploaded resume/header, with filename fallback. Do this
+                    # deterministically even when Submission Mode had to recover
+                    # the historical work structure.
+                    name = _fannie_recover_candidate_name(data, raw_text, resume_file.name)
+                    if name:
+                        data['FullName'] = name
+                    first_name = _fannie_first_name(name)
+
                     mapping = {
                         "FullName": name, "Location": Current_Location_City_ST, "Remote": Remote_or_Onsite,
                         "Certifications": data.get("Certifications", ""),
@@ -4827,10 +5345,10 @@ def fannie_mae_app():
                             THE NARRATIVE BLUEPRINT (4 Sentences Max)
                             ========================
                             Follow this exact structure for the SUMMARY. Every sentence MUST sell the candidate's fit for the role:
-                            - Sentence 1: The Anchor (Authority). Who are they, what is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description? (Calculate their total overall years strictly rounding DOWN to the nearest whole year formatted as 'X+ years'. Use their FIRST NAME only. You MUST use the exact job title requested in the JD if the candidate's history supports it. Avoid generic fluff).
+                            - Sentence 1: The Anchor (Authority). It MUST begin exactly and naturally with "{first_name} is". State the candidate's supported functional identity, total professional experience when date-driven evidence allows it, and the dominant resume-proven expertise most relevant to the primary Job Description need. Never substitute "the candidate", a pronoun, or a generic "With X years..." opening for the candidate's first name.
                             - Sentence 2: The Alignment (The Hook). You MUST explicitly name the current employer unless an earlier role provides substantially stronger evidence for the target role. Highlight the most relevant accomplishment or responsibility that demonstrates success performing the core duties of this role. Show why this experience provides strong evidence they can perform the responsibilities of the target position.
                             - Sentence 3: The Execution & Impact (The Proof). Explain how they executed the work and why it mattered. Highlight the scale, complexity, operational ownership, or business impact. Weave tools and methodologies naturally into the sentence. DO NOT write a comma-separated list of tools. DO NOT repeat verbs from Sentence 2.
-                            - Sentence 4: The Closer (The ROI). Based on their past execution, what specific value will they deliver on Day 1 in THIS new role? (Use a strong, direct structure like: "[First Name]'s success in [X] makes them an immediate asset for driving this team's [specific technical goal/initiative]." Do NOT mention the physical location/city).
+                            - Sentence 4: The Closer. Summarize the strongest additional resume-proven signal that matters to this role and explain its relevance factually. Do not promise future performance, use "Day 1" language, or call the candidate an "immediate asset". Do NOT mention the physical location/city.
 
                             CRITICAL ATS HACK: Across these 4 sentences, you MUST seamlessly embed 2-3 exact phrases from the Job Description (including soft skills like "changing priorities" or "system analysis") to maximize the Fieldglass match score. Do not force them if they ruin the sentence flow, but prioritize exact phrase matching where supported by the resume.
 
@@ -4853,7 +5371,7 @@ def fannie_mae_app():
                             ========================
                             EXAMPLE OF A PERFECT SUMMARY
                             ========================
-                            "Sarah is a Senior Data Engineer with 7+ years of experience architecting cloud-native data migrations within heavily regulated financial environments. Most recently at Capital One, she led the end-to-end migration of a legacy on-prem data warehouse to AWS, directly mirroring the scale and compliance rigor required for this team's current cloud initiative. By engineering automated ETL pipelines with Python, PySpark, and Apache Airflow, she processed 5TB of daily transaction data and reduced reporting latency by 40%. Sarah's success in navigating complex data governance structures makes her an immediate asset for driving this team's AWS migration goals."
+                            "Sarah is a Senior Data Engineer with 7+ years of experience delivering cloud and data-engineering solutions in regulated financial environments. Most recently at Capital One, she led an end-to-end migration of a legacy on-prem data warehouse to AWS, providing direct evidence of experience relevant to this team's cloud initiative. She engineered automated ETL pipelines with Python, PySpark, and Apache Airflow that processed 5TB of daily transaction data and reduced reporting latency by 40%. Her hands-on AWS migration, data-pipeline, and governance experience directly supports the core delivery needs of this role."
 
                             ========================
                             🔴 Q&A USAGE RULES (CRITICAL)
@@ -4893,36 +5411,54 @@ def fannie_mae_app():
                             Unless the role is explicitly implementation-focused, prioritize evidence of day-to-day execution, production support, issue resolution, audits, compliance, platform ownership, and measurable business outcomes over project participation or consulting activities.
 
                             ========================
-                            SKILLS SECTION
+                            SKILL & COMPETENCY REQUIREMENTS - EXACTLY 4 HIGH-SIGNAL ROWS WHEN SUPPORTED
                             ========================
-                            - EXACTLY 4 items
-                            - Prioritize the specific "Must-Have" technologies AND methodologies (e.g., Agile, Data Governance) requested in the JD.
-                            - Highly relevant + keyword-rich
-                            - Use only tools explicitly mentioned in resume/Q&A/notes
+                            The four rows are scarce Fieldglass screening space. Build them as four DISTINCT competency dimensions, not four variations of the same tool.
 
-                            Format:
-                            "Skill Area (Tool1, Tool2, Tool3, Tool4)"
+                            LEFT COLUMN RULES:
+                            - Format: "Competency Area (Supporting Detail1, Supporting Detail2, ...)".
+                            - The competency area should be concise, professional, and directly relevant to an important JD/manager requirement the resume genuinely supports.
+                            - Supporting details may be tools, platforms, methodologies, artifacts, domain concepts, or adjacent capabilities that prove the competency.
+                            - Use no more than 6 supporting details, and use fewer when fewer materially strengthen the row.
+                            - Do NOT repeat the same supporting detail across multiple rows unless repetition is genuinely unavoidable. For example, do not put JIRA in three rows just because it can relate to Business Analysis, Agile, and Testing. Place it in the ONE row where it adds the most screening value, then use different source-supported details to distinguish the other rows.
+                            - Each row must represent a materially different screening dimension. Avoid redundant category pairs such as "Business Analysis" and "Requirements Analysis" when one stronger consolidated row would free a slot for another supported requirement.
+                            - Prefer exact JD terminology when the resume supports it, but never import candidate experience from the JD, Chat Notes, or Spotlight transcript.
+                            - If fewer than four defensible relevant competencies exist, leave unused SKILL/YEARS fields blank rather than fabricating filler.
 
-                            Years format:
-                            "X+ years, current" OR "X+ years, "
+                            CANDIDATE-EVIDENCE RULE - ABSOLUTE:
+                            - The resume is the PRIMARY factual source. Technical-interview Q&A may clarify experience already grounded in the resume but may not create a new skill.
+                            - Job Description, Chat Notes, and Spotlight transcript determine WHAT TO PRIORITIZE. They do NOT create candidate experience.
+                            - Every competency and every parenthetical detail must be supported by actual candidate evidence.
+                            - Prefer demonstrated experience in dated work-history bullets over a standalone skills inventory.
+
+                            YEARS OF EXPERIENCE + YEAR LAST USED - EVIDENCE-BASED, NOT ARTIFICIALLY HIGH OR LOW:
+                            - Current date: {date.today().strftime('%B %Y')}.
+                            - Calculate EACH row's years from the best defensible evidence for THAT competency.
+                            - A value such as "14+ years" is perfectly valid when the resume actually supports roughly 14 or more years of that competency. Do NOT reduce a legitimate long tenure merely because it looks large.
+                            - Do NOT use the candidate's total career span for an individual competency unless the resume supports that competency across that span.
+                            - Do NOT give a foundational skill its maximum career years merely because it is foundational.
+                            - Do NOT subtract arbitrary years from a specialized skill. There is no downward-bias rule. The goal is the most accurate defensible tenure, whether that is 1 year, 14 years, 25 years, or another supported value.
+                            - When a competency is clearly part of a dated role, the role's relevant tenure may count even if the resume does not repeat the competency in every bullet or every year of that role.
+                            - When a competency is supported across multiple dated roles, combine the non-overlapping supported periods and round DOWN to completed whole years.
+                            - An explicit resume statement of tenure (for example, "14+ years of Summit experience") may be used when it is source-supported and not contradicted by the dated history.
+                            - If the resume genuinely does not provide enough evidence to defend an exact tenure, use the closest defensible lower-bound value; do not invent precision.
+                            - Use "current" ONLY when the competency is demonstrated in the candidate's current/most-recent ongoing role.
+                            - Otherwise use the four-digit year of the most recent dated role that demonstrates that competency.
+                            - The key defect to prevent is a missing recency value. Exact output format: "X+ years, current" or "X+ years, YYYY". If supported experience is under one completed year, use "<1 year, current" or "<1 year, YYYY". NEVER return a dangling value such as "14+ years,".
+
+                            HIDDEN EVIDENCE FIELDS - REQUIRED FOR QA:
+                            - For each SKILL row, return SKILL#_EVIDENCE with 1-3 short VERBATIM excerpts from the resume proving the competency/details.
+                            - Return SKILL#_DATE_EVIDENCE with the VERBATIM dated role header(s) or date-bearing source excerpts used to calculate that row's tenure/last-used value.
+                            - These evidence fields are for formatter QA only and are NOT written into the Word document.
 
                             ========================
                             🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
                             ========================
-                            1. THE RESUME IS THE ONLY SOURCE OF TRUTH. You are strictly forbidden from copying a skill, tool, or technology from the Job Description and assigning it to the candidate unless it physically appears in their Resume or Q&A.
-                            2. DO NOT INFER OR ASSUME. If the JD asks for "Redshift" and the resume only says "AWS", you MUST NOT write "Redshift" under any circumstances. 
-                            3. DO NOT INFLATE TO MATCH THE JD. If the candidate lacks a requested skill, omit it completely. It is better to have an incomplete match than a fabricated one.
-                            4. FACT AUDIT: Before outputting the final JSON, you must verify every single tool mentioned in your SUMMARY and SKILLS. If a tool exists in the JD but not in the Resume/Q&A, you must delete it from your output.
-                            5. DO NOT ELEVATE MANAGER LANGUAGE INTO CANDIDATE EXPERIENCE. If the Job Description, Chat Notes, or Spotlight Call mention technologies, responsibilities, or business goals, you may reference them as objectives of the target role, but you MUST NOT imply that the candidate performed those activities unless supported by the resume or Q&A.
-
-                            ========================
-                            YEARS ACCURACY RULES (REALISTIC RECRUITER MODE)
-                            ========================
-                            - Use October 2026 as the current date.
-                            - STRICT MATH (DATE-DRIVEN ONLY): Calculate years strictly based on the earliest chronological date provided in the 'Professional Experience' or 'Work History' section. You MUST completely IGNORE any self-reported years of experience in the candidate's summary blurb (e.g., if their summary claims "12+ years" but their listed jobs only go back to 2019, you must calculate from 2019). Round DOWN to the nearest whole year and use the exact format "X+ years". Do not use phrases like "nearly X years". (e.g., If the job history calculates to 7 years and 10 months, output "7+ years". NEVER round up to 8+). 
-                            - Foundational skills (e.g., Python, SQL, general engineering) should get their maximum calculated years.
-                            - Advanced/Specialized tools (e.g., SageMaker, Kubernetes, Cloud Architecture) should realistically be calculated at 1-2 years less than their maximum total experience unless the resume explicitly proves Day 1 usage. 
-                            - Default to "current" if they are still working in this general technical field. Do NOT use past years (e.g., "2022"). Always bridge past experience to their current tenure.
+                            1. THE RESUME IS THE ONLY PRIMARY SOURCE OF TRUTH. Do not copy a skill/tool from the JD and assign it to the candidate unless candidate evidence supports it.
+                            2. DO NOT INFER A SPECIFIC TOOL FROM A BROADER PLATFORM. If the JD asks for Redshift and the resume only says AWS, do not output Redshift.
+                            3. DO NOT INFLATE YEARS, RECENCY, OWNERSHIP, OR PROFICIENCY TO MATCH THE JD.
+                            4. Before output, verify every summary claim, skill, supporting detail, years value, and recency value against candidate evidence.
+                            5. Do not elevate manager language into candidate history.
 
                             ========================
                             🧠 FINAL POLISH CHECKLIST (ONE PASS ONLY)
@@ -4934,11 +5470,13 @@ def fannie_mae_app():
                             4. NO REPETITION: Do not repeat verbs or concepts across sentences.
                             5. THE PITCH: Ensure a natural, confident recruiter tone.
                             6. CURRENT JOB: Did you explicitly name their most recent employer in Sentence 2?
-                            7. ACCURATE MATH: Did you strictly round down their years of experience and use the 'X+ years' format to prevent ATS parser flags?
+                            7. ACCURATE MATH: Is each SKILL row's tenure based only on the dated role(s) that explicitly support THAT competency, with a defensible last-used value?
                             8. OWNERSHIP TEST: Did I emphasize what the candidate repeatedly owned and executed, rather than simply the most impressive-sounding project?
                             9. ATS COVERAGE TEST: Did I naturally incorporate the most important technologies, responsibilities, and terminology from the Official Job Description that are supported by the resume?
                             10. EVIDENCE TEST: Would every skill, tool, accomplishment, and responsibility in the summary survive a side-by-side comparison against the actual resume?
                             11. JD OVERLAP TEST: Did I emphasize the experiences that provide the strongest overlap with the Official Job Description rather than simply the most impressive accomplishments?
+                            12. DISTINCT-ROW TEST: Does each of the four Skills rows represent a materially different screening dimension?
+                            13. DUPLICATE-DETAIL TEST: Did I avoid repeating the same supporting tool/detail across rows unless unavoidable?
 
                             Output only the final, polished JSON.
 
@@ -4949,19 +5487,33 @@ def fannie_mae_app():
 
                             {{
                               "SUMMARY": "4 sentence summary following the blueprint",
-                              "SKILL1": "Skill Area (tools)",
+                              "SKILL1": "Competency Area (supporting details)",
                               "YEARS1": "X+ years, current",
-                              "SKILL2": "Skill Area (tools)",
-                              "YEARS2": "X+ years, current",
-                              "SKILL3": "Skill Area (tools)",
+                              "SKILL1_EVIDENCE": ["verbatim resume excerpt"],
+                              "SKILL1_DATE_EVIDENCE": ["verbatim dated role/date excerpt"],
+                              "SKILL2": "Competency Area (supporting details)",
+                              "YEARS2": "X+ years, YYYY",
+                              "SKILL2_EVIDENCE": ["verbatim resume excerpt"],
+                              "SKILL2_DATE_EVIDENCE": ["verbatim dated role/date excerpt"],
+                              "SKILL3": "Competency Area (supporting details)",
                               "YEARS3": "X+ years, current",
-                              "SKILL4": "Skill Area (tools)",
-                              "YEARS4": "X+ years, current"
+                              "SKILL3_EVIDENCE": ["verbatim resume excerpt"],
+                              "SKILL3_DATE_EVIDENCE": ["verbatim dated role/date excerpt"],
+                              "SKILL4": "Competency Area (supporting details)",
+                              "YEARS4": "X+ years, YYYY",
+                              "SKILL4_EVIDENCE": ["verbatim resume excerpt"],
+                              "SKILL4_DATE_EVIDENCE": ["verbatim dated role/date excerpt"]
                             }}
 
                             ========================
                             INPUT DATA
                             ========================
+                            CANDIDATE FULL NAME (already recovered from source/filename):
+                            {name}
+
+                            CANDIDATE FIRST NAME (Sentence 1 must begin with this exact first name + " is"):
+                            {first_name}
+
                             Official Job Description:
                             {Job_Description}
 
@@ -5016,19 +5568,104 @@ def fannie_mae_app():
                                     else:
                                         raise api_e
 
+                            # v56: nonfatal Fannie QA/repair. Bad wording, duplicated
+                            # details, or malformed skill-tenure values should be repaired
+                            # rather than becoming recruiter-blocking errors.
+                            fannie_tailoring_issues = _fannie_tailoring_validation_issues(
+                                summary_data,
+                                first_name,
+                                raw_text,
+                            )
+                            if fannie_tailoring_issues:
+                                repair_prompt = f"""
+                                Return a valid JSON object ONLY.
+
+                                You are repairing a Fannie Mae Fieldglass candidate summary/skills payload.
+                                Do NOT change any historical resume facts. The resume is the factual source.
+
+                                CANDIDATE FULL NAME: {name}
+                                CANDIDATE FIRST NAME: {first_name}
+
+                                REQUIRED REPAIRS:
+                                {chr(10).join('- ' + issue for issue in fannie_tailoring_issues)}
+
+                                NONNEGOTIABLE RULES:
+                                - SUMMARY must be exactly four concise sentences in one paragraph.
+                                - Sentence 1 must begin exactly and naturally with "{first_name} is".
+                                - Four Skills rows only when four distinct, defensible JD-relevant competencies exist.
+                                - Each row must represent a different screening dimension.
+                                - Format each row as "Competency Area (supporting details)" with at most 6 details.
+                                - Do not repeat the same supporting detail across rows unless unavoidable; place a tool such as JIRA in the single row where it adds the most screening value.
+                                - Each YEARS value must reflect the best defensible tenure for that competency. Do not force the number lower merely because it is large.
+                                - A long value such as 14+ years is valid when the resume supports it through dated roles or an explicit source-supported tenure statement.
+                                - Do not use total-career years for a skill unless the resume supports that skill across the relevant span, and do not subtract arbitrary years from specialized skills.
+                                - If a competency is clearly part of a dated role, the relevant role tenure may count without requiring the same term to be repeated in every bullet.
+                                - Use current only if the competency is demonstrated in the current ongoing role; otherwise use the latest supporting year.
+                                - Exact YEARS formats: "X+ years, current", "X+ years, YYYY", "<1 year, current", or "<1 year, YYYY". Never leave the recency portion blank.
+                                - Return 1-3 verbatim SKILL#_EVIDENCE excerpts and verbatim SKILL#_DATE_EVIDENCE excerpts for each populated row.
+                                - Do not invent JD-only experience.
+                                - Do not use em dashes in generated text.
+
+                                OFFICIAL JOB DESCRIPTION:
+                                {Job_Description}
+
+                                FIELDGLASS CHAT NOTES:
+                                {Chat_Notes}
+
+                                SPOTLIGHT CALL TRANSCRIPT:
+                                {Call_Transcript}
+
+                                ORIGINAL RESUME:
+                                {raw_text}
+
+                                DRAFT TO REPAIR:
+                                {json.dumps(summary_data, ensure_ascii=False, indent=2)}
+
+                                Return the same JSON keys as the draft, corrected.
+                                """
+                                try:
+                                    repair_response = client.models.generate_content(
+                                        model=models_to_try[0],
+                                        contents=repair_prompt,
+                                        config=types.GenerateContentConfig(response_mime_type="application/json"),
+                                    )
+                                    repaired_summary_data = repair_and_load_json(repair_response.text)
+                                    if isinstance(repaired_summary_data, dict) and repaired_summary_data:
+                                        summary_data = repaired_summary_data
+                                except Exception:
+                                    # Production resilience: keep the first grounded draft if
+                                    # the style/skills repair call itself fails.
+                                    pass
+
+                            remaining_fannie_issues = _fannie_tailoring_validation_issues(
+                                summary_data,
+                                first_name,
+                                raw_text,
+                            )
+                            if remaining_fannie_issues:
+                                notify_formatter_diagnostic(
+                                    "Fannie Mae",
+                                    "WARNING",
+                                    "Fannie generated summary/skills QA required nonblocking cleanup.",
+                                    raw_text=raw_text,
+                                    uploaded_filename=resume_file.name,
+                                    technical_details="\n".join(remaining_fannie_issues[:20]),
+                                )
+
                             mapping["SUMMARY"] = _sanitize_ai_generated_text(summary_data.get("SUMMARY", ""))
                             mapping["SKILL1"] = _sanitize_ai_generated_text(summary_data.get("SKILL1", ""))
-                            mapping["YEARS1"] = _sanitize_ai_generated_text(summary_data.get("YEARS1", ""))
+                            mapping["YEARS1"] = _fannie_safe_years_display(summary_data.get("YEARS1", ""))
                             mapping["SKILL2"] = _sanitize_ai_generated_text(summary_data.get("SKILL2", ""))
-                            mapping["YEARS2"] = _sanitize_ai_generated_text(summary_data.get("YEARS2", ""))
+                            mapping["YEARS2"] = _fannie_safe_years_display(summary_data.get("YEARS2", ""))
                             mapping["SKILL3"] = _sanitize_ai_generated_text(summary_data.get("SKILL3", ""))
-                            mapping["YEARS3"] = _sanitize_ai_generated_text(summary_data.get("YEARS3", ""))
+                            mapping["YEARS3"] = _fannie_safe_years_display(summary_data.get("YEARS3", ""))
                             mapping["SKILL4"] = _sanitize_ai_generated_text(summary_data.get("SKILL4", ""))
-                            mapping["YEARS4"] = _sanitize_ai_generated_text(summary_data.get("YEARS4", ""))
+                            mapping["YEARS4"] = _fannie_safe_years_display(summary_data.get("YEARS4", ""))
                         except Exception as e:
                             st.warning(f"⚠️ Warning: Summary generation failed. Proceeding without it. ({e})")
 
-                    out_file = f"Submission_Fannie_{name.replace(' ', '_')}.docx"
+                    safe_name_for_file = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_") or "Candidate"
+                    out_file = f"Submission_Fannie_{safe_name_for_file}.docx"
                     process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
                     
                     with open(out_file, "rb") as file:
