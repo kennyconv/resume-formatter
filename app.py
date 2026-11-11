@@ -1,5 +1,5 @@
-# v49 SOURCE FIDELITY BUILD - BNSF DATED-ROLE OMISSION RECOVERY
-# Preserves all v49 behavior while making complete, strongly structured BNSF dated work history source-authoritative so AI cannot omit a clearly documented role.
+# v51 SOURCE FIDELITY BUILD - BNSF INTERVIEW SECTION + SUMMARY OUTPUT HARDENING
+# Preserves all v50 BNSF source-authoritative dated-role reconstruction and universal role-anchor fixes while pruning unused BNSF interview Q/A slots/divider lines and cleaning BNSF summary bullet text.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -3228,9 +3228,113 @@ def _remove_trailing_document_section(doc, heading_text):
     return True
 
 
+
+def _bnsf_clean_summary_style(value):
+    """
+    Normalize BNSF AI-generated summary text for a template that already owns
+    the visible bullet formatting.
+
+    Summary content is generated/tailored copy, not immutable resume history, so
+    deterministic presentation cleanup is safe here. Historical work-history
+    bullets continue to use the strict source-fidelity path unchanged.
+    """
+    value = _strip_list_marker_only(value)
+    value = re.sub(r"\s+", " ", str(value or "")).strip()
+
+    # Avoid awkward recruiter-summary openings such as "Bring 14 years..." or
+    # "Brings immediate...". The remaining text is still the model's factual
+    # statement, just expressed as the direct bullet fragment the template expects.
+    value = re.sub(
+        r"^(?:bring|brings|offers|possesses)\s+",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    ).strip()
+    if value and value[0].isalpha():
+        value = value[0].upper() + value[1:]
+    return value
+
+
+def _prepare_bnsf_interview_section(doc, mapping):
+    """
+    Make the BNSF Supplier Technical Interview Results section match the actual
+    completed Q/A pairs.
+
+    BNSF's Word template contains five Q/A slots plus four VML horizontal-line
+    paragraphs between them. Generic empty-placeholder deletion removes blank
+    Q/A text but cannot see/remove those VML line objects. This helper therefore:
+
+    - keeps only COMPLETE pairs (both question and answer are nonblank),
+    - compacts non-contiguous complete pairs into Q1/A1, Q2/A2, ...,
+    - removes the entire trailing interview section when zero pairs are complete,
+    - otherwise removes unused Q/A paragraphs, and
+    - keeps exactly N-1 divider lines for N displayed pairs.
+
+    The helper is BNSF-only and does not alter other client templates.
+    """
+    if "FormerBNSF" not in mapping:
+        return
+
+    completed = []
+    for idx in range(1, 6):
+        question = str(mapping.get(f"Q{idx}", "") or "").strip()
+        answer = str(mapping.get(f"A{idx}", "") or "").strip()
+        if question and answer:
+            completed.append((question, answer))
+
+    # Compact completed pairs so the template numbering remains sequential even
+    # if a recruiter happens to populate Q1/A1 and Q3/A3 but leaves Q2/A2 blank.
+    for idx in range(1, 6):
+        if idx <= len(completed):
+            mapping[f"Q{idx}"], mapping[f"A{idx}"] = completed[idx - 1]
+        else:
+            mapping[f"Q{idx}"] = ""
+            mapping[f"A{idx}"] = ""
+
+    if not completed:
+        _remove_trailing_document_section(
+            doc,
+            "SUPPLIER TECHNICAL INTERVIEW RESULTS",
+        )
+        return
+
+    keep_count = len(completed)
+
+    # Capture the four decorative horizontal-line paragraphs before deleting any
+    # Q/A paragraphs. In the BNSF template these are VML <w:pict> paragraphs.
+    divider_paragraphs = [
+        paragraph
+        for paragraph in list(doc.paragraphs)
+        if paragraph._p.xpath('.//w:pict')
+    ]
+
+    # Remove template Q/A slots beyond the number of complete pairs. The normal
+    # replacement pass will fill the retained slots.
+    for paragraph in list(doc.paragraphs):
+        text_value = str(paragraph.text or "")
+        matches = re.findall(r"\{\{([QA])(\d)\}\}", text_value, flags=re.I)
+        if not matches:
+            continue
+        slot_numbers = [int(number) for _, number in matches]
+        if slot_numbers and min(slot_numbers) > keep_count:
+            try:
+                delete_paragraph(paragraph)
+            except Exception:
+                pass
+
+    # Five pairs use four separator lines. For N retained pairs we want N-1
+    # separators, with no line trailing the last displayed answer.
+    divider_keep = max(0, keep_count - 1)
+    for paragraph in divider_paragraphs[divider_keep:]:
+        try:
+            delete_paragraph(paragraph)
+        except Exception:
+            pass
+
 def process_word_doc(temp_path, mapping, out_path):
     doc = docx.Document(temp_path)
     expand_experience_placeholders(doc, mapping)
+    _prepare_bnsf_interview_section(doc, mapping)
     ensure_experience_spacing(doc, mapping)
     
     # Check if this is the Peraton tool
@@ -3278,9 +3382,9 @@ def process_word_doc(temp_path, mapping, out_path):
         # Capital One places this section at the very end of the template. Its
         # heading/decorative rules may live in tables/shapes rather than normal
         # paragraphs, so remove the entire trailing section from the heading onward.
-        capital_one_qa_removed = False
-        if "FormerCapitalOne" in mapping:
-            capital_one_qa_removed = _remove_trailing_document_section(
+        trailing_qa_removed = False
+        if "FormerCapitalOne" in mapping or "FormerBNSF" in mapping:
+            trailing_qa_removed = _remove_trailing_document_section(
                 doc,
                 "SUPPLIER TECHNICAL INTERVIEW RESULTS",
             )
@@ -14806,8 +14910,10 @@ def bnsf_app():
                             ========================
                             THE NARRATIVE BLUEPRINT (4 Bullet Points)
                             ========================
-                            Generate exactly 4 distinct bullet points mapped to SUMMARY1 through SUMMARY4. 
-                            CRITICAL RULE: DO NOT use the candidate's name or 3rd person pronouns (he/she/they) in ANY of the bullet points. Start each bullet with a strong action verb or direct statement.
+                            Generate exactly 4 distinct strings mapped to SUMMARY1 through SUMMARY4.
+                            CRITICAL FORMATTING RULE: DO NOT include bullet symbols, numbering, hyphens, or list markers in SUMMARY1-SUMMARY4. The BNSF Word template supplies the visible bullets.
+                            CRITICAL RULE: DO NOT use the candidate's name or 3rd person pronouns (he/she/they) in ANY of the summary strings. Start each with a strong action verb or direct factual statement.
+                            Do NOT begin a summary with "Bring", "Brings", "Offers", or "Possesses".
                             
                             - SUMMARY1 (The Anchor): What is their TOTAL progressive professional experience, and what is their dominant expertise that solves the PRIMARY technical "must-have" of the Job Description?
                             - SUMMARY2 (The Alignment): Explicitly name their CURRENT or most recent employer. What is the most impressive, relevant project they recently delivered that proves they can handle this specific job?
@@ -14918,10 +15024,10 @@ def bnsf_app():
                                     else:
                                         raise api_e
 
-                            mapping["SUMMARY1"] = summary_data.get("SUMMARY1", "")
-                            mapping["SUMMARY2"] = summary_data.get("SUMMARY2", "")
-                            mapping["SUMMARY3"] = summary_data.get("SUMMARY3", "")
-                            mapping["SUMMARY4"] = summary_data.get("SUMMARY4", "")
+                            mapping["SUMMARY1"] = _bnsf_clean_summary_style(summary_data.get("SUMMARY1", ""))
+                            mapping["SUMMARY2"] = _bnsf_clean_summary_style(summary_data.get("SUMMARY2", ""))
+                            mapping["SUMMARY3"] = _bnsf_clean_summary_style(summary_data.get("SUMMARY3", ""))
+                            mapping["SUMMARY4"] = _bnsf_clean_summary_style(summary_data.get("SUMMARY4", ""))
                             mapping["SKILL1"] = summary_data.get("SKILL1", "")
                             mapping["YEARS1"] = summary_data.get("YEARS1", "")
                             mapping["SKILL2"] = summary_data.get("SKILL2", "")
