@@ -1,5 +1,5 @@
-# v53 SOURCE FIDELITY BUILD - FANNIE TITLE/DATE SUBROLES + PDF INLINE-SUBHEADING RECOVERY
-# Preserves all v52 behavior while preventing metadata-only shared Fannie subroles from being misread as omitted narrative and recovering exact final PDF bullets fused to a following subheading.
+# v54 SOURCE FIDELITY BUILD - FANNIE COMPOUND ROLE-HEADER COVERAGE HARDENING
+# Preserves all v53 behavior while preventing Adobe-fused Fannie role metadata/subsection headers from being misclassified as omitted responsibility content.
 # resume ingestion and source fidelity. Historical resume content is treated as
 # immutable evidence: no bullet rewriting/reordering/merging, safer structural
 # PDF/DOCX extraction, source re-anchoring, and fail-closed verification.
@@ -1795,6 +1795,101 @@ def _likely_role_metadata_block(text, role):
     return False
 
 
+def _looks_like_fannie_compound_role_header(text, role):
+    """
+    Recognize a narrow Adobe PDF structural artifact in Fannie resumes where
+    role metadata and a short subsection heading are fused into one non-list block.
+
+    Example:
+        "ICF International, Inc.  Mar 2018 to Present | Task Order Administration"
+
+    This is structural metadata, not a responsibility paragraph. The detector is
+    deliberately conservative:
+    - Fannie-only at the caller;
+    - source block must contain the proven role company or title;
+    - source block must contain an employment-style date range;
+    - after removing exact role metadata/date text, only a short heading-like
+      remainder may remain; and
+    - action/sentence-like remainders are rejected so real historical narrative
+      remains subject to the fail-closed coverage audit.
+    """
+    value = _strip_list_marker_only(str(text or "").strip())
+    if not value or len(value) > 280:
+        return False
+
+    role = role or {}
+    company = clean_company_name(role.get('Company', ''))
+    title = clean_job_title(role.get('Title', ''))
+    source_norm = _normalize_source_match(value)
+    company_norm = _normalize_source_match(company)
+    title_norm = _normalize_source_match(title)
+
+    if not (
+        (company_norm and company_norm in source_norm)
+        or (title_norm and title_norm in source_norm)
+    ):
+        return False
+
+    month = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|\d{1,2})"
+    endpoint = rf"(?:(?:{month})[ /-]+)?(?:19|20)\d{{2}}"
+    date_range_re = re.compile(
+        rf"{endpoint}\s*(?:[-–—]|\bto\b)\s*(?:{endpoint}|present|current)",
+        flags=re.I,
+    )
+    if not date_range_re.search(value):
+        return False
+
+    remainder = value
+    # Remove exact proven role identifiers first. Flexible whitespace makes this
+    # robust to Adobe spacing changes without fuzzy semantic matching.
+    for metadata_value in (company, title):
+        metadata_value = str(metadata_value or '').strip()
+        if not metadata_value:
+            continue
+        pattern = r"\s+".join(
+            re.escape(part) for part in re.split(r"\s+", metadata_value) if part
+        )
+        remainder = re.sub(pattern, " ", remainder, count=1, flags=re.I)
+
+    remainder = date_range_re.sub(" ", remainder, count=1)
+    remainder = re.sub(r"[|:;,/\\()\[\]{}]+", " ", remainder)
+    remainder = re.sub(r"\s+", " ", remainder).strip(" .-_–—")
+
+    # Company/title/date by themselves are metadata.
+    if not remainder:
+        return True
+
+    words = re.findall(r"[A-Za-z][A-Za-z0-9+&#./'-]*", remainder)
+    if not words or len(words) > 7 or len(remainder) > 90:
+        return False
+
+    # A short subsection label may remain after the role metadata. Reject common
+    # action-verb openings so fused responsibility prose is never hidden.
+    action_openers = {
+        'administer', 'administered', 'analyze', 'analyzed', 'build', 'built',
+        'collaborate', 'collaborated', 'conduct', 'conducted', 'coordinate', 'coordinated',
+        'create', 'created', 'develop', 'developed', 'drive', 'drove', 'engage', 'engaged',
+        'execute', 'executed', 'facilitate', 'facilitated', 'implement', 'implemented',
+        'lead', 'led', 'manage', 'managed', 'perform', 'performed', 'plan', 'planned',
+        'prepare', 'prepared', 'provide', 'provided', 'review', 'reviewed', 'serve', 'served',
+        'support', 'supported', 'test', 'tested', 'translate', 'translated', 'work', 'worked',
+    }
+    if words[0].casefold() in action_openers:
+        return False
+
+    # Heading-like remainder: words are predominantly title-cased/acronyms, with
+    # only ordinary connector words allowed in lowercase.
+    connectors = {'and', 'or', 'of', 'for', 'to', 'the', 'in', 'on', 'with', 'a', 'an'}
+    heading_like = 0
+    for word in words:
+        clean = word.strip(".'-")
+        if not clean:
+            continue
+        if clean.casefold() in connectors or clean.isupper() or clean[:1].isupper():
+            heading_like += 1
+
+    return heading_like == len(words)
+
 def _looks_like_navy_role_context_subheading(text):
     """
     Recognize a narrow class of non-bulleted role-context lines used immediately
@@ -2786,11 +2881,19 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
                 break
 
         context_indices_for_role = navy_role_context_indices.get(role_idx, set())
+        is_fannie_client = str(client_name or '').strip().casefold() == 'fannie mae'
         interval = [
             (idx, blocks[idx]) for idx in range(start, end)
             if (
                 idx not in context_indices_for_role
                 and not _likely_role_metadata_block(blocks[idx].get('text', ''), role)
+                and not (
+                    is_fannie_client
+                    and _looks_like_fannie_compound_role_header(
+                        blocks[idx].get('text', ''),
+                        role,
+                    )
+                )
             )
         ]
         list_items = [(idx, block) for idx, block in interval if block.get('is_list')]
