@@ -1,4 +1,4 @@
-# v58 FANNIE HYBRID RESTORATION BUILD - PROVEN SUMMARY BLUEPRINT + MODERN RESILIENCE
+# v59 FANNIE FINAL POLISH BUILD - EVIDENCE-TO-ROLE CLOSER + QUIET SUCCESSFUL QA + SUBHEADING FIDELITY FIX
 # v57 FANNIE STABILIZATION BUILD - AUTHORITATIVE NAME INPUT + PROVEN SKILLS STYLE + SHARED-ASSIGNMENT COLLAPSE
 # Preserves v55/v56 production resilience, diagnostics, blank-QA removal, and PDF boundary cleanup while making Fannie candidate identity deterministic and restoring the proven skills-table presentation.
 # resume ingestion and source fidelity. Historical resume content is treated as
@@ -1919,6 +1919,86 @@ def _looks_like_fannie_compound_role_header(text, role):
 
     return heading_like == len(words)
 
+def _looks_like_fannie_standalone_role_subheading(blocks, idx, interval_start=0, interval_end=None):
+    """
+    Recognize a narrow Fannie source-fidelity case where a short standalone
+    subsection heading sits inside one employment role immediately before the
+    real responsibility bullets, for example:
+
+        Task Order Administration
+          • Work with the Task Order Oversight Manager...
+
+        Business Analysis
+          • Serve as the Project Manager and Scrum Master...
+
+    Fannie output intentionally preserves the responsibility content, not every
+    source-resume subsection label. Treat the label as structural metadata only
+    when all of the following are true:
+      * the current block itself is NOT a list item;
+      * the text is short and heading-like rather than sentence/action prose;
+      * the next meaningful block in the same role interval is a real list item.
+
+    This contextual test prevents a genuine short narrative sentence from being
+    silently discarded merely because it happens to be title-cased.
+    """
+    if not isinstance(blocks, list) or idx < 0 or idx >= len(blocks):
+        return False
+    if interval_end is None:
+        interval_end = len(blocks)
+    interval_end = min(len(blocks), max(idx + 1, int(interval_end)))
+
+    block = blocks[idx] if isinstance(blocks[idx], dict) else {}
+    if block.get("is_list"):
+        return False
+
+    value = _strip_list_marker_only(str(block.get("text", "") or "").strip())
+    if not value or len(value) > 90 or re.search(r"[.!?]$", value):
+        return False
+
+    words = re.findall(r"[A-Za-z][A-Za-z0-9+&#./'-]*", value)
+    if not (1 <= len(words) <= 7):
+        return False
+
+    # Reject responsibility-like/action-like phrases even when title-cased.
+    action_openers = {
+        "administer", "administered", "analyze", "analyzed", "build", "built",
+        "collaborate", "collaborated", "conduct", "conducted", "coordinate", "coordinated",
+        "create", "created", "develop", "developed", "drive", "drove", "engage", "engaged",
+        "execute", "executed", "facilitate", "facilitated", "implement", "implemented",
+        "improve", "improved", "lead", "led", "manage", "managed", "perform", "performed",
+        "plan", "planned", "prepare", "prepared", "provide", "provided", "review", "reviewed",
+        "serve", "served", "support", "supported", "test", "tested", "translate", "translated",
+        "work", "worked", "own", "owned", "deliver", "delivered",
+    }
+    if words[0].casefold() in action_openers:
+        return False
+
+    connectors = {"and", "or", "of", "for", "to", "the", "in", "on", "with", "a", "an", "&"}
+    heading_tokens = 0
+    for word in words:
+        clean = word.strip(".'-")
+        if (
+            clean.casefold() in connectors
+            or clean.isupper()
+            or clean[:1].isupper()
+            or re.fullmatch(r"[A-Z0-9&/+.-]{2,}", clean)
+        ):
+            heading_tokens += 1
+    if heading_tokens != len(words):
+        return False
+
+    # The next meaningful block must be an actual responsibility bullet. Skip
+    # only blank/page-noise blocks, never arbitrary narrative paragraphs.
+    for next_idx in range(idx + 1, interval_end):
+        next_block = blocks[next_idx] if isinstance(blocks[next_idx], dict) else {}
+        next_text = str(next_block.get("text", "") or "").strip()
+        if not next_text or _looks_like_pagination_artifact(next_text):
+            continue
+        return bool(next_block.get("is_list"))
+
+    return False
+
+
 def _looks_like_navy_role_context_subheading(text):
     """
     Recognize a narrow class of non-bulleted role-context lines used immediately
@@ -2923,6 +3003,15 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
                         role,
                     )
                 )
+                and not (
+                    is_fannie_client
+                    and _looks_like_fannie_standalone_role_subheading(
+                        blocks,
+                        idx,
+                        start,
+                        end,
+                    )
+                )
             )
         ]
         list_items = [(idx, block) for idx, block in interval if block.get('is_list')]
@@ -3001,7 +3090,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v58"
+_FORMATTER_BUILD_VERSION = "v59"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -4105,7 +4194,10 @@ def _fannie_summary_validation_issues(payload, first_name):
         (r"\bprogressive (?:professional )?experience\b", "progressive experience"),
         (r"\bday\s*1\b", "Day 1"),
         (r"\bimmediate (?:asset|value)\b", "immediate asset/value"),
-        (r"\b(?:perfect|excellent) fit\b", "perfect/excellent fit"),
+        (r"\b(?:perfect|excellent|ideal|strong) fit\b", "fit judgment"),
+        (r"\bwell[- ]positioned\b", "well-positioned judgment"),
+        (r"\baligns? with (?:the |this )?(?:role|position)(?:'s)? (?:needs?|requirements?)\b", "explaining the role's needs back to the reader"),
+        (r"\b(?:this|the) (?:role|position) (?:needs|requires)\b", "explaining the role's needs back to the reader"),
         (r"\bproven track record\b", "proven track record"),
         (r"\bresults[- ]driven\b", "results-driven"),
         (r"\bseasoned\b", "seasoned"),
@@ -4140,17 +4232,28 @@ def _fannie_summary_validation_issues(payload, first_name):
             "SUMMARY3 must explain execution plus why it mattered (impact, scale, complexity, ownership, or business/operational significance), not merely list activities."
         )
 
-    # Sentence 4 must synthesize evidence back to the target need rather than add
-    # one more disconnected resume fact.
-    closer_markers = re.compile(
-        r"\b(?:support\w*|provid\w*|demonstrat\w*|directly relevant|well[- ]suited|"
-        r"experience in|combination of|success in|expertise in|track record in)\b",
+    # Sentence 4 is an evidence-to-role bridge for two audiences: make the match
+    # unmistakable to Fieldglass/MSP review while still sounding useful to a
+    # knowledgeable hiring manager. It should describe transferable demonstrated
+    # experience, not declare a verdict or explain the manager's own requirements.
+    bridge_markers = re.compile(
+        r"\b(?:directly relevant experience|relevant experience|experience supporting|experience taking|"
+        r"experience carrying|experience delivering|experience implementing|experience managing|"
+        r"combination of|demonstrated experience|hands-on experience|from .{0,45} through|"
+        r"supporting .{0,60} from|across .{0,60} delivery)\b",
         flags=re.I,
     )
     disconnected_fact = re.match(r"^(?:At|In|While at)\s+", cleaned[3], flags=re.I)
-    if disconnected_fact or not closer_markers.search(cleaned[3]):
+    judgment_closer = re.search(
+        r"\b(?:aligns? with (?:the |this )?(?:role|position)(?:'s)? (?:needs?|requirements?)|"
+        r"(?:perfect|excellent|ideal|strong) fit|well[- ]positioned|"
+        r"(?:this|the) (?:role|position) (?:needs|requires))\b",
+        cleaned[3],
+        flags=re.I,
+    )
+    if disconnected_fact or judgment_closer or not bridge_markers.search(cleaned[3]):
         issues.append(
-            "SUMMARY4 must function as an evidence-based recruiter closer that connects proven experience to the target role's central need, not introduce another disconnected resume fact."
+            "SUMMARY4 must be an evidence-to-role bridge: make the candidate's transferable match obvious to Fieldglass/MSP review while describing proven experience in a way that remains useful to the hiring manager. Do not add another disconnected fact, declare the candidate a fit, or explain the role's own needs/requirements back to the reader."
         )
 
     return issues
@@ -5860,16 +5963,30 @@ def fannie_mae_app():
                               another source-supported proof point.
                             - Do not simply list activities. This sentence must add meaning.
 
-                            SUMMARY4 - THE CLOSER / RELEVANCE
-                            - Synthesize the strongest proven signals and connect them back to the
-                              target role's central need in confident recruiter language.
+                            SUMMARY4 - THE EVIDENCE-TO-ROLE BRIDGE
+                            - Synthesize the strongest proven signals into a concise statement of
+                              transferable, directly relevant experience.
+                            - Optimize for BOTH Fannie audiences:
+                              * Fieldglass/MSP: make the candidate-to-job match unmistakable, including
+                                high-value JD terminology when it is genuinely candidate-supported.
+                              * Hiring Manager: describe what the candidate has already demonstrated
+                                and how that experience transfers naturally to the work, without
+                                explaining the manager's own requirements back to them.
                             - This must function as a true closing argument, not introduce one more
                               disconnected resume fact.
-                            - Stay evidence-based. Do NOT promise future performance or use "Day 1",
-                              "immediate asset", "immediate value", "perfect fit", or "excellent fit".
-                            - Good modern closer pattern: "{first_name}'s demonstrated success in [X]
-                              and [Y] provides directly relevant evidence for this role's need to [Z]."
-                              Use the pattern only when the underlying facts are source-supported.
+                            - Prefer evidence language such as:
+                              "{first_name}'s combination of [X], [Y], and [Z] provides directly
+                              relevant experience supporting [target capability] from [stage] through [stage]."
+                              or
+                              "{first_name}'s experience taking [supported initiative/work] from [stage]
+                              through [stage] provides relevant experience for [target work/capability]."
+                              Adapt naturally; do not copy these mechanically.
+                            - Do NOT use judgment-based closers such as "perfect fit", "ideal candidate",
+                              "strong fit", "well positioned", or "aligns with the role's needs/requirements".
+                            - Do NOT state "this role needs/requires..." or otherwise explain the hiring
+                              manager's own job back to them.
+                            - Do NOT promise future performance or use "Day 1", "immediate asset", or
+                              "immediate value".
 
                             ========================
                             SUMMARY STYLE & FINAL POLISH - STRICT
@@ -5881,7 +5998,9 @@ def fannie_mae_app():
                             - Use verbs that naturally fit the work. Do not force dramatic leadership verbs.
                             - Do not use generic filler such as "strong background", "highly experienced",
                               "proven track record", "results-driven", "seasoned", "positions them uniquely",
-                              "fits well", or "aligns with".
+                              "fits well", "well positioned", or canned role-judgment phrases such
+                              as "aligns with the role's needs/requirements". Natural use of "align" in
+                              other factual contexts is not prohibited.
                             - Do not use transition crutches such as "Additionally", "Furthermore", or "Moreover".
                             - Do not mention location, rate, availability, work authorization, or submission logistics.
                             - Do not use em dashes. Use commas, colons, semicolons, parentheses, or standard hyphens.
@@ -5893,7 +6012,7 @@ def fannie_mae_app():
                               platform/process ownership, or measurable business outcomes over vague participation.
 
                             EXAMPLE OF THE NARRATIVE QUALITY / FLOW TO EMULATE:
-                            "Sarah is a Senior Data Engineer with 7+ years of experience architecting cloud-native data migrations in regulated financial environments. Most recently at Capital One, she led an end-to-end legacy data warehouse migration to AWS, providing direct evidence of the scale and governance required for the target cloud initiative. By engineering automated ETL pipelines with Python, PySpark, and Apache Airflow, she processed 5TB of daily transaction data and reduced reporting latency by 40%. Sarah's demonstrated success managing complex data migrations and governance provides directly relevant evidence for this role's AWS modernization goals."
+                            "Sarah is a Senior Data Engineer with 7+ years of experience architecting cloud-native data migrations in regulated financial environments. Most recently at Capital One, she led an end-to-end legacy data warehouse migration to AWS, providing direct evidence of large-scale cloud delivery and governance. By engineering automated ETL pipelines with Python, PySpark, and Apache Airflow, she processed 5TB of daily transaction data and reduced reporting latency by 40%. Sarah's combination of AWS migration, automated data engineering, and regulated-data governance gives her directly relevant experience carrying cloud data modernization from architecture through production delivery."
                             Do not copy facts or wording from this example. Copy only the structure and quality.
 
                             ========================
@@ -6011,7 +6130,7 @@ def fannie_mae_app():
                                     summary_data = repair_and_load_json(summary_response.text)
                                     # Backward-compatible normalization: if the model ever
                                     # returns the legacy single SUMMARY field, split it once
-                                    # into the four v58 sentence slots before QA/mapping.
+                                    # into the four v59 sentence slots before QA/mapping.
                                     if isinstance(summary_data, dict) and not any(
                                         str(summary_data.get(f"SUMMARY{i}", "") or "").strip()
                                         for i in range(1, 5)
@@ -6028,7 +6147,7 @@ def fannie_mae_app():
                                     raise
 
                             # ----------------------------------------------------
-                            # v58 SUMMARY-ONLY QA / REPAIR
+                            # v59 SUMMARY-ONLY QA / REPAIR
                             # ----------------------------------------------------
                             # Keep the restored narrative architecture isolated from
                             # skills so a weak summary cannot cause Luna to rewrite an
@@ -6060,15 +6179,22 @@ def fannie_mae_app():
                                 - SUMMARY3: Execution & Impact/Proof. Explain HOW the work was executed AND
                                   WHY IT MATTERED through source-supported scale, complexity, ownership,
                                   implementation, support/testing, regulatory significance, or impact.
-                                - SUMMARY4: Closer/Relevance. Synthesize proven evidence back to the target
-                                  role's central need. Do not introduce another disconnected resume fact.
+                                - SUMMARY4: Evidence-to-Role Bridge. Synthesize the strongest proven
+                                  signals into transferable, directly relevant experience. Make the match
+                                  obvious to Fieldglass/MSP review while remaining useful to the hiring
+                                  manager. Do not introduce another disconnected resume fact, declare the
+                                  candidate a fit, or explain the role's own needs/requirements back to the reader.
+                                  Prefer a natural bridge such as "[Name]'s combination of X, Y, and Z
+                                  provides directly relevant experience supporting [target capability] from A
+                                  through B," adapted only to facts supported by the source.
 
                                 STYLE:
                                 - Four complete, connected recruiter-quality sentences.
                                 - Human, direct, specific, evidence-first.
                                 - No Day 1, immediate asset/value, progressive experience, proven track record,
                                   results-driven, seasoned, highly experienced, strong background, perfect fit,
-                                  excellent fit, or future-performance promises.
+                                  excellent/ideal/strong fit, well positioned, "aligns with the role's
+                                  needs/requirements," or future-performance promises.
                                 - No em dashes.
                                 - Do not mention location, rate, availability, or work authorization.
                                 - Preserve exact useful JD terminology only when candidate-supported.
@@ -6114,7 +6240,7 @@ def fannie_mae_app():
                                     pass
 
                             # ----------------------------------------------------
-                            # v58 SKILLS-ONLY QA / REPAIR
+                            # v59 SKILLS-ONLY QA / REPAIR
                             # ----------------------------------------------------
                             # Preserve the v57 skills architecture. Only repair the
                             # skills payload when its own narrow checks fail.
@@ -6192,11 +6318,14 @@ def fannie_mae_app():
                                 raw_text,
                             )
                             remaining_fannie_issues = remaining_summary_issues + remaining_skill_issues
+                            # v59: successful self-repair is intentionally quiet. Only notify
+                            # when generated-content QA still has unresolved issues after the
+                            # summary-only / skills-only repair passes have already run.
                             if remaining_fannie_issues:
                                 notify_formatter_diagnostic(
                                     "Fannie Mae",
                                     "WARNING",
-                                    "Fannie generated summary/skills QA required nonblocking cleanup.",
+                                    "Fannie generated summary/skills QA still had unresolved issues after nonblocking repair.",
                                     raw_text=raw_text,
                                     uploaded_filename=resume_file.name,
                                     technical_details="\n".join(remaining_fannie_issues[:25]),
