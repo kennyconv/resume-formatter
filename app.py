@@ -1,4 +1,4 @@
-# v59 FANNIE FINAL POLISH BUILD - EVIDENCE-TO-ROLE CLOSER + QUIET SUCCESSFUL QA + SUBHEADING FIDELITY FIX
+# v60 FANNIE DATE NORMALIZATION + SHARED-ASSIGNMENT STRICT-QA RECONCILIATION
 # v57 FANNIE STABILIZATION BUILD - AUTHORITATIVE NAME INPUT + PROVEN SKILLS STYLE + SHARED-ASSIGNMENT COLLAPSE
 # Preserves v55/v56 production resilience, diagnostics, blank-QA removal, and PDF boundary cleanup while making Fannie candidate identity deterministic and restoring the proven skills-table presentation.
 # resume ingestion and source fidelity. Historical resume content is treated as
@@ -3033,11 +3033,21 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
                 if len(str(block.get('text', '') or '').strip()) >= 25
             ]
 
-        missing = [
-            _strip_list_marker_only(block.get('text', ''))
-            for idx, block in expected
-            if idx not in matched_by_role[role_idx]
-        ]
+        missing = []
+        for idx, block in expected:
+            if idx in matched_by_role[role_idx]:
+                continue
+            source_item = _strip_list_marker_only(block.get('text', ''))
+            if (
+                is_fannie_client
+                and _fannie_source_item_represented_in_same_assignment(
+                    experience,
+                    role_idx,
+                    source_item,
+                )
+            ):
+                continue
+            missing.append(source_item)
         if missing:
             preview = ' | '.join(x[:140] for x in missing[:3])
             raise RuntimeError(
@@ -3090,7 +3100,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v59"
+_FORMATTER_BUILD_VERSION = "v60"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -4031,6 +4041,52 @@ def _fannie_merge_compound_date_ranges(value):
     return f"{_fannie_format_month_endpoint(earliest)} - {_fannie_format_month_endpoint(latest)}"
 
 
+def _fannie_standardize_display_dates(value):
+    """
+    Fannie-only deterministic work-history date presentation.
+
+    Preserve the exact source-supported precision while normalizing only display
+    conventions:
+      * month names keep the formatter's existing three-letter abbreviations;
+      * Present/Current displays as Present;
+      * every supported range separator (to/through/thru/hyphen/en dash/em dash)
+        displays as a regular spaced hyphen: `` - ``;
+      * year-only endpoints stay year-only, so ``Aug 1993 - 1998`` never gains an
+        invented ending month.
+
+    Compound disjoint ranges, if one ever survives the source-safe consolidation
+    pass, are normalized segment-by-segment without changing their meaning.
+    This helper is intentionally Fannie-only so other client date conventions are
+    not affected.
+    """
+    raw = standardize_dates(str(value or ""))
+    raw = re.sub(r"\s+", " ", raw).strip()
+    if not raw:
+        return ""
+
+    raw = re.sub(r"\b(?:present|current)\b", "Present", raw, flags=re.I)
+
+    def normalize_segment(segment):
+        segment = re.sub(r"\s+", " ", str(segment or "")).strip()
+        if not segment:
+            return ""
+        # Replace only the first date-range separator in this segment. This keeps
+        # punctuation inside titles/labels untouched and is sufficient for one
+        # employment span.
+        segment = re.sub(
+            r"\s+(?:to|through|thru)\s+|\s*[–—-]\s*",
+            " - ",
+            segment,
+            count=1,
+            flags=re.I,
+        )
+        return re.sub(r"\s+", " ", segment).strip()
+
+    segments = [normalize_segment(part) for part in raw.split(";")]
+    segments = [part for part in segments if part]
+    return "; ".join(segments)
+
+
 def _fannie_normalize_compound_assignment_dates(experience):
     roles = [copy.deepcopy(r) for r in (experience or []) if isinstance(r, dict)]
     for role in roles:
@@ -4154,6 +4210,87 @@ def _fannie_collapse_umbrella_career_roles(experience):
         i = i + 1 + len(contained)
 
     return result
+
+
+def _fannie_source_item_represented_in_same_assignment(experience, role_index, source_text):
+    """
+    Fannie-only strict-QA reconciliation for one source assignment represented by
+    duplicate adjacent role records before the later presentation cleanup.
+
+    Adobe + AI extraction can represent a single end-client assignment once per
+    staffing-vendor/date line. Strict bullet restoration may therefore attach an
+    exact source bullet to the neighboring duplicate record even though the final
+    Fannie cleanup correctly collapses those records into one assignment. The
+    coverage audit must not call that exact source content "omitted".
+
+    Safety constraints are intentionally narrow:
+      * current role always qualifies for exact source-text reconciliation;
+      * a neighboring role qualifies only when company AND title are identical;
+      * neighboring dated spans must overlap/touch when both can be parsed;
+      * only exact normalized source wording (or an exact source continuation
+        contained within the restored bullet) counts. No semantic/fuzzy matching.
+
+    A genuinely missing source bullet remains missing and still triggers strict QA.
+    """
+    if not isinstance(experience, list) or not (0 <= role_index < len(experience)):
+        return False
+
+    target = _normalize_source_match(_strip_list_marker_only(source_text))
+    if not target:
+        return False
+
+    base = experience[role_index] if isinstance(experience[role_index], dict) else {}
+    base_company = _normalize_source_match(clean_company_name(base.get("Company", "")))
+    base_title = _normalize_source_match(clean_job_title(base.get("Title", "")))
+    base_range = _fannie_parse_any_date_range(base.get("Dates", ""))
+
+    def ranges_overlap_or_touch(left, right):
+        if not left or not right:
+            return True
+        ls, le = left
+        rs, re_ = right
+        lsn, len_ = ls[0] * 12 + ls[1], le[0] * 12 + le[1]
+        rsn, ren = rs[0] * 12 + rs[1], re_[0] * 12 + re_[1]
+        return max(lsn, rsn) <= min(len_, ren) + 1
+
+    for idx, candidate_role in enumerate(experience):
+        if not isinstance(candidate_role, dict):
+            continue
+
+        if idx != role_index:
+            # Shared-vendor duplicates are adjacent in source/order. Do not let a
+            # much later recurrence of the same company/title satisfy this role.
+            if abs(idx - role_index) != 1:
+                continue
+            company = _normalize_source_match(clean_company_name(candidate_role.get("Company", "")))
+            title = _normalize_source_match(clean_job_title(candidate_role.get("Title", "")))
+            if not base_company or not base_title or company != base_company or title != base_title:
+                continue
+            if not ranges_overlap_or_touch(
+                base_range,
+                _fannie_parse_any_date_range(candidate_role.get("Dates", "")),
+            ):
+                continue
+
+        bullets = candidate_role.get("Bullets", [])
+        if isinstance(bullets, str):
+            bullets = [x for x in bullets.split("\n") if str(x).strip()]
+        if not isinstance(bullets, list):
+            continue
+
+        for bullet in bullets:
+            bullet_norm = _normalize_source_match(_strip_list_marker_only(bullet))
+            if not bullet_norm:
+                continue
+            if bullet_norm == target:
+                return True
+            # Exact containment is allowed only for a substantial source fragment,
+            # covering Adobe continuation-block reconstruction without accepting
+            # rewritten wording.
+            if len(target) >= 35 and target in bullet_norm:
+                return True
+
+    return False
 
 
 def _fannie_summary_sentence_values(payload):
@@ -5886,7 +6023,7 @@ def fannie_mae_app():
                             mapping[f"Title{i}"] = clean_job_title(exp[i-1].get('Title', ''))
                             mapping[f"Bullets{i}"] = clean_bullets(exp[i-1].get('Bullets', []))
                             mapping[f"Environment{i}"] = exp[i-1].get('Environment', '')
-                            mapping[f"Dates{i}"] = standardize_dates(exp[i-1].get('Dates', ''))
+                            mapping[f"Dates{i}"] = _fannie_standardize_display_dates(exp[i-1].get('Dates', ''))
                         else:
                             mapping[f"Company{i}"] = ""
                             mapping[f"Title{i}"] = ""
