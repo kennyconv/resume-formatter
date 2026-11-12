@@ -1,3 +1,4 @@
+# v62 FANNIE INTERVIEW Q&A SPACING + DYNAMIC DIVIDERS
 # v61 FANNIE STRATEGIC TAILORING + SHARED-ASSIGNMENT PRESENTATION STABILIZATION
 # v57 FANNIE STABILIZATION BUILD - AUTHORITATIVE NAME INPUT + PROVEN SKILLS STYLE + SHARED-ASSIGNMENT COLLAPSE
 # Preserves v55/v56 production resilience, diagnostics, blank-QA removal, and PDF boundary cleanup while making Fannie candidate identity deterministic and restoring the proven skills-table presentation.
@@ -3100,7 +3101,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v61"
+_FORMATTER_BUILD_VERSION = "v62"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -5482,8 +5483,15 @@ def _prepare_fannie_interview_section(doc, mapping):
 
     - zero complete Q/A pairs -> remove the entire trailing section;
     - keep only complete pairs (both question and answer populated);
-    - compact non-contiguous pairs into sequential Q1/A1, Q2/A2, ...; and
-    - remove unused placeholder paragraphs so no empty numbered slots remain.
+    - compact non-contiguous pairs into sequential Q1/A1, Q2/A2, ...;
+    - remove unused placeholder paragraphs so no empty numbered slots remain;
+    - insert exactly one visible blank paragraph before the interview heading; and
+    - keep exactly N-1 template divider lines for N displayed Q/A pairs, with
+      no divider after the final answer.
+
+    The Fannie template stores its four Q/A separators as VML <w:pict>
+    paragraphs. Generic placeholder deletion cannot remove those objects, so
+    they must be managed explicitly.
     """
     if "FormerFM" not in mapping:
         return
@@ -5495,6 +5503,8 @@ def _prepare_fannie_interview_section(doc, mapping):
         if question and answer:
             completed.append((question, answer))
 
+    # Compact completed pairs so numbering remains sequential even when the
+    # recruiter populates non-contiguous input slots.
     for idx in range(1, 6):
         if idx <= len(completed):
             mapping[f"Q{idx}"], mapping[f"A{idx}"] = completed[idx - 1]
@@ -5507,6 +5517,61 @@ def _prepare_fannie_interview_section(doc, mapping):
         return
 
     keep_count = len(completed)
+    body = doc._element.body
+    target = "supplier technical interview results"
+    heading_element = None
+
+    # Locate the actual heading container. In the current Fannie template the
+    # heading lives in a table, not a normal paragraph.
+    for child in list(body):
+        if child.tag.rsplit("}", 1)[-1] == "sectPr":
+            continue
+        pieces = [node.text or "" for node in child.xpath(".//w:t")]
+        visible = re.sub(r"\s+", " ", "".join(pieces)).strip().casefold()
+        if target in visible:
+            heading_element = child
+            break
+
+    if heading_element is not None:
+        # Ensure one real blank line between the final work-history block and
+        # the Supplier Technical Interview Results heading. Do not add another
+        # blank if the template/output already has one immediately before it.
+        previous = heading_element.getprevious()
+        previous_is_blank = False
+        if previous is not None and previous.tag.rsplit("}", 1)[-1] == "p":
+            previous_text = "".join(
+                node.text or ""
+                for node in previous.xpath(".//w:t")
+            ).strip()
+            previous_has_structure = bool(
+                previous.xpath(".//w:drawing")
+                or previous.xpath(".//w:pict")
+                or previous.xpath(".//w:object")
+                or previous.xpath(".//w:br")
+                or previous.xpath(".//w:sectPr")
+            )
+            previous_is_blank = not previous_text and not previous_has_structure
+
+        if not previous_is_blank:
+            from docx.oxml import OxmlElement
+            heading_element.addprevious(OxmlElement("w:p"))
+
+    # Capture only the VML divider paragraphs that occur AFTER the Fannie
+    # interview heading. The section is trailing, so this avoids touching any
+    # graphical content elsewhere in the document.
+    divider_elements = []
+    if heading_element is not None:
+        current = heading_element.getnext()
+        while current is not None:
+            if (
+                current.tag.rsplit("}", 1)[-1] == "p"
+                and current.xpath(".//w:pict")
+            ):
+                divider_elements.append(current)
+            current = current.getnext()
+
+    # Remove template Q/A slots beyond the number of complete pairs. The normal
+    # replacement pass will fill the retained slots.
     for paragraph in list(doc.paragraphs):
         matches = re.findall(r"\{\{([QA])(\d)\}\}", str(paragraph.text or ""), flags=re.I)
         if not matches:
@@ -5517,6 +5582,18 @@ def _prepare_fannie_interview_section(doc, mapping):
                 delete_paragraph(paragraph)
             except Exception:
                 pass
+
+    # Five template pairs use four separators. For N displayed pairs, keep
+    # exactly N-1 separators: one between each adjacent Q/A pair and never one
+    # below the final answer.
+    divider_keep = max(0, keep_count - 1)
+    for element in divider_elements[divider_keep:]:
+        try:
+            parent = element.getparent()
+            if parent is not None:
+                parent.remove(element)
+        except Exception:
+            pass
 
 
 def _prepare_bnsf_interview_section(doc, mapping):
