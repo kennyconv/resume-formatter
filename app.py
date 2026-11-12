@@ -1,4 +1,4 @@
-# v60 FANNIE DATE NORMALIZATION + SHARED-ASSIGNMENT STRICT-QA RECONCILIATION
+# v61 FANNIE STRATEGIC TAILORING + SHARED-ASSIGNMENT PRESENTATION STABILIZATION
 # v57 FANNIE STABILIZATION BUILD - AUTHORITATIVE NAME INPUT + PROVEN SKILLS STYLE + SHARED-ASSIGNMENT COLLAPSE
 # Preserves v55/v56 production resilience, diagnostics, blank-QA removal, and PDF boundary cleanup while making Fannie candidate identity deterministic and restoring the proven skills-table presentation.
 # resume ingestion and source fidelity. Historical resume content is treated as
@@ -3100,7 +3100,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v60"
+_FORMATTER_BUILD_VERSION = "v61"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -3941,12 +3941,23 @@ def _fannie_format_month_endpoint(point):
 def _fannie_collapse_duplicate_shared_assignments(experience):
     """
     Fannie-only cleanup for one end-client/title/shared-bullet assignment represented
-    by multiple adjacent staffing-vendor/date lines in the source. Collapse only when:
+    by multiple adjacent staffing-vendor/date lines in the source.
+
+    Normal case:
       * company is the same,
       * title is the same,
-      * the full bullet block is exactly the same after source normalization, and
+      * the full nonempty bullet block is exactly the same after source normalization, and
       * the dated periods overlap or touch.
-    This does not merge merely similar roles.
+
+    v61 also handles a source-faithful shared-assignment extraction shape where
+    two adjacent records have the same company/title and genuinely
+    overlapping dates, but the shared responsibility block is attached to only ONE of
+    the records. In that narrow asymmetric-bullet case, collapse the records, keep the
+    one exact nonempty bullet block, and union the dates.
+
+    Safety: asymmetric-bullet records must actually OVERLAP (not merely touch), so two
+    sequential same-title jobs are not collapsed just because one source entry lacks
+    bullets. Merely similar roles are never merged.
     """
     roles = [copy.deepcopy(r) for r in (experience or []) if isinstance(r, dict)]
     if len(roles) < 2:
@@ -3970,10 +3981,12 @@ def _fannie_collapse_duplicate_shared_assignments(experience):
         same_title = _normalize_source_match(clean_job_title(prior.get('Title', ''))) == _normalize_source_match(clean_job_title(role.get('Title', '')))
         prior_bullets = bullets_key(prior)
         role_bullets = bullets_key(role)
-        same_bullets = bool(prior_bullets) and prior_bullets == role_bullets
+        both_have_bullets = bool(prior_bullets) and bool(role_bullets)
+        same_bullets = both_have_bullets and prior_bullets == role_bullets
+        asymmetric_bullets = bool(prior_bullets) ^ bool(role_bullets)
         same_env = _normalize_source_match(prior.get('Environment', '')) == _normalize_source_match(role.get('Environment', ''))
 
-        if not (same_company and same_title and same_bullets and same_env):
+        if not (same_company and same_title and same_env and (same_bullets or asymmetric_bullets)):
             result.append(role)
             continue
 
@@ -3987,15 +4000,28 @@ def _fannie_collapse_duplicate_shared_assignments(experience):
         s2, e2 = r2
         s1n, e1n = s1[0] * 12 + s1[1], e1[0] * 12 + e1[1]
         s2n, e2n = s2[0] * 12 + s2[1], e2[0] * 12 + e2[1]
-        if max(s1n, s2n) > min(e1n, e2n) + 1:
+
+        # Identical nonempty bullet blocks may overlap OR touch. When only one
+        # duplicate record carries the shared bullets, require a true overlap.
+        # That is the strong structural signal that both staffing/vendor lines
+        # describe one continuous assignment rather than sequential same-title jobs.
+        if same_bullets:
+            mergeable_dates = max(s1n, s2n) <= min(e1n, e2n) + 1
+        else:
+            mergeable_dates = max(s1n, s2n) <= min(e1n, e2n)
+        if not mergeable_dates:
             result.append(role)
             continue
 
         start = s1 if s1n <= s2n else s2
         end = e1 if e1n >= e2n else e2
         prior['Dates'] = f"{_fannie_format_month_endpoint(start)} - {_fannie_format_month_endpoint(end)}"
-        # Keep prior company/title/bullets exactly once. Any nonempty metadata that
-        # differs would have prevented the merge above.
+
+        # In the asymmetric extraction shape, preserve the exact nonempty shared
+        # responsibility block once on the collapsed assignment. No wording is
+        # synthesized, merged, or rewritten.
+        if asymmetric_bullets and not prior_bullets and role_bullets:
+            prior['Bullets'] = copy.deepcopy(role.get('Bullets', []))
 
     return result
 
@@ -5987,6 +6013,8 @@ def fannie_mae_app():
 
                     # v58 Fannie presentation cleanup, source-supported only:
                     # 1) union overlapping/touching date ranges for one shared assignment;
+                    # v61 also collapses the asymmetric duplicate-vendor shape where only one
+                    # overlapping record carries the exact shared bullet block.
                     # 2) collapse duplicate shared-vendor representations; and
                     # 3) remove broad same-company career umbrella rows when the detailed
                     #    dated subroles are already present, preserving the umbrella summary
@@ -6051,19 +6079,36 @@ def fannie_mae_app():
                               reinforce experience already supported by the resume. It must not create
                               unsupported candidate experience.
 
-                            HIRING-TEAM EMPHASIS:
-                            1. SPOTLIGHT CALL TRANSCRIPT = highest-priority manager emphasis.
-                            2. FIELDGLASS CHAT NOTES = next-highest manager/MSP emphasis.
-                            3. OFFICIAL JOB DESCRIPTION = broad requirements and ATS terminology.
+                            HIRING-TEAM EMPHASIS / CONFLICT RULES - DO NOT FLATTEN THESE INPUTS:
+                            1. SPOTLIGHT CALL TRANSCRIPT = HIGHEST PRIORITY for the hiring manager's
+                               current emphasis, clarifications, must-haves, tradeoffs, and what they
+                               actually want to see. If it updates or conflicts with lower-priority
+                               role information, follow the Spotlight emphasis.
+                            2. FIELDGLASS CHAT NOTES = NEXT PRIORITY. Treat manager/MSP updates here as
+                               refinements to, additions to, or overrides of the baseline JD when they
+                               are relevant. Do not ignore a meaningful Chat Note just because the
+                               generic JD says something broader or older.
+                            3. OFFICIAL JOB DESCRIPTION = BASELINE REQUIREMENTS + BROAD FIELDGLASS/ATS
+                               TERMINOLOGY. Use it comprehensively for requirements and keyword/phrase
+                               coverage except where a higher-priority Spotlight/Chat update changes the
+                               current hiring emphasis or explicitly supersedes a baseline detail.
 
                             ATS / TERMINOLOGY COVERAGE:
                             - The Official Job Description remains the primary source for broad
-                              Fieldglass keyword/phrase coverage.
+                              Fieldglass keyword/phrase coverage that has NOT been superseded above.
                             - Spotlight/Chat Notes should change emphasis and prioritization without
-                              needlessly erasing important JD concepts unless they contradict them.
-                            - Preserve exact JD terminology when it is useful AND genuinely supported
-                              by the candidate's resume/Q&A.
-                            - Never turn manager/JD language into candidate history.
+                              needlessly erasing still-valid JD concepts.
+                            - Preserve exact JD/manager terminology when it is useful AND genuinely
+                              supported by the candidate's resume/Q&A.
+                            - Never turn Spotlight, Chat Note, or JD language into candidate history.
+
+                            TWO SEQUENTIAL BUSINESS GOALS:
+                            1. SHORTLIST: maximize the chance of surviving Fieldglass/MSP review by
+                               using the strongest truthful candidate-supported coverage of the actual
+                               prioritized requirements and high-value terminology.
+                            2. INTERVIEW: once the match is obvious, give the hiring manager the most
+                               compelling concise evidence that the candidate has already performed
+                               comparable work. Evidence selection matters more than generic sales copy.
 
                             ========================
                             THE FANNIE NARRATIVE BLUEPRINT - EXACTLY 4 SENTENCES
@@ -6092,12 +6137,26 @@ def fannie_mae_app():
                             - Show the connection through evidence, not generic "fit" language.
 
                             SUMMARY3 - THE EXECUTION & IMPACT / PROOF
-                            - Explain HOW the candidate executed the relevant work AND WHY IT MATTERED.
+                            - Explain HOW the candidate executed relevant work AND WHY IT MATTERED.
+                            - Treat the four sentences as an EVIDENCE PORTFOLIO, not four chances to
+                              describe the same project. After SUMMARY2 establishes the strongest proof,
+                              SUMMARY3 should normally add a DIFFERENT high-value evidence cluster when
+                              the resume provides one: another major requirement, domain, employer/client,
+                              delivery stage, issue-resolution/support capability, or meaningful impact.
+                            - Reuse the same employer/project in SUMMARY2 and SUMMARY3 only when it truly
+                              contains the two strongest nonredundant proofs and no other role offers
+                              comparable evidence for another prioritized requirement.
+                            - If the candidate has PRIOR FANNIE MAE EXPERIENCE that directly overlaps
+                              this requisition's work/domain, treat that as a high-value human-review
+                              differentiator and strongly consider using it once in SUMMARY2 or SUMMARY3.
+                              Do not mention prior Fannie experience merely because the employer name
+                              matches when the old work is not actually relevant.
                             - Include tools/methodologies naturally when useful, but do not write a
                               comma-separated inventory.
                             - Emphasize scale, complexity, operational ownership, implementation,
-                              testing/support, regulatory/business significance, measurable impact, or
-                              another source-supported proof point.
+                              testing/support, issue resolution, cross-functional execution,
+                              regulatory/business significance, measurable impact, or another
+                              source-supported proof point.
                             - Do not simply list activities. This sentence must add meaning.
 
                             SUMMARY4 - THE EVIDENCE-TO-ROLE BRIDGE
@@ -6165,7 +6224,19 @@ def fannie_mae_app():
                             - Avoid repeating the same parenthetical detail/tool across rows unless genuinely unavoidable.
                             - Use up to 6 supporting details, but use fewer when that makes the row cleaner.
                             - Prefer demonstrated work-history evidence over standalone skill-list mentions.
-                            - Preserve exact JD terminology where supported by the candidate.
+                            - Preserve exact JD/manager terminology where supported by the candidate.
+                            - For the PRIMARY must-have competency, prefer the exact high-value JD/manager
+                              noun phrase as the category when the resume clearly supports the same concept.
+                              Do not paraphrase a supported phrase into a weaker synonym merely for variety.
+                            - Treat each row and parenthetical slot as scarce screening space. Before final
+                              output, compare the four rows against the prioritized requirements and ask:
+                              "Is a major candidate-supported requirement missing while a lower-value,
+                              redundant, or generic detail occupies this space?" If yes, replace the
+                              lower-value detail with the stronger supported requirement.
+                            - Useful coverage dimensions can include the primary platform/technology,
+                              domain/business expertise, BA/product/delivery capability, methodology,
+                              testing/support/issue resolution, and manager-emphasized differentiators.
+                              Choose the best four, not mechanically one from every category.
                             - If fewer than four defensible relevant competencies exist, leave unused fields
                               blank rather than fabricating filler.
 
@@ -6188,6 +6259,15 @@ def fannie_mae_app():
                             - Use dated work history and explicit source-supported tenure statements.
                             - "current" means the competency is demonstrated in the current ongoing role.
                               Otherwise use the most recent supported four-digit year.
+                            - When multiple truthful competency groupings are possible, prefer the grouping
+                              that best represents BOTH relevance and the candidate's most recent MATERIAL
+                              experience. A broader competency category may carry a later last-used year only
+                              when that broader category genuinely continued through that year.
+                            - The displayed last-used year applies to the COMPETENCY CATEGORY AS A WHOLE.
+                              Parenthetical examples may come from different periods, but at least material
+                              evidence for the overall category must exist through the stated last-used year.
+                            - NEVER make a narrow technology/activity look newer by bundling it with later
+                              unrelated work. Never extend recency merely to improve screening optics.
                             - Valid formats only: "X+ years, current", "X+ years, YYYY",
                               "<1 year, current", or "<1 year, YYYY".
                             - NEVER return a dangling value such as "14+ years,".
@@ -6198,6 +6278,19 @@ def fannie_mae_app():
                             - Never inflate ownership, proficiency, tenure, recency, metrics, or scope.
                             - Before returning JSON, verify every candidate claim and every skill detail
                               against the resume/Q&A.
+
+                            SILENT PRE-OUTPUT SELECTION AUDIT - DO NOT PRINT THE AUDIT:
+                            A. Re-read the inputs using the hierarchy Spotlight > Chat Notes > JD.
+                            B. Identify the highest-value candidate-supported requirements for SHORTLISTING.
+                            C. Identify the strongest concrete proof points for the HIRING MANAGER.
+                            D. Check whether SUMMARY2 and SUMMARY3 unnecessarily spend both sentences on
+                               one evidence cluster while another major supported differentiator is omitted.
+                            E. If relevant prior Fannie experience exists, verify that it received appropriate
+                               consideration rather than being buried solely because it is older.
+                            F. Check the four skill rows for exact supported high-value terminology, coverage,
+                               redundancy, and defensible recency.
+                            G. Replace weaker/redundant content with stronger supported evidence BEFORE
+                               returning the JSON. Do not add any unsupported claim to improve coverage.
 
                             OUTPUT FORMAT:
                             {{
@@ -6336,8 +6429,19 @@ def fannie_mae_app():
                                 - Do not mention location, rate, availability, or work authorization.
                                 - Preserve exact useful JD terminology only when candidate-supported.
 
-                                HIRING PRIORITY: Spotlight > Fieldglass Chat Notes > Official JD.
-                                ATS TERMINOLOGY: Official JD remains the broad keyword/phrase source.
+                                INPUT HIERARCHY (PRESERVE IT): Spotlight Call Transcript > Fieldglass
+                                Chat Notes > Official JD for current hiring emphasis. Chat Notes may update
+                                or override the baseline JD when relevant; the Official JD remains the broad
+                                requirements/Fieldglass terminology source for still-valid concepts.
+
+                                SELECTION QUALITY:
+                                - Optimize first for truthful shortlist coverage, then for hiring-manager proof.
+                                - Treat SUMMARY2 + SUMMARY3 as an evidence portfolio. Prefer two different
+                                  high-value evidence clusters when the source supports them instead of
+                                  redundantly spending both sentences on the same project/employer.
+                                - Relevant prior Fannie Mae experience is a high-value differentiator and
+                                  should be considered for SUMMARY2/3 when it directly overlaps the target work.
+                                - Preserve exact high-value JD/manager terminology when candidate-supported.
 
                                 OFFICIAL JOB DESCRIPTION:
                                 {Job_Description}
@@ -6401,13 +6505,23 @@ def fannie_mae_app():
                                 - Professional Title Case for generic phrases; preserve canonical tool/acronym casing.
                                 - Avoid repeated parenthetical details across rows unless unavoidable.
                                 - Use only candidate-supported skills/details.
-                                - Preserve exact JD terminology when genuinely supported.
+                                - Preserve exact JD/manager terminology when genuinely supported; for the
+                                  primary must-have category, prefer the exact supported high-value noun phrase
+                                  over a weaker synonym.
+                                - Before returning, perform a coverage audit: if a major supported requirement
+                                  is missing while a lower-value/redundant detail occupies scarce space, swap it.
                                 - Give the best defensible skill-specific tenure without upward/downward bias.
+                                - Recency belongs to the competency category as a whole. A broader truthful
+                                  category may use a later year only when material evidence for that broader
+                                  competency truly continues through that year. Never make a narrow skill look
+                                  newer by bundling it with unrelated later work.
                                 - Every YEARS value ends in "current" or a four-digit last-used year.
                                 - Do not invent JD-only experience and do not use em dashes.
 
-                                HIRING PRIORITY: Spotlight > Fieldglass Chat Notes > Official JD.
-                                ATS TERMINOLOGY: Official JD remains the broad keyword/phrase source.
+                                INPUT HIERARCHY (PRESERVE IT): Spotlight Call Transcript > Fieldglass
+                                Chat Notes > Official JD for current hiring emphasis. Chat Notes may update
+                                or override the baseline JD when relevant; the Official JD remains the broad
+                                requirements/Fieldglass terminology source for still-valid concepts.
 
                                 OFFICIAL JOB DESCRIPTION:
                                 {Job_Description}
