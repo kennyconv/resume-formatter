@@ -1,3 +1,5 @@
+# v64 AUTHORITATIVE RECRUITER-ENTERED NAMES + MULTILINE LINK FIELDS
+# v63 FREDDIE PRECISION TAILORING + EDUCATION FIDELITY + STRUCTURED VNDLY SKILLS
 # v62 FANNIE INTERVIEW Q&A SPACING + DYNAMIC DIVIDERS
 # v61 FANNIE STRATEGIC TAILORING + SHARED-ASSIGNMENT PRESENTATION STABILIZATION
 # v57 FANNIE STABILIZATION BUILD - AUTHORITATIVE NAME INPUT + PROVEN SKILLS STYLE + SHARED-ASSIGNMENT COLLAPSE
@@ -2546,6 +2548,90 @@ def _remove_section_level_dates_from_condensed_roles(experience, blocks, role_an
             role['Dates'] = ''
 
 
+def _freddie_strip_trailing_graduation_year(degree):
+    """Freddie-only helper for degree/year source-fidelity comparison."""
+    value = re.sub(r"\s+", " ", str(degree or "")).strip()
+    return re.sub(
+        r"(?:\s*[-,]?\s*)?\(?\s*(?:19|20)\d{2}\s*\)?\s*$",
+        "",
+        value,
+        flags=re.I,
+    ).strip(" ,-()")
+
+
+def _freddie_education_section_ranges(blocks):
+    """Recognize Freddie Education headings, including EDUCATION/CERTIFICATION."""
+    ranges = []
+    heading_re = re.compile(
+        r"^\s*(?:education|academic(?: background)?)(?:\s*(?:/|&|and|-)\s*certifications?)?\s*:?\s*$",
+        flags=re.I,
+    )
+    stop_re = re.compile(
+        r"^\s*(?:professional summary|summary|profile|core competencies|competencies|"
+        r"technical skills|skills|professional experience|work experience|employment history|"
+        r"career history|additional experience|earlier experience|prior experience|previous experience|"
+        r"awards?|references?|military service|projects?)\b",
+        flags=re.I,
+    )
+    for idx, block in enumerate(blocks or []):
+        heading = str(block.get("text", "") or "").strip()
+        if not heading_re.match(heading):
+            continue
+        end = len(blocks)
+        for j in range(idx + 1, len(blocks)):
+            nxt = str(blocks[j].get("text", "") or "").strip()
+            if stop_re.search(nxt):
+                end = j
+                break
+        ranges.append((idx + 1, end))
+    return ranges
+
+
+def _freddie_education_entry_source_supported(school, degree, blocks, raw_text=""):
+    """
+    Verify Freddie education when degree, school, and year are interleaved on one
+    source line, e.g. Bachelor of Engineering (University of Madras) -1997.
+    """
+    school = clean_school(school)
+    degree = re.sub(r"\s+", " ", str(degree or "")).strip()
+    school_norm = _normalize_source_match(school)
+    degree_core = _freddie_strip_trailing_graduation_year(degree)
+    degree_core_norm = _normalize_source_match(degree_core)
+    years = re.findall(r"\b(?:19|20)\d{2}\b", degree)
+    year = years[-1] if years else ""
+
+    if not school_norm and not degree_core_norm:
+        return False
+    if degree_core and not _has_formal_academic_credential_signal(degree_core):
+        return False
+
+    def context_supports(context_text):
+        context_norm = _normalize_source_match(context_text)
+        school_ok = (not school_norm) or school_norm in context_norm
+        degree_ok = (not degree_core_norm) or degree_core_norm in context_norm
+        year_ok = (not year) or year in str(context_text or "")
+        return school_ok and degree_ok and year_ok
+
+    for start, end in _freddie_education_section_ranges(blocks):
+        section_text = " ".join(str(blocks[i].get("text", "") or "") for i in range(start, end))
+        if context_supports(section_text):
+            return True
+
+    for idx, block in enumerate(blocks or []):
+        block_text = str(block.get("text", "") or "")
+        block_norm = _normalize_source_match(block_text)
+        if school_norm and school_norm not in block_norm and degree_core_norm and degree_core_norm not in block_norm:
+            continue
+        window_text = " ".join(
+            str(blocks[j].get("text", "") or "")
+            for j in range(max(0, idx - 1), min(len(blocks), idx + 2))
+        )
+        if context_supports(window_text) and _has_formal_academic_credential_signal(window_text):
+            return True
+
+    return bool(raw_text and context_supports(raw_text))
+
+
 def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatter"):
     """
     Fail-closed historical-resume verification used by every client.
@@ -2592,14 +2678,22 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
                 continue
             school = clean_school(item.get('School', ''))
             degree = str(item.get('Degree', '') or '').strip()
-            if school and not _source_supports_display_value(school, blocks):
+            is_freddie = str(client_name or '').strip().casefold() == 'freddie mac'
+            freddie_education_ok = (
+                is_freddie
+                and _freddie_education_entry_source_supported(
+                    school, degree, blocks, raw_text=raw_text
+                )
+            )
+            if school and not _source_supports_display_value(school, blocks) and not freddie_education_ok:
                 raise RuntimeError(
                     f"{client_name} source-fidelity check could not verify school name: {school}"
                 )
             if degree and not _source_supports_display_value(degree, blocks):
-                # Degree text is sometimes split across adjacent Word runs/blocks. Allow
-                # near-exact support in the full raw text before failing.
-                if _normalize_source_match(degree) not in _normalize_source_match(raw_text):
+                if (
+                    _normalize_source_match(degree) not in _normalize_source_match(raw_text)
+                    and not freddie_education_ok
+                ):
                     raise RuntimeError(
                         f"{client_name} source-fidelity check could not verify degree: {degree}"
                     )
@@ -3101,7 +3195,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v62"
+_FORMATTER_BUILD_VERSION = "v64"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -4549,11 +4643,23 @@ def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_erro
                 continue
             school = clean_school(item.get("School", ""))
             degree = str(item.get("Degree", "") or "").strip()
-            school_ok = (not school) or _source_supports_display_value(school, blocks)
+            is_freddie = str(client_name or "").strip().casefold() == "freddie mac"
+            freddie_education_ok = (
+                is_freddie
+                and _freddie_education_entry_source_supported(
+                    school, degree, blocks, raw_text=raw_text
+                )
+            )
+            school_ok = (
+                (not school)
+                or _source_supports_display_value(school, blocks)
+                or freddie_education_ok
+            )
             degree_ok = (
                 (not degree)
                 or _source_supports_display_value(degree, blocks)
                 or _normalize_source_match(degree) in _normalize_source_match(raw_text)
+                or freddie_education_ok
             )
             if not (school_ok and degree_ok):
                 warnings.append(
@@ -5878,7 +5984,7 @@ def fannie_mae_app():
         Remote_or_Onsite = st.selectbox("Remote or Onsite", ["Remote", "Onsite"], index=1, key="fm_rem")
     with col2:
         Former_FM = st.selectbox("Former FM", ["Y - Per CRC, this candidate is eligible for rehire", "N"], index=1, key="fm_form")
-        LinkedIn_GitHub_Portfolio_Link = st.text_input("LinkedIn/GitHub/Portfolio Link", key="fm_link")
+        LinkedIn_GitHub_Portfolio_Link = st.text_area("LinkedIn/GitHub/Portfolio Link", height=68, key="fm_link")
 
     st.header("🎤 Supplier Technical Interview Results")
     # Row 1
@@ -6715,6 +6821,7 @@ FREDDIE_VNDLY_SKILLS_FILENAME = "freddie_vndly_skills_curated.json"
 # when the JSON is missing one of them, preventing a stale/incomplete local
 # catalogue from suppressing a genuinely supported shortlist skill.
 FREDDIE_CONFIRMED_CORE_VNDLY_SKILLS = [
+    # Established Freddie catalogue values from prior requisitions.
     "Agile Delivery",
     "Automation",
     "Business Analysis",
@@ -6732,7 +6839,58 @@ FREDDIE_CONFIRMED_CORE_VNDLY_SKILLS = [
     "SharePoint",
     "Stakeholder Management",
     "User Story",
+
+    # v63: confirmed modern AI / Job 1520-era Freddie VNDLY values.
+    "1–2 years of experience with containerization and orchestration technologies (e.g., Docker, Podman, Kubernetes)",
+    "2-4 years of experience in shell scripting, python, perl etc",
+    "Agentic AI",
+    "Agent-to-Agent / A2A",
+    "Amazon Q",
+    "Apache Spark",
+    "AWS Bedrock",
+    "AWS Bedrock (strongly preferred)",
+    "AWS cloud platforms",
+    "AWS EKS",
+    "AWS Kiro",
+    "AWS KnowledgeBase/Elastic",
+    "CI/CD best practices",
+    "Claude Code, Amazon Bedrock, Multi-Model LLM, AI Agents, AI Chatbots",
+    "Deep learning architectures",
+    "Docker",
+    "Experience in financial accounting, fixed income, and capital market",
+    "GenAI architectural patterns and Evaluation Framework",
+    "GenAI architectural patterns and Evaluation Frameworks (DeepEval)",
+    "Git",
+    "Kubernetes",
+    "LangChain",
+    "LangGraph",
+    "LLM/Generative AI Tools",
+    "ML algorithms",
+    "ML Ops tools",
+    "MLOps tools (MLflow, Kubeflow, Weights & Biases)",
+    "OpenAI",
+    "PySpark",
+    "Python and ML libraries (Transformers, LangChain, etc.)",
+    "SageMaker",
+    "Spec-Based Development",
 ]
+
+
+# Long requisition-specific values should be selectable when Freddie actually
+# attaches them to a req, but should not become generic supplemental suggestions
+# on unrelated roles merely because the fallback catalogue knows they exist.
+FREDDIE_EXACT_ONLY_CONFIRMED_VNDLY_SKILLS = {
+    "1–2 years of experience with containerization and orchestration technologies (e.g., Docker, Podman, Kubernetes)",
+    "2-4 years of experience in shell scripting, python, perl etc",
+    "AWS Bedrock (strongly preferred)",
+    "Experience in financial accounting, fixed income, and capital market",
+    "GenAI architectural patterns and Evaluation Frameworks (DeepEval)",
+}
+
+FREDDIE_COMPOUND_REVIEW_CONFIRMED_VNDLY_SKILLS = {
+    "Claude Code, Amazon Bedrock, Multi-Model LLM, AI Agents, AI Chatbots",
+    "MLOps tools (MLflow, Kubeflow, Weights & Biases)",
+}
 
 
 @st.cache_data(show_spinner=False)
@@ -6789,11 +6947,18 @@ def fred_load_vndly_skill_catalog(path=FREDDIE_VNDLY_SKILLS_FILENAME):
             key = fred_normalize_skill_name(skill_name)
             if key in existing:
                 continue
+            if skill_name in FREDDIE_EXACT_ONLY_CONFIRMED_VNDLY_SKILLS:
+                fallback_tier = "legacy_free_text"
+            elif skill_name in FREDDIE_COMPOUND_REVIEW_CONFIRMED_VNDLY_SKILLS:
+                fallback_tier = "compound_review"
+            else:
+                fallback_tier = "canonical_preferred"
+
             cleaned.append(
                 {
                     "id": None,
                     "skill_name": skill_name,
-                    "catalog_tier": "canonical_preferred",
+                    "catalog_tier": fallback_tier,
                 }
             )
             existing.add(key)
@@ -7926,6 +8091,74 @@ def fred_extract_work_history_text(raw_resume_text):
     return work
 
 
+def fred_modern_ai_skill_evidence_groups(skill_name):
+    """
+    High-confidence evidence groups for modern Freddie AI catalogue labels.
+
+    Each outer item is a required concept; any alias inside that item may satisfy
+    the concept. This lets long structured VNDLY labels map to the candidate's
+    actual terminology without treating the JD itself as candidate evidence.
+    """
+    key = fred_normalize_skill_name(skill_name)
+    groups = {
+        "2-4 years of experience in shell scripting, python, perl etc": [["python", "shell script", "shell scripting", "perl"]],
+        "apache spark": [["apache spark", "spark", "pyspark"]],
+        "aws bedrock": [["aws bedrock", "amazon bedrock", "bedrock"]],
+        "aws bedrock (strongly preferred)": [["aws bedrock", "amazon bedrock", "bedrock"]],
+        "aws cloud platforms": [["aws", "amazon web services"]],
+        "aws knowledgebase/elastic": [["bedrock knowledge base", "bedrock knowledge bases", "aws knowledgebase", "aws knowledge base", "elasticsearch", "elastic search"]],
+        "ci/cd best practices": [["ci/cd", "continuous integration", "continuous deployment", "jenkins", "gitlab ci", "codepipeline"]],
+        "deep learning architectures": [["deep learning", "pytorch", "tensorflow", "keras"]],
+        "genai architectural patterns and evaluation frameworks (deepeval)": [
+            ["genai", "generative ai", "llm", "agentic ai"],
+            ["evaluation", "golden dataset", "baseline input", "guardrail"],
+            ["deepeval", "deep eval"],
+        ],
+        "genai architectural patterns and evaluation framework": [
+            ["genai", "generative ai", "llm", "agentic ai"],
+            ["evaluation", "golden dataset", "baseline input", "guardrail"],
+        ],
+        "llm/generative ai tools": [["llm", "generative ai", "genai", "bedrock", "langchain", "claude"]],
+        "ml algorithms": [["machine learning", "supervised learning", "unsupervised learning", "reinforcement learning", "deep learning"]],
+        "openai": [["openai", "openai api", "azure openai"]],
+        "python and ml libraries (transformers, langchain, etc.)": [
+            ["python"],
+            ["transformers", "hugging face", "langchain", "pytorch", "tensorflow", "keras", "scikit"],
+        ],
+        "spec-based development": [["spec-based", "spec driven", "spec-driven", "kiro spec", "kiro specs", "requirements, design and tasks"]],
+        "1–2 years of experience with containerization and orchestration technologies (e.g., docker, podman, kubernetes)": [["docker", "kubernetes", "eks", "containerized", "containerization"]],
+        "experience in financial accounting, fixed income, and capital market": [["financial", "fixed income", "capital market", "capital markets", "securities", "trading", "treasury", "mortgage backed securities", "mortgage-backed securities"]],
+        "ml ops tools": [["mlflow", "ml flow", "kubeflow", "weights & biases", "mlops"]],
+        "mlops tools (mlflow, kubeflow, weights & biases)": [["mlflow", "ml flow", "kubeflow", "weights & biases", "mlops"]],
+        "aws kiro": [["aws kiro", "kiro"]],
+        "amazon q": [["amazon q", "amazon q developer"]],
+        "langgraph": [["langgraph"]],
+        "langchain": [["langchain"]],
+        "agentic ai": [["agentic ai", "multi-agent", "multi agent", "agentic workflow", "agentic workflows"]],
+        "agent-to-agent / a2a": [["agent-to-agent", "agent to agent", "a2a"]],
+        "pyspark": [["pyspark"]],
+        "aws eks": [["aws eks", "amazon eks", "eks"]],
+        "docker": [["docker"]],
+        "kubernetes": [["kubernetes"]],
+        "sagemaker": [["sagemaker"]],
+        "claude code, amazon bedrock, multi-model llm, ai agents, ai chatbots": [
+            ["claude code"],
+            ["amazon bedrock", "aws bedrock", "bedrock"],
+            ["ai agent", "ai agents", "agentic ai", "multi-agent", "multi agent"],
+            ["claude", "llama", "openai", "multi-model", "multiple models"],
+        ],
+    }
+    return groups.get(key, [])
+
+
+def fred_evidence_text_satisfies_groups(text_value, groups):
+    text_value = str(text_value or "")
+    return bool(groups) and all(
+        fred_text_contains_any(text_value, aliases)
+        for aliases in groups
+    )
+
+
 def fred_skill_work_history_evidence(skill_name, raw_resume_text):
     """
     Conservative deterministic check for whether a VNDLY skill is evidenced in
@@ -7945,6 +8178,14 @@ def fred_skill_work_history_evidence(skill_name, raw_resume_text):
     key = fred_normalize_skill_name(skill)
 
     if not skill:
+        return 0
+
+    modern_groups = fred_modern_ai_skill_evidence_groups(skill)
+    if modern_groups:
+        if fred_evidence_text_satisfies_groups(work, modern_groups):
+            return 2
+        if fred_evidence_text_satisfies_groups(full_resume, modern_groups):
+            return 1
         return 0
 
     alias_map = {
@@ -8329,6 +8570,10 @@ def fred_vndly_skill_family(skill_name):
             "github",
             "gitlab",
         },
+        "docker_label": {
+            "docker",
+            "docker (software)",
+        },
         "test_automation": {
             "automation",
             "automation testing",
@@ -8566,6 +8811,41 @@ def fred_skill_aliases_for_requirement(skill_name):
         "software testing": ["software testing", "functional testing", "regression testing", "system testing"],
         "finance": ["finance background", "finance", "financial"],
         "mortgage industry": ["mortgage", "appraisal", "collateral", "uad", "underwriting"],
+        "2-4 years of experience in shell scripting, python, perl etc": ["shell scripting", "shell scripts", "python", "perl"],
+        "apache spark": ["apache spark", "spark", "pyspark"],
+        "aws bedrock": ["aws bedrock", "amazon bedrock", "bedrock"],
+        "aws bedrock (strongly preferred)": ["aws bedrock", "amazon bedrock", "bedrock"],
+        "aws cloud platforms": ["aws cloud", "aws", "amazon web services"],
+        "aws knowledgebase/elastic": ["aws knowledgebase", "aws knowledge base", "bedrock knowledge base", "bedrock knowledge bases", "elasticsearch"],
+        "ci/cd best practices": ["ci/cd", "continuous integration", "continuous deployment", "jenkins", "gitlab ci"],
+        "deep learning architectures": ["deep learning", "pytorch", "tensorflow", "keras"],
+        "genai architectural patterns and evaluation frameworks (deepeval)": ["genai architectural", "evaluation framework", "deepeval"],
+        "genai architectural patterns and evaluation framework": ["genai architectural", "evaluation framework", "golden datasets", "baseline inputs", "guardrails"],
+        "llm/generative ai tools": ["llm", "generative ai", "genai"],
+        "ml algorithms": ["ml algorithms", "machine learning", "supervised learning", "unsupervised learning", "reinforcement learning"],
+        "openai": ["openai", "openai api", "azure openai"],
+        "python and ml libraries (transformers, langchain, etc.)": ["python", "transformers", "langchain", "pytorch", "tensorflow"],
+        "spec-based development": ["spec-based development", "spec driven", "spec-driven", "kiro specs", "spec framework", "spec kit"],
+        "1–2 years of experience with containerization and orchestration technologies (e.g., docker, podman, kubernetes)": ["containerization", "orchestration", "docker", "podman", "kubernetes"],
+        "experience in financial accounting, fixed income, and capital market": [
+            "financial accounting", "fixed income", "capital market", "capital markets",
+            "financial", "securities", "trading", "treasury", "mortgage backed securities",
+            "mortgage-backed securities"
+        ],
+        "ml ops tools": ["ml ops", "mlops", "mlflow", "kubeflow", "weights & biases"],
+        "mlops tools (mlflow, kubeflow, weights & biases)": ["mlops", "mlflow", "kubeflow", "weights & biases"],
+        "aws kiro": ["aws kiro", "kiro"],
+        "amazon q": ["amazon q", "amazon q developer"],
+        "langgraph": ["langgraph"],
+        "langchain": ["langchain"],
+        "agentic ai": ["agentic ai", "agentic workflow", "multi-agent", "multi agent"],
+        "agent-to-agent / a2a": ["agent-to-agent", "agent to agent", "a2a"],
+        "pyspark": ["pyspark"],
+        "aws eks": ["aws eks", "amazon eks", "eks"],
+        "docker": ["docker"],
+        "kubernetes": ["kubernetes"],
+        "sagemaker": ["sagemaker"],
+        "claude code, amazon bedrock, multi-model llm, ai agents, ai chatbots": ["claude code", "amazon bedrock", "ai agents", "ai chatbots", "multi-model llm"],
     }
     return aliases.get(key, [key])
 
@@ -8863,6 +9143,10 @@ def fred_apply_vndly_redundancy_control(
         if not name or key in selected_keys:
             return False
 
+        category = str(item.get("source_category", "") or "").strip().lower()
+        if category in {"exact_structured_must", "exact_structured_nice"}:
+            return True
+
         family = fred_vndly_skill_family(name)
         selected_names = {
             fred_normalize_skill_name(existing.get("skill_name", ""))
@@ -8881,6 +9165,7 @@ def fred_apply_vndly_redundancy_control(
             "spring": 1,
             "relational_database": 1,
             "source_control": 1,
+            "docker_label": 1,
             "test_automation": 1,
             "finance_generic": 1,
             "data_quality_validation": 1,
@@ -8943,6 +9228,8 @@ def fred_additional_skill_role_relevance(skill_name, structured_req, vndly_conte
         "business risk management": ["risk", "issue tracking", "escalation", "program health"],
         "snowflake": ["snowflake", "data warehouse", "data engineering", "data platform", "sql database"],
         "git": ["source control", "version control", "software development", "developer", "engineering"],
+        "amazon q": ["coding agent", "coding agents", "coding assistant", "coding assistants", "ai-assisted coding"],
+        "langgraph": ["agentic workflow", "agentic workflows", "multi-agent", "multi agent", "ai agents", "orchestrator agent"],
     }
     terms = adjacency.get(key, [])
     return fred_text_contains_any(role_text, terms) if terms else False
@@ -9480,6 +9767,9 @@ RULES:
 - If SPOTLIGHT HIRING MANAGER NAME is populated and substantive manager priorities
   exist in the supplied role intelligence, use the manager name string ONCE to
   connect proven candidate evidence to what the manager(s) emphasized.
+- If the supplied manager guidance explicitly ranks one supported competency as
+  the top/number-one/primary/most-important priority, use the manager name + that
+  priority by Sentence 2 rather than saving it for the closer.
 - The candidate evidence source below contains the original resume and may also
   contain candidate-confirmed follow-up facts. Use only facts supported there.
 - Official JD, Spotlight transcript, and MSP notes define role priorities only.
@@ -9782,11 +10072,15 @@ LENGTH / STRUCTURE:
   anchors. Use the deterministic total-career figure only when it strengthens
   the shortlist case and does not unnecessarily advertise overqualification.
 - Sentence 2: strongest concrete recent/repeated proof. Name the employer when
-  it improves credibility.
+  it improves credibility. If a manager-ranked top priority is directly proven,
+  make that match explicit here at the latest.
 - Sentence 3: the next most important supported proof cluster, ideally including
   relevant technical/domain depth.
 - Sentence 4: explain why the proven experience transfers to THIS role and makes
   the candidate worth manager review.
+- Prefer four strong sentences when four fully make the case. Do not add a fifth
+  sentence merely to inventory education, certifications, or generic technologies
+  when stronger manager-priority evidence already establishes the shortlist case.
 
 HIRING-MANAGER NAME RULE:
 - If SPOTLIGHT HIRING MANAGER NAME above is populated AND STRUCTURED REQUISITION
@@ -9796,6 +10090,15 @@ HIRING-MANAGER NAME RULE:
 - It may contain one or multiple first names (for example "Bruce and Colton").
 - Best use: connect proven candidate evidence to a priority the hiring manager
   explicitly emphasized on the supplier/Spotlight call.
+- If the manager explicitly calls a candidate competency the number-one/top/
+  primary/most-important priority AND the candidate directly proves it, use the
+  manager name + that priority by Sentence 2. Do not save the strongest manager
+  match for the closing sentence.
+- In that situation, concise language such as
+  "[First Name] directly matches George's top priority from the supplier call:
+  hands-on spec-based development" is appropriate when the transcript truly
+  supports the ranking and candidate evidence proves the competency.
+- Never use "top priority" when the transcript does not actually rank it that way.
 - Natural pattern:
   "This combination gives Arunabh the hands-on testing and automation background
   Mark emphasized on the supplier call, with the technical depth to support
@@ -9907,10 +10210,17 @@ candidate submission.
 
 CRITICAL:
 - There is NO fixed manual-skill cap in VNDLY for this workflow.
-- Build a HIGH-SIGNAL list, not a comprehensive inventory.
+- WHEN STRUCTURED VNDLY MUST/NICE SKILLS ARE POPULATED, treat every exact
+  candidate-supported structured tag as a screening checklist item first.
+  Preserve all such supported exact tags even when two labels look redundant,
+  because Freddie attached them separately to the requisition and VNDLY matching
+  value is more important than aesthetic deduplication.
+- AFTER the supported exact structured tags are covered, build a HIGH-SIGNAL
+  supplemental list from formal JD requirements and current manager priorities.
 - Return every candidate-supported skill that materially improves requirement
   coverage, MSP search/review value, or hiring-manager relevance.
-- Stop when additional skills would be redundant, weak, or tangential.
+- Stop adding SUPPLEMENTAL skills when additional items would be redundant,
+  weak, tangential, or manager-de-emphasized noise.
 - It is completely acceptable to return a short list for a narrow role or a
   longer list for a broad role.
 - Rank every item from highest to lowest submission value.
@@ -9953,6 +10263,11 @@ CLASSIFICATION FIREWALL:
   candidate genuinely has that experience and the official JD still contains it,
   it may be retained as `jd_supported_coverage` for MSP/JD recognition.
 - Only an item in `explicitly_excluded_requirements` is automatically prohibited.
+- When a manager explicitly de-emphasizes a concept (for example, says RAG is
+  not especially important), normally omit that concept from SUPPLEMENTAL manual
+  skills once stronger exact structured and manager-priority coverage is present.
+  Keep it if it is itself a candidate-supported exact structured Must/Nice tag or
+  if it remains unusually useful for MSP/JD recognition.
 
 SELECTION PRINCIPLES:
 - Optimize for SIGNAL, not coverage.
@@ -9985,9 +10300,14 @@ SELECTION PRINCIPLES:
   to the requisition.
 - Do not use one skill as a substitute for a different required skill
   (for example Maven is not proof of Gradle).
-- Avoid redundant parent/child/synonym selections. Because every selected skill should add distinct value,
-  coverage of distinct explicit requirements is usually more valuable than a
-  second closely related variant.
+- REDUNDANCY RULE APPLIES TO SUPPLEMENTAL / INFERRED SKILLS ONLY.
+  Do NOT remove or collapse candidate-supported `exact_structured_must` or
+  `exact_structured_nice` tags merely because another exact tag looks like a
+  synonym, parent/child value, or priority variant. Freddie deliberately attached
+  those exact values to the requisition.
+- For supplemental/inferred skills, avoid redundant parent/child/synonym
+  selections. Coverage of distinct explicit requirements is usually more
+  valuable than a second closely related inferred variant.
 - TEST-AUTOMATION REDUNDANCY RULE: never recommend more than ONE of these when
   they represent the same candidate capability:
   `Automation`, `Automation Testing`, `Test Automation`,
@@ -10048,13 +10368,15 @@ noise. Do not add weak or tangential skills merely because the candidate has the
 
 Then perform this audit:
 1. Remove every skill that is supported only by the JOB and not by the candidate.
-2. Collapse synonym/redundancy families to the single strongest label.
-3. Confirm that concrete candidate-supported Must Haves (for example Python,
+2. Confirm every candidate-supported exact structured Must/Nice tag is present.
+   Never collapse those exact requisition-attached tags for redundancy.
+3. Collapse synonym/redundancy families only among supplemental/inferred skills.
+4. Confirm that concrete candidate-supported Must Haves (for example Python,
    SQL, JDBC, Snowflake, JSON, Cucumber, etc. when applicable) are not being
    crowded out by broad labels such as Automation, DevOps, Data Engineering, or
    Data Validation.
-4. Prefer dated work-history evidence over a top-level skills-list mention.
-5. Do not omit a clearly work-history-evidenced Required skill merely to include
+5. Prefer dated work-history evidence over a top-level skills-list mention.
+6. Do not omit a clearly work-history-evidenced Required skill merely to include
    a weaker summary-only Required skill.
 
 ======================================================================
@@ -11328,6 +11650,14 @@ SUMMARY:
 - Exactly 4 sentences, one paragraph after finalization.
 - Natural human recruiter voice, concise and evidence-based.
 - Prefer factual scope over subjective intensifiers such as "extensive" or "deep".
+- If current manager guidance explicitly ranks a supported competency as the
+  number-one/top/primary/most-important selection criterion, verify that the
+  Summary makes it unmistakable by Sentence 1 or Sentence 2.
+- When prior Freddie experience directly strengthens this requisition, consider
+  it once as a genuine differentiator rather than generic employer-name padding.
+- Never add defensive caveats such as "these are prior experiences" or "not work
+  on Freddie Mac's current initiative/current project." Use ordinary
+  transferability grammar to preserve the evidence/target-role boundary.
 - Use the deterministic total-career value exactly if a total-years statement is
   used; never attach that total to individual skills unless the resume proves it.
 - Sentence 1: identity + strongest supported role anchors.
@@ -11370,6 +11700,9 @@ SKILLS TABLE:
 - A merely de-emphasized JD skill may remain as a secondary detail for MSP/JD
   coverage if candidate evidence supports it and it does not displace a current
   manager priority.
+- When the manager explicitly screens for a particular framework/tool or
+  competency dimension and candidate evidence supports it, prefer that exact
+  supported term over a vaguer umbrella label.
 - Prefer direct operational/repeated evidence over impressive but secondary work.
 
 {error_section}
@@ -12398,6 +12731,16 @@ def fred_clean_summary(summary, candidate_name):
             flags=re.IGNORECASE,
         )
 
+    cleaned = re.sub(
+        r"\s*[;,:-]?\s*(?:these|those|the above|this)\s+(?:are|is)\s+prior\s+"
+        r"(?:experience|experiences|work)\s*,?\s*(?:and\s+)?not\s+(?:work|experience)\s+"
+        r"(?:on|in|for)\s+freddie\s+mac(?:'s)?\s+current\s+"
+        r"(?:initiative|project|role)[^.]*\.?",
+        ".",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+
     # Clean up any accidental double spaces.
     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
 
@@ -12872,6 +13215,11 @@ def freddie_mac_app():
     # ================================================================
 
     st.header("📋 Candidate Information")
+
+    Candidate_Name = st.text_input(
+        "Candidate Name (as it should appear on the Freddie Mac submission)",
+        key="fred_name",
+    )
 
     # Initialize dependent fields before widgets are rendered.
     if "fred_site" not in st.session_state:
@@ -13566,6 +13914,11 @@ def freddie_mac_app():
                 "API key for the selected AI provider is missing."
             )
 
+        if not Candidate_Name.strip():
+            validation_errors.append(
+                "Enter the candidate's name exactly as it should appear on the Freddie Mac submission."
+            )
+
         if not Job_Description.strip():
             validation_errors.append(
                 "A Freddie Mac requisition / Job Description "
@@ -13694,8 +14047,8 @@ CRITICAL:
 RULES:
 
 1. NAME
-- Pull from the resume header and preserve the source spelling/capitalization.
-- If completely missing/unreadable, use the filename if possible without inventing or correcting the name.
+- DO NOT infer or extract the candidate name. Freddie Mac uses a recruiter-entered authoritative name field outside this extraction step.
+- Return FullName as an empty string.
 
 2. COMPANY
 - Extract the primary END-CLIENT / employer name actually represented by the
@@ -13707,6 +14060,15 @@ RULES:
 
 3. EDUCATION
 - Extract school and degree exactly enough to preserve meaning.
+- Freddie's Word template has separate School and Degree fields but no separate
+  graduation-year field.
+- Put ONLY the institution name in School.
+- Put ONLY the credential/degree name in Degree. Do NOT append the school name
+  or a graduation year to Degree.
+- Example source: "Bachelor of Engineering (University of Madras) -1997"
+  Return School = "University of Madras" and Degree = "Bachelor of Engineering".
+- Never omit a clearly stated academic degree merely because the source places
+  the school and year inside/after the degree line.
 
 4. EXPERIENCE
 Return EVERY professional role shown anywhere in the resume, including dated,
@@ -13813,14 +14175,14 @@ ORIGINAL RESUME:
                     extraction_prompt,
                 )
 
+                # v64: recruiter-entered candidate name is authoritative.
+                # Keep AI name inference completely out of source-fidelity decisions.
+                if isinstance(data, dict):
+                    data["FullName"] = ""
                 data = enforce_source_fidelity(data, raw_text, 'Freddie Mac')
 
-                name = str(
-                    data.get(
-                        "FullName",
-                        "",
-                    )
-                ).strip()
+                name = re.sub(r"\s+", " ", Candidate_Name.strip())
+                data["FullName"] = name
 
                 certifications = str(
                     data.get(
@@ -14298,6 +14660,18 @@ Sentence 1 - IDENTITY + STRONGEST DIFFERENTIATOR
   when the individual skills have different tenures.
 - Give the MSP reviewer an immediate checklist-level view of the candidate's
   match to Freddie's highest-priority requirements.
+- MANAGER-RANKED PRIORITY RULE: when the current hiring manager explicitly calls
+  a competency the "number one", "top", "primary", "most important", or otherwise
+  clearly ranks it above the rest, AND the candidate directly demonstrates it,
+  make that competency unmistakable by Sentence 1 or Sentence 2. Do not bury it
+  in Sentence 3 or the closing sentence.
+- If the manager specifically asks suppliers which framework/tool candidates
+  used for that top competency and the candidate has the same named tool, strongly
+  consider stating the exact supported tool rather than a vague umbrella phrase.
+- PRIOR FREDDIE DIFFERENTIATOR: when prior Freddie Mac experience directly
+  strengthens the current requisition story, strongly consider using it once
+  across the four sentences. Do not mention Freddie merely because the employer
+  matches; the prior work must be materially relevant.
 - Prioritize approximately 2-4 of the most important supported Must Have
   competencies rather than trying to mention everything.
 - Keep this sentence understandable without requiring deep technical knowledge.
@@ -14370,6 +14744,10 @@ Sentence 4 - TRANSFER TO THIS FREDDIE ROLE
 - The conclusion should make the candidate's relevance obvious rather than
   merely praise the candidate.
 - Keep it evidence based and grounded in prior execution.
+- NEVER spend scarce Summary space on defensive disclaimers such as "these are
+  prior experiences", "not work on Freddie Mac's current initiative", "not work
+  on the current project", or similar caveats. Keep past evidence and target-role
+  application separate through normal transferability grammar instead.
 - Do not say "meets the requirements", "great fit", "ideal candidate",
   "strong candidate", or similar evaluative conclusions.
 - Do not mention city, onsite requirement, interview availability, rate,
@@ -14654,6 +15032,19 @@ Priority order:
 
 The final four rows should represent the candidate's FOUR strongest,
 most useful shortlist signals for THIS requisition.
+
+MANAGER-SPECIFIC SCREENING DIMENSION RULE:
+- When the manager explicitly identifies a screening dimension such as coding
+  agents, spec frameworks, evaluation/guardrails, a named platform, or a domain
+  capability as central to selection, prefer a row label that makes that
+  dimension recognizable rather than hiding it inside a generic umbrella.
+- If the manager explicitly asks which named tool/framework candidates used and
+  the candidate has that tool/framework, prioritize the exact supported name
+  inside SKILL DETAILS.
+- Example principle: "Spec-Based Development & Coding Agents" is more useful than
+  generic "Software Engineering" when the manager is specifically screening for
+  spec frameworks and coding agents.
+- This rule is role-dependent. Do not force AI terminology onto non-AI roles.
 
 FREDDIE MSP COVERAGE RULE:
 - Do not automatically delete a supported JD skill merely because the manager
@@ -15523,6 +15914,19 @@ def peraton_app():
         st.header("🔑 API Configuration")
         API_KEY = render_ai_api_configuration("peraton")
 
+    st.header("📋 Candidate Information")
+    per_name_col1, per_name_col2 = st.columns(2)
+    with per_name_col1:
+        Candidate_First_Name = st.text_input(
+            "Candidate First Name (as it should appear on the Peraton submission)",
+            key="per_first_name",
+        )
+    with per_name_col2:
+        Candidate_Last_Name = st.text_input(
+            "Candidate Last Name (as it should appear on the Peraton submission)",
+            key="per_last_name",
+        )
+
     st.header("🎤 Supplier Technical Interview Results")
     
     # Row 1
@@ -15559,6 +15963,8 @@ def peraton_app():
     if st.button("🚀 Generate Peraton Submission", type="primary"):
         if not API_KEY:
             st.error("❌ Error: Please configure the API key for the selected AI provider in the sidebar.")
+        elif not Candidate_First_Name.strip() or not Candidate_Last_Name.strip():
+            st.error("❌ Error: Please enter the candidate's first and last name exactly as they should appear on the Peraton submission.")
         elif not resume_file:
             st.error("❌ Error: Please upload a resume.")
         elif not os.path.exists(TEMPLATE_FILENAME):
@@ -15577,7 +15983,7 @@ def peraton_app():
                     Return a valid JSON object ONLY.
 
                     RULES:
-                    1. Name: Pull from the top/header and preserve the source spelling/capitalization. If the name is completely missing or unreadable in the text, extract it from the provided FILENAME without inventing or correcting the name.
+                    1. Candidate Name: DO NOT infer or extract the candidate name. Peraton uses recruiter-entered authoritative first-name and last-name fields outside this extraction step. Return FullName as an empty string.
                     2. Company Name Cleaning: Display only the primary end-client/employer name that is explicitly supported by the resume. Remove trailing location text. When the resume explicitly labels an End Client/Client separately from a staffing/vendor company, use that stated client name. Do NOT guess or invent an end-client when the source does not identify one.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Responsible, Bullets (LIST), Environment (String, optional), Dates.
@@ -15634,12 +16040,14 @@ def peraton_app():
                             else:
                                 raise e
 
+                    # v64: recruiter-entered first/last name fields are authoritative.
+                    if isinstance(data, dict):
+                        data['FullName'] = ''
                     data = enforce_source_fidelity(data, raw_text, 'Peraton')
 
-                    name = str(data.get('FullName', '') or '').strip()
-                    name_parts = name.split(' ', 1)
-                    first_name = name_parts[0] if len(name_parts) > 0 else ""
-                    last_name = name_parts[1] if len(name_parts) > 1 else ""
+                    first_name = re.sub(r"\s+", " ", Candidate_First_Name.strip())
+                    last_name = re.sub(r"\s+", " ", Candidate_Last_Name.strip())
+                    name = f"{first_name} {last_name}".strip()
 
                     mapping = {
                         "Firstname": first_name, "Lastname": last_name, 
@@ -16042,6 +16450,10 @@ def capital_one_app():
         API_KEY = render_ai_api_configuration("capital_one")
 
     st.header("📋 Candidate Information")
+    Candidate_Name = st.text_input(
+        "Candidate Name (as it should appear on the Capital One submission)",
+        key="co_name",
+    )
     col1, col2 = st.columns(2)
     with col1:
         Current_Location_City_ST = st.text_input("Current Location (City, ST)", key="co_loc")
@@ -16064,7 +16476,7 @@ def capital_one_app():
             co_mgr = st.text_input("Manager Name", key="co_mgr")
             co_dates = st.text_input("Dates Worked", key="co_dates")
             
-        LinkedIn_GitHub_Portfolio_Link = st.text_input("LinkedIn/GitHub/Portfolio Link", key="co_link")
+        LinkedIn_GitHub_Portfolio_Link = st.text_area("LinkedIn/GitHub/Portfolio Link", height=68, key="co_link")
 
     # Mapping logic variables based on above inputs
     if Remote_or_Onsite == "Onsite/Hybrid" and co_location_name.strip():
@@ -16113,6 +16525,8 @@ def capital_one_app():
     if st.button("🚀 Generate Capital One Submission", type="primary"):
         if not API_KEY:
             st.error("❌ Error: Please configure the API key for the selected AI provider in the sidebar.")
+        elif not Candidate_Name.strip():
+            st.error("❌ Error: Please enter the candidate's name exactly as it should appear on the Capital One submission.")
         elif not resume_file:
             st.error("❌ Error: Please upload a resume.")
         elif not os.path.exists(TEMPLATE_FILENAME):
@@ -16131,7 +16545,7 @@ def capital_one_app():
                     Return a valid JSON object ONLY.
 
                     RULES:
-                    1. Name: Pull from the top/header and preserve the source spelling/capitalization. If the name is completely missing or unreadable in the text, extract it from the provided FILENAME without inventing or correcting the name.
+                    1. Candidate Name: DO NOT infer or extract the candidate name. Capital One uses a recruiter-entered authoritative name field outside this extraction step. Return FullName as an empty string.
                     2. Company Name Cleaning: Display only the primary end-client/employer name that is explicitly supported by the resume. Remove trailing location text. When the resume explicitly labels an End Client/Client separately from a staffing/vendor company, use that stated client name. Do NOT guess or invent an end-client when the source does not identify one.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
@@ -16187,9 +16601,13 @@ def capital_one_app():
                             else:
                                 raise e
 
+                    # v64: recruiter-entered candidate name is authoritative.
+                    if isinstance(data, dict):
+                        data['FullName'] = ''
                     data = enforce_source_fidelity(data, raw_text, 'Capital One')
 
-                    name = str(data.get('FullName', '') or '').strip()
+                    name = re.sub(r"\s+", " ", Candidate_Name.strip())
+                    data['FullName'] = name
                     
                     mapping = {
                         "FullName": name, "Location": Current_Location_City_ST, "Remote": remote_val,
@@ -16442,6 +16860,10 @@ def adusa_app():
         API_KEY = render_ai_api_configuration("adusa")
 
     st.header("📋 Candidate Information")
+    Candidate_Name = st.text_input(
+        "Candidate Name (as it should appear on the ADUSA submission)",
+        key="ad_name",
+    )
     col1, col2 = st.columns(2)
     with col1:
         Current_Location_City_ST = st.text_input("Current Location (City, ST)", key="ad_loc")
@@ -16508,6 +16930,8 @@ def adusa_app():
     if st.button("🚀 Generate ADUSA Submission", type="primary"):
         if not API_KEY:
             st.error("❌ Error: Please configure the API key for the selected AI provider in the sidebar.")
+        elif not Candidate_Name.strip():
+            st.error("❌ Error: Please enter the candidate's name exactly as it should appear on the ADUSA submission.")
         elif not resume_file:
             st.error("❌ Error: Please upload a resume.")
         elif not os.path.exists(TEMPLATE_FILENAME):
@@ -16526,7 +16950,7 @@ def adusa_app():
                     Return a valid JSON object ONLY.
 
                     RULES:
-                    1. Name: Pull from the top/header and preserve the source spelling/capitalization. If the name is completely missing or unreadable in the text, extract it from the provided FILENAME without inventing or correcting the name.
+                    1. Candidate Name: DO NOT infer or extract the candidate name. ADUSA uses a recruiter-entered authoritative name field outside this extraction step. Return FullName as an empty string.
                     2. Company Name Cleaning: Display only the primary end-client/employer name that is explicitly supported by the resume. Remove trailing location text. When the resume explicitly labels an End Client/Client separately from a staffing/vendor company, use that stated client name. Do NOT guess or invent an end-client when the source does not identify one.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
@@ -16582,9 +17006,13 @@ def adusa_app():
                             else:
                                 raise e
 
+                    # v64: recruiter-entered candidate name is authoritative.
+                    if isinstance(data, dict):
+                        data['FullName'] = ''
                     data = enforce_source_fidelity(data, raw_text, 'ADUSA')
 
-                    name = str(data.get('FullName', '') or '').strip()
+                    name = re.sub(r"\s+", " ", Candidate_Name.strip())
+                    data['FullName'] = name
                     
                     mapping = {
                         "FullName": name, "Location": Current_Location_City_ST, "Remote": remote_val,
@@ -16806,6 +17234,10 @@ def cbre_app():
         API_KEY = render_ai_api_configuration("cbre")
 
     st.header("📋 Candidate Information")
+    Candidate_Name = st.text_input(
+        "Candidate Name (as it should appear on the CBRE submission)",
+        key="cb_name",
+    )
     col1, col2 = st.columns(2)
     with col1:
         Current_Location_City_ST = st.text_input("Current Location (City, ST)", key="cb_loc")
@@ -16825,7 +17257,7 @@ def cbre_app():
             cb_mgr = st.text_input("Manager Name", key="cb_mgr")
             cb_dates = st.text_input("Dates Worked", key="cb_dates")
             
-        LinkedIn_GitHub_Portfolio_Link = st.text_input("LinkedIn/GitHub/Portfolio Link", key="cb_link")
+        LinkedIn_GitHub_Portfolio_Link = st.text_area("LinkedIn/GitHub/Portfolio Link", height=68, key="cb_link")
 
     if Remote_or_Onsite == "Onsite/Hybrid" and cb_location_name.strip():
         remote_val = f"Onsite/Hybrid - {cb_location_name.strip()}"
@@ -16873,6 +17305,8 @@ def cbre_app():
     if st.button("🚀 Generate CBRE Submission", type="primary"):
         if not API_KEY:
             st.error("❌ Error: Please configure the API key for the selected AI provider in the sidebar.")
+        elif not Candidate_Name.strip():
+            st.error("❌ Error: Please enter the candidate's name exactly as it should appear on the CBRE submission.")
         elif not resume_file:
             st.error("❌ Error: Please upload a resume.")
         elif not os.path.exists(TEMPLATE_FILENAME):
@@ -16891,7 +17325,7 @@ def cbre_app():
                     Return a valid JSON object ONLY.
 
                     RULES:
-                    1. Name: Pull from the top/header and preserve the source spelling/capitalization. If the name is completely missing or unreadable in the text, extract it from the provided FILENAME without inventing or correcting the name.
+                    1. Candidate Name: DO NOT infer or extract the candidate name. CBRE uses a recruiter-entered authoritative name field outside this extraction step. Return FullName as an empty string.
                     2. Company Name Cleaning: Display only the primary end-client/employer name that is explicitly supported by the resume. Remove trailing location text. When the resume explicitly labels an End Client/Client separately from a staffing/vendor company, use that stated client name. Do NOT guess or invent an end-client when the source does not identify one.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
@@ -16947,9 +17381,13 @@ def cbre_app():
                             else:
                                 raise e
 
+                    # v64: recruiter-entered candidate name is authoritative.
+                    if isinstance(data, dict):
+                        data['FullName'] = ''
                     data = enforce_source_fidelity(data, raw_text, 'CBRE')
 
-                    name = str(data.get('FullName', '') or '').strip()
+                    name = re.sub(r"\s+", " ", Candidate_Name.strip())
+                    data['FullName'] = name
                     
                     mapping = {
                         "FullName": name, "Location": Current_Location_City_ST, "Remote": remote_val,
@@ -17427,6 +17865,10 @@ def bnsf_app():
         API_KEY = render_ai_api_configuration("bnsf")
 
     st.header("📋 Candidate Information")
+    Candidate_Name = st.text_input(
+        "Candidate Name (as it should appear on the BNSF submission)",
+        key="bn_name",
+    )
     col1, col2 = st.columns(2)
     with col1:
         Current_Location_City_ST = st.text_input("Current Location (City, ST)", key="bn_loc")
@@ -17450,7 +17892,7 @@ def bnsf_app():
             bn_mgr = st.text_input("Manager Name", key="bn_mgr")
             bn_dates = st.text_input("Dates Worked", key="bn_dates")
             
-        LinkedIn_GitHub_Portfolio_Link = st.text_input("LinkedIn/GitHub/Portfolio Link", key="bn_link")
+        LinkedIn_GitHub_Portfolio_Link = st.text_area("LinkedIn/GitHub/Portfolio Link", height=68, key="bn_link")
 
     if Remote_or_Onsite == "Onsite/Hybrid" and bn_location_name.strip():
         remote_val = f"Onsite/Hybrid - {bn_location_name.strip()}"
@@ -17498,6 +17940,8 @@ def bnsf_app():
     if st.button("🚀 Generate BNSF Submission", type="primary"):
         if not API_KEY:
             st.error("❌ Error: Please configure the API key for the selected AI provider in the sidebar.")
+        elif not Candidate_Name.strip():
+            st.error("❌ Error: Please enter the candidate's name exactly as it should appear on the BNSF submission.")
         elif not resume_file:
             st.error("❌ Error: Please upload a resume.")
         elif not os.path.exists(TEMPLATE_FILENAME):
@@ -17516,7 +17960,7 @@ def bnsf_app():
                     Return a valid JSON object ONLY.
 
                     RULES:
-                    1. Name: Pull from the top/header and preserve the source spelling/capitalization. If the name is completely missing or unreadable in the text, extract it from the provided FILENAME without inventing or correcting the name.
+                    1. Candidate Name: DO NOT infer or extract the candidate name. BNSF uses a recruiter-entered authoritative name field outside this extraction step. Return FullName as an empty string.
                     2. Company Name Cleaning: Display only the primary end-client/employer name that is explicitly supported by the resume. Remove trailing location text. When the resume explicitly labels an End Client/Client separately from a staffing/vendor company, use that stated client name. Do NOT guess or invent an end-client when the source does not identify one.
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
@@ -17579,9 +18023,13 @@ def bnsf_app():
                     # strongly structured source roles before running the unchanged fail-closed
                     # source-fidelity validator.
                     data = _repair_bnsf_omitted_structured_dated_roles(data, raw_text)
+                    # v64: recruiter-entered candidate name is authoritative.
+                    if isinstance(data, dict):
+                        data['FullName'] = ''
                     data = enforce_source_fidelity(data, raw_text, 'BNSF')
 
-                    name = str(data.get('FullName', '') or '').strip()
+                    name = re.sub(r"\s+", " ", Candidate_Name.strip())
+                    data['FullName'] = name
                     
                     mapping = {
                         "FullName": name, "Location": Current_Location_City_ST, "Remote": remote_val,
@@ -17806,6 +18254,10 @@ def dallas_generic_app():
         API_KEY = render_ai_api_configuration("dallas")
 
     st.header("📋 Candidate Information")
+    Candidate_Name = st.text_input(
+        "Candidate Name (as it should appear on the Dallas Generic submission)",
+        key="dg_name",
+    )
     col1, col2 = st.columns(2)
     with col1:
         Current_Location_City_ST = st.text_input("Current Location (City, ST)", key="dg_loc")
@@ -17818,7 +18270,7 @@ def dallas_generic_app():
         dg_start = st.text_input("Availability to Start", key="dg_start")
 
     with col2:
-        LinkedIn_GitHub_Portfolio_Link = st.text_input("LinkedIn/GitHub/Portfolio Link", key="dg_link")
+        LinkedIn_GitHub_Portfolio_Link = st.text_area("LinkedIn/GitHub/Portfolio Link", height=68, key="dg_link")
 
     if Remote_or_Onsite == "Onsite/Hybrid" and dg_location_name.strip():
         remote_val = f"Onsite/Hybrid - {dg_location_name.strip()}"
@@ -17861,6 +18313,8 @@ def dallas_generic_app():
     if st.button("🚀 Generate Dallas Generic Submission", type="primary"):
         if not API_KEY:
             st.error("❌ Error: Please configure the API key for the selected AI provider in the sidebar.")
+        elif not Candidate_Name.strip():
+            st.error("❌ Error: Please enter the candidate's name exactly as it should appear on the Dallas Generic submission.")
         elif not resume_file:
             st.error("❌ Error: Please upload a resume.")
         elif not os.path.exists(TEMPLATE_FILENAME):
@@ -17879,7 +18333,7 @@ def dallas_generic_app():
                     Return a valid JSON object ONLY.
 
                     RULES:
-                    1. Name: Pull from the top/header and preserve the source spelling/capitalization. If the name is completely missing or unreadable in the text, extract it from the provided FILENAME without inventing or correcting the name.
+                    1. Candidate Name: DO NOT infer or extract the candidate name. Dallas Generic uses a recruiter-entered authoritative name field outside this extraction step. Return FullName as an empty string.
                     2. Company Name Cleaning: Display only the primary end-client/employer name that is explicitly supported by the resume. Remove trailing location text. When the resume explicitly labels an End Client/Client separately from a staffing/vendor company, use that stated client name. Do NOT guess or invent an end-client when the source does not identify one.
                     3. Education: Extract School, Degree, and DegreeStatus.
                         - DegreeStatus: Evaluate if the degree is completed or in progress.
@@ -17939,9 +18393,13 @@ def dallas_generic_app():
                             else:
                                 raise e
 
+                    # v64: recruiter-entered candidate name is authoritative.
+                    if isinstance(data, dict):
+                        data['FullName'] = ''
                     data = enforce_source_fidelity(data, raw_text, 'Dallas Generic')
 
-                    name = str(data.get('FullName', '') or '').strip()
+                    name = re.sub(r"\s+", " ", Candidate_Name.strip())
+                    data['FullName'] = name
                     
                     mapping = {
                         "FullName": name, "Location": Current_Location_City_ST, "Remote": remote_val,
