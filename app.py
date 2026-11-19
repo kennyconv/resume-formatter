@@ -1,3 +1,4 @@
+# v67 FREDDIE VNDLY CATALOGUE EXPANSION + TIERED CONFIRMED SKILLS
 # v65 FREDDIE SUBMISSION-MODE CONTEXT + SUMMARY/SKILLS + VNDLY CLEANUP
 # v64 AUTHORITATIVE RECRUITER-ENTERED NAMES + MULTILINE LINK FIELDS
 # v63 FREDDIE PRECISION TAILORING + EDUCATION FIDELITY + STRUCTURED VNDLY SKILLS
@@ -3219,7 +3220,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v65"
+_FORMATTER_BUILD_VERSION = "v67"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -3618,6 +3619,66 @@ def _looks_like_short_role_subheading(text):
     )
 
 
+def _looks_like_freddie_project_subsection_label(text):
+    """
+    Recognize short source-owned project/system/product labels inside a Freddie
+    work-history role without turning ordinary prose into synthetic headings.
+
+    Examples this is intended to preserve include:
+      eMBS (e-Mortgage Backed Securities)
+      TBA Assumption
+      BUBD (Buy Up Buy Down)
+      Mercury Trade Capture
+      Mercury TC Matcher
+      JIT and ICR (CCOE)
+      Desktop Underwriter
+
+    The wording is never rewritten. This helper only decides whether an exact
+    source paragraph should remain in the historical role stream.
+    """
+    value = _strip_list_marker_only(str(text or "").strip())
+    if not value or len(value) > 100 or re.search(r"[.!?;:]$", value):
+        return False
+    if _looks_like_section_heading(value):
+        return False
+    if re.search(r"\b(?:19|20)\d{2}\b", value):
+        return False
+
+    words = re.findall(r"[A-Za-z][A-Za-z0-9&/+.-]*", value)
+    if not (1 <= len(words) <= 10):
+        return False
+
+    # Sentence/action openers are narrative, not labels.
+    if words[0].casefold() in {
+        "as", "built", "build", "designed", "developed", "implemented",
+        "integrated", "led", "managed", "worked", "used", "created",
+        "provided", "supported", "collaborated", "automated", "engineered",
+        "optimized", "reduced", "migrated", "participated", "ensure",
+        "ensured", "architected", "architectured", "fine", "develop",
+    }:
+        return False
+
+    # Parenthetical expansion after a compact name is a strong project-label signal.
+    if re.search(r"\([^)]{1,70}\)", value):
+        return True
+
+    # Acronym-heavy labels such as TBA Assumption / JIT and ICR are strong signals.
+    if any(len(token) >= 2 and token.isupper() for token in words):
+        return True
+
+    # Otherwise require concise title-style wording. Connector words are ignored.
+    significant = [
+        token for token in words
+        if token.casefold() not in {"and", "or", "of", "the", "for", "to", "in", "on"}
+    ]
+    if not significant:
+        return False
+    return all(
+        token.isupper() or token[:1].isupper()
+        for token in significant
+    )
+
+
 def _resilient_role_anchors(experience, blocks):
     """Best-effort monotonic role anchors used only after strict QA has already failed."""
     anchors = []
@@ -3719,7 +3780,12 @@ def _resilient_source_items_for_role(experience, role_index, blocks, anchors, cl
         if not text:
             continue
         if _likely_role_metadata_block(text, role):
-            continue
+            # v66 Freddie: short project/system labels can look like generic
+            # section headings to the shared metadata detector. Preserve them
+            # when they independently satisfy the narrow Freddie project-label
+            # test; continue dropping true company/title/date/section metadata.
+            if not (is_freddie and _looks_like_freddie_project_subsection_label(text)):
+                continue
         if is_fannie and _looks_like_fannie_compound_role_header(text, role):
             continue
         # v65 Freddie: project/subsection labels inside a long role (for example
@@ -3750,7 +3816,11 @@ def _resilient_source_items_for_role(experience, role_index, blocks, anchors, cl
             if block.get("is_list"):
                 source_items.append(text)
                 continue
-            if _looks_like_short_role_subheading(text) or len(text) >= 40:
+            if (
+                _looks_like_short_role_subheading(text)
+                or _looks_like_freddie_project_subsection_label(text)
+                or len(text) >= 40
+            ):
                 source_items.append(text)
 
     elif list_items:
@@ -6865,157 +6935,986 @@ def fannie_mae_app():
 
 FREDDIE_VNDLY_SKILLS_FILENAME = "freddie_vndly_skills_curated.json"
 
-# Exact VNDLY labels that have been confirmed in the Freddie program.
-# The bundled JSON remains the primary catalogue. These values are only merged
-# when the JSON is missing one of them, preventing a stale/incomplete local
-# catalogue from suppressing a genuinely supported shortlist skill.
-FREDDIE_CONFIRMED_CORE_VNDLY_SKILLS = [
-    # Established Freddie catalogue values from prior requisitions.
-    "Agile Delivery",
-    "Automation",
-    "Business Analysis",
-    "Business Risk Management",
-    "Enterprise Program Management",
-    "Executive Reporting",
-    "Jira",
-    "Mortgage Industry",
-    "Power Platform",
-    "Product Management",
-    "Program Management",
-    "Project Management",
-    "Requirements Analysis",
-    "Risk Management",
-    "SharePoint",
-    "Stakeholder Management",
-    "User Story",
+# v67: Expanded Freddie VNDLY catalogue assembled only from values confirmed in
+# Freddie's tenant: live autocomplete records (with real VNDLY IDs where known),
+# prior formatter confirmations, and recruiter-verified values from real Freddie
+# requisitions.  Catalogue presence NEVER proves candidate experience or role
+# relevance; the existing candidate-evidence and requisition-priority gates remain
+# authoritative.
+FREDDIE_CONFIRMED_VNDLY_SKILL_RECORDS = [{'id': 980,
+  'skill_name': "+3 years' experience in SQL, RDBMS and Transaction processing",
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 979, 'skill_name': '+5 years experience in Spring Boot', 'catalog_tier': 'legacy_free_text', 'source': 'live_tenant_discovery'},
+ {'id': 978, 'skill_name': '+5 years of experience in Java', 'catalog_tier': 'legacy_free_text', 'source': 'live_tenant_discovery'},
+ {'id': 1079,
+  'skill_name': '1) AI risk governance, 2) technology risk governance, 3) technical background in e.g., architecture, app development, '
+                'infrastructure, etc.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 908, 'skill_name': '1000Eyes', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 1243,
+  'skill_name': '12+ years of Solution and Enterprise Architecture.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 1053,
+  'skill_name': '1–2 years of experience with containerization and orchestration technologies (e.g., Docker, Podman, Kubernetes)',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 891,
+  'skill_name': '2+ years experience with Javascript, HTML, CSS',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 1052, 'skill_name': '2+ years of experience in SQL Server', 'catalog_tier': 'legacy_free_text', 'source': 'live_tenant_discovery'},
+ {'id': 1046,
+  'skill_name': "2+ years' experience in Snowflake or Databricks",
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 1094,
+  'skill_name': '2-4 years of cloud experience on Infrastructure/Platform like cloud formation, Terraform, EKS etc',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 1096,
+  'skill_name': '2-4 years of cloud experience on Infrastructure/Platform like cloud formation, Terraform, EKS etc close',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 1095,
+  'skill_name': '2-4 years of experience in shell scripting, python, perl etc',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 1097,
+  'skill_name': '2-4 years of experience in shell scripting, python, perl etc close',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 1093,
+  'skill_name': '2-4 years of supporting enterprise tools like Hashicorp Vault; AWS Secrets Manager;',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 1098,
+  'skill_name': '2-4 years of supporting enterprise tools like Hashicorp Vault; AWS Secrets Manager; close',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 1247,
+  'skill_name': '20+ years of IT experience with extensive Solution Architecture, Software Engineering and Technical Leadership '
+                'background.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 1088,
+  'skill_name': '3+ year of java, spring framework experience',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 888,
+  'skill_name': '3+ years of hands-on ServiceNow ATF testing',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 1063,
+  'skill_name': '3+ years of professional experience in JavaScript/TypeScript',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 882,
+  'skill_name': '4+ years’ experience in JavaScript, Ajax, XML, JSON, HTML, CSS.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 1131,
+  'skill_name': '5+ years full stack development experiences with core Java 8+, advance spring framework- understands the core concept.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 1070,
+  'skill_name': '5+ years of professional experience in building large-scale web-based applications using JavaScript/TypeScript, HTML, '
+                'CSS, SASS',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 967,
+  'skill_name': '5+Years development experience in salesforce',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 194, 'skill_name': 'Access Data', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 181, 'skill_name': 'Access Management', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 387, 'skill_name': 'Accounting', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 1021, 'skill_name': 'Accounting Center', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 371, 'skill_name': 'Active Directory (AD)', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 355, 'skill_name': 'Ad-Hoc Requests', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 360, 'skill_name': 'Adaptability', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Advanced Excel', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 1211,
+  'skill_name': 'Advanced excel skills to enhance data reconciliation; good presentation skills: writing and verbal',
+  'catalog_tier': 'canonical_preferred',
+  'source': 'live_tenant_discovery'},
+ {'id': 989, 'skill_name': 'Advanced SQL', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 1269, 'skill_name': 'Agent-to-Agent / A2A', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Agentic AI', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Agentic AI Development', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Agile Delivery', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 15, 'skill_name': 'Agile Framework', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 12, 'skill_name': 'Agile Scrum Development', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 17, 'skill_name': 'Agile Software Development', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 1080, 'skill_name': 'AI risk governance', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'AI/ML', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 1145, 'skill_name': 'Amazon Q', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 69, 'skill_name': 'Analytical Thinking', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Angular', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 911, 'skill_name': 'Ansible', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Apache Spark', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Application Deployment', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Application Development', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 1258,
+  'skill_name': 'Architecture Blueprints, Design Patterns, Technical Standards, Architecture Models',
+  'catalog_tier': 'compound_review',
+  'source': 'live_tenant_discovery'},
+ {'id': 693, 'skill_name': 'Architecture Frameworks', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 1129, 'skill_name': 'Articulate360', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 1236,
+  'skill_name': 'At least 5 years of experience using Microsoft Excel (basic formulas such as xlookups/If, Pivot tables, Graphs), Tableau, '
+                'PowerPoint, Sharepoint, Word, Adobe',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 1083,
+  'skill_name': 'At least 7 years of hands-on software development experience using a modern programming language (e.g., Python, Java, OR '
+                'C##). Candidate must have Git version control, SQL, and Unit testing.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 551, 'skill_name': 'Auditing Techniques', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 1048, 'skill_name': 'Authentication using jwt and oauth', 'catalog_tier': 'compound_review', 'source': 'live_tenant_discovery'},
+ {'id': 1068,
+  'skill_name': 'Automated unit testing tools such as Jest, Enzyme, React-testing-library',
+  'catalog_tier': 'compound_review',
+  'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Automation', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'AWS', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 958, 'skill_name': 'AWS Backup', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'AWS Bedrock', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'AWS Bedrock (strongly preferred)', 'catalog_tier': 'legacy_free_text', 'source': 'manual_confirmed'},
+ {'id': None,
+  'skill_name': 'AWS Bedrock, AWS Sagemaker, GenAI enablement , AWS IAM / least-privilege, AWS Networking (VPC, ALB, NLB) Infrastructure '
+                'experience',
+  'catalog_tier': 'compound_review',
+  'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'AWS cloud platforms', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 1032,
+  'skill_name': 'AWS Core Services (EC2, S3, IAM, etc.)',
+  'catalog_tier': 'canonical_preferred',
+  'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'AWS EKS', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'AWS GenAI services', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'AWS Kiro', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'AWS KnowledgeBase/Elastic', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 1255,
+  'skill_name': 'AWS Lambda, API Gateway, DynamoDB, S3, CloudFront, AWS CDK',
+  'catalog_tier': 'compound_review',
+  'source': 'live_tenant_discovery'},
+ {'id': 953,
+  'skill_name': 'AWS Native Services (S3, EKS, EC2, etc.)',
+  'catalog_tier': 'compound_review',
+  'source': 'live_tenant_discovery'},
+ {'id': 951,
+  'skill_name': 'AWS Native Services (S3, EKS, EC2, etc.), Networking, IAM policies, Lambda, CFT, Python',
+  'catalog_tier': 'compound_review',
+  'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'BIRT Reporting', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Bootstrap', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Business Analysis', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Business Communications', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Business Process Improvements', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 53, 'skill_name': 'Business Requirements', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 46, 'skill_name': 'Business Requirements Analysis', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 671,
+  'skill_name': 'Business Requirements Documentation (BRD)',
+  'catalog_tier': 'canonical_preferred',
+  'source': 'live_tenant_discovery'},
+ {'id': 52, 'skill_name': 'Business Requirements Elicitation', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Business Risk Management', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 1254,
+  'skill_name': 'C#, .NET, ASP.NET, Python, JavaScript, TypeScript, Node.js',
+  'catalog_tier': 'compound_review',
+  'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Camtasia', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Capital Markets', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Cascading Style Sheets (CSS)', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 857, 'skill_name': 'CDQ', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 883,
+  'skill_name': 'Certified ServiceNow Application Developer with 7+ years of experience in designing and implementing complex ServiceNow '
+                'solutions to meet business requirements.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Change Management', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 475, 'skill_name': 'Change Request Management', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'CI/CD best practices', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 1257,
+  'skill_name': 'Claude Code, Amazon Bedrock, Multi-Model LLM, AI Agents, AI Chatbots',
+  'catalog_tier': 'compound_review',
+  'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Cloud ceritfications', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Cobol Mainframe', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 1102,
+  'skill_name': 'Collibra Data Governance, Strong skills with various Collibra Connectors Mongo DB , SQL Server , Java . Experience with '
+                'workflows in Collibra . Integration with CDQ',
+  'catalog_tier': 'compound_review',
+  'source': 'live_tenant_discovery'},
+ {'id': None,
+  'skill_name': 'Comfortable working with Linux/CLI interfaces',
+  'catalog_tier': 'canonical_preferred',
+  'source': 'manual_confirmed'},
+ {'id': 471, 'skill_name': 'Complex Project Management', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Credit Risks', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 546, 'skill_name': 'CSS3', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Dashboard Reporting', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Data Analysis', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Data Governance', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Data Migrations', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Data Modeling', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Data Quality', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Data Quality Improvement', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'data validation', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 528, 'skill_name': 'Data Visualization', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'DB2', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Deep learning architectures', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Dell Data Domains - DASD - PowerMax', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None,
+  'skill_name': 'dependency mangement, Agile knowlege Sharepoint /confluence knowlege',
+  'catalog_tier': 'compound_review',
+  'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Docker', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None,
+  'skill_name': 'End-to-end testing tools such as, WebDriver IO, Cypress, or other Selenium-based technologies',
+  'catalog_tier': 'compound_review',
+  'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Enterprise Program Management', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Enterprise Systems', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 1245,
+  'skill_name': 'Enterprise transformation and legacy modernization experience',
+  'catalog_tier': 'canonical_preferred',
+  'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Executive Reporting', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None,
+  'skill_name': 'Experience in financial accounting, fixed income, and capital market',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'manual_confirmed'},
+ {'id': 1229,
+  'skill_name': 'Experience with containerization and orchestration',
+  'catalog_tier': 'canonical_preferred',
+  'source': 'live_tenant_discovery'},
+ {'id': 1203,
+  'skill_name': 'Experience with containerization and orchestration (Docker, Kubernetes)',
+  'catalog_tier': 'canonical_preferred',
+  'source': 'live_tenant_discovery'},
+ {'id': None,
+  'skill_name': 'Familiarity with application integration patterns like Databases(Aurora, Atlas, etc), LDAP/ActiveDirectory',
+  'catalog_tier': 'compound_review',
+  'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Financial Services Industry', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None,
+  'skill_name': 'GenAI architectural patterns and Evaluation Framework',
+  'catalog_tier': 'canonical_preferred',
+  'source': 'manual_confirmed'},
+ {'id': None,
+  'skill_name': 'GenAI architectural patterns and Evaluation Frameworks (DeepEval)',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Git', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None,
+  'skill_name': 'Hands-on with tables, ACLs, flows, update sets, APIs, business rules.',
+  'catalog_tier': 'compound_review',
+  'source': 'manual_confirmed'},
+ {'id': 185, 'skill_name': 'HTML5', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Hyper Text Markup Language (HTML)', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'IAM, oauth', 'catalog_tier': 'compound_review', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Implementing REST API', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'IMS', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Incident Investigation', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Incident Management', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Incident Response', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Jenkins/CI/CD', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Jira', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'JobTrac', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 1225,
+  'skill_name': 'Knowledge of containerization and orchestration tools',
+  'catalog_tier': 'canonical_preferred',
+  'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Kubernetes', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None,
+  'skill_name': 'Kubernetes/Docker, cloud databases, application servers, networking (VPC, load balancers, API gateways), Linux, and '
+                'security/data flows',
+  'catalog_tier': 'compound_review',
+  'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'LangChain', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'LangGraph', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 1250,
+  'skill_name': 'Led large-scale modernization projects, including 40 TB Sybase migration to AWS RDS and legacy WebLogic modernization.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'LLM/Generative AI Tools', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Mainframe Technologies', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 1059, 'skill_name': 'Mainframe z15-16', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Material UI (MUI)', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Microservices Architecture', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 1182, 'skill_name': 'Microsoft 365', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Microsoft PowerPoint', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Microsoft SharePoint', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Microsoft Word', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'ML algorithms', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'ML Ops tools', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None,
+  'skill_name': 'MLOps tools (MLflow, Kubeflow, Weights & Biases)',
+  'catalog_tier': 'compound_review',
+  'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Mortgage Industry', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 878,
+  'skill_name': 'Must Have Qualifications: Front end focus with some back-end support, Angular - most recent four versions of angular '
+                '(version 16 and up), framework for UI standards, front end design and UI development. Preferred: React',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 1114,
+  'skill_name': 'Must Haves: Third Party/Vendor Risk Assessment experience Experience working with SOC 1 and SOC 2 type II reports '
+                'Information Security knowledge(preferred) Risk framework experience(preferred)',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Network architecture', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'OpenAI', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 1019, 'skill_name': 'Orchestrate for Integrations (O4I)', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Performance Optimizations', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Power BI', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Power Platform', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 848,
+  'skill_name': 'Prior experience with operational risk management Strong at critical thinking and problem-solving skills Strong MS Excel '
+                'skills Attention to details, produce concise, detailed, and insightful documents Ability to work both independently or in '
+                'a team environment 5+ years of relevant experience',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 849,
+  'skill_name': 'Prior experience with operational risk management, Strong at critical thinking and problem-solving skills, Strong MS '
+                'Excel skills, Attention to details, produce concise, detailed, and insightful documents, Ability to work both '
+                'independently or in a team environment 5+ years of relevant experience',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Prism', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Product Management', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None,
+  'skill_name': 'Proficiency with popular Python libraries such as NumPy, Pandas',
+  'catalog_tier': 'compound_review',
+  'source': 'manual_confirmed'},
+ {'id': None,
+  'skill_name': 'Proficient in using Python to efficiently process large datasets and perform analytics',
+  'catalog_tier': 'canonical_preferred',
+  'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Program Management', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Project Management', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'PySpark', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'python', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None,
+  'skill_name': 'Python and ML libraries (Transformers, LangChain, etc.)',
+  'catalog_tier': 'canonical_preferred',
+  'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'RACF', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 1061, 'skill_name': 'React 18', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Redux', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Requirements Analysis', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'RESTful APIs', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 1024,
+  'skill_name': 'Results-driven Senior Business Analyst with 11+ years of experience delivering end-to-end business analysis across '
+                'financial services, mortgage, retail, and enterprise domains, consistently bridging the gap between business stakeholders '
+                'and technical teams.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': None, 'skill_name': 'Risk Management', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'SageMaker', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'SAS', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'SASS', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Selenium', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'SharePoint', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Single Page Applications (SPA)', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Snowflake or Databricks or SQL Server', 'catalog_tier': 'compound_review', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Spec-Based Development', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Splunk', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Spring Framework', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Stakeholder Management', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 1138,
+  'skill_name': 'Strong Experience in experience in DataStage (ETL) preferably 11.7, UNIX, shell scripting, ControlM and db2/Sybase/Oracle '
+                'SQL, Jira',
+  'catalog_tier': 'compound_review',
+  'source': 'live_tenant_discovery'},
+ {'id': 1251,
+  'skill_name': 'Strong expertise in OAuth 2.0, OIDC, Zero Trust, DevSecOps, NIST, SOC 2 and PCI-DSS.',
+  'catalog_tier': 'compound_review',
+  'source': 'live_tenant_discovery'},
+ {'id': None,
+  'skill_name': 'Strong proficiency with Vite.js (or equivalent modern tooling), including configuration, optimization, and best '
+                'practices.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Systems Migration', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Unit Testing', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'User Interfaces (UI)', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'User Story', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'video editing', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Web Services', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Windows PowerShell', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'workday', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Workday Extend', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Workday Financials', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Workday Reporting', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Workday Studio', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'writing/editing', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'z/OS Systems Programmer', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': 895,
+  'skill_name': '• 2+ years of experience with OOP design and coding',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 886,
+  'skill_name': '• 4+ years’ experience in JavaScript, Ajax, XML, JSON, HTML, CSS.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 947, 'skill_name': '• Agile Scrum or Kanban experience', 'catalog_tier': 'canonical_preferred', 'source': 'live_tenant_discovery'},
+ {'id': 892,
+  'skill_name': '• At least 3 years of hands-on software development using Python and/or Java with knowledge of application, data and '
+                'architecture design patterns and principles.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 885,
+  'skill_name': '• Certified ServiceNow Application Developer with 7+ years of experience in designing and implementing complex ServiceNow '
+                'solutions to meet business requirements.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 950,
+  'skill_name': '• Collaborate with customers, stakeholders, and team members to understand and document business needs. • Building strong '
+                'partnerships and effective working relationships. • Act as a liaison between business units, technology, management, and '
+                'users. • Self-motivated, innovative and can work independently as well as in a team environment. • Participate in and '
+                'lead as needed the agile daily standup, sprint and program Increment (PI) planning, and retrospectives. • Groom and '
+                'manage assigned user stories through completion. • Iterate through business request and performing impact analysis. • '
+                'Learn how to apply decision modeling and model rule requests as decision tables working with business partners to capture '
+                'the proper behavior. • Build test scenarios and generated need test data. Execute test, review and validate results with '
+                'stakeholders. • Working with IT and business partners to ensure alignment to approaches/solutions. • Solid understanding '
+                'of system design and experience in 1 or 2 more phases of the change life cycle. • Sharing ideas for process improvements '
+                'and automation opportunities. • Supporting a “full stack” team approach to maximize team productivity.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 925,
+  'skill_name': '• College Degree or equivalent experience • Desire and willingness to participate in our Decision Modeling Assessment, '
+                'Decision Modeling Training and required to become certified in Decision Modeling within 1 year of taking position • '
+                'Desire and willingness to participate in team cross-training to learn different rule communities',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': None,
+  'skill_name': '• Experience in financial accounting, fixed income, and capital market',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'manual_confirmed'},
+ {'id': None,
+  'skill_name': '• Experience or solid background in fixed income finance, financial accounting and capital market',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'manual_confirmed'},
+ {'id': 897,
+  'skill_name': '• Experience working with business users to collect, analyze, and implement complex business requirements.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': None,
+  'skill_name': '• Experienced with SQL across multiple leading database solutions and large-scale, end-to-end project delivery.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'manual_confirmed'},
+ {'id': 1234,
+  'skill_name': '• Extensive experience in data modeling with both relational and NoSQL databases, including MongoDB, XML, JSON schemas, '
+                'and DDLs. • Proficient in Dimensional Data Modeling, such as designing star and snowflake schemas for Data Warehousing '
+                '(identifying facts, measures, and dimensions). • Skilled in Data Mapping and Data Lineage mapping. • Strong background in '
+                'Root Cause Analysis for resolving Data Quality Issues. • Expertise in analyzing data sources, data profiling, and '
+                'creating interface documentation. • Experienced in developing Logical Data Models (LDM) and Physical Data Models (PDM) '
+                'using ER Studio (Embarcadero), including forward and reverse engineering. • Adept at creating flowcharts, process '
+                'workflows, and data flow diagrams. • Advanced use of Excel and basic use of MS Access for data extraction and analysis '
+                'based on business requirements. • Familiar with Agile methodologies and terminology. • Proficient in eliciting and '
+                'documenting requirements, understanding business needs, and assessing cross-functional impacts. • Excellent verbal and '
+                'written communication skills, with the ability to negotiate and interact effectively with stakeholders at all levels. • '
+                'Experience with Snowflake, including creating views. • Strong analytical skills, quick comprehension of complex concepts '
+                'and relationships, and meticulous attention to detail.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': None,
+  'skill_name': '• Extensive experience working with Python libraries like Pandas, Numpy, Gunicorn, Celery, SQLAlchemy, and Flask/FastAPI.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'manual_confirmed'},
+ {'id': 873,
+  'skill_name': '• Intermediate knowledge of SharePoint is required, including familiarity with SharePoint architecture, experience '
+                'creating lists and document/form libraries, and utilizing web parts.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 937,
+  'skill_name': '• Minimum 5 years of Python software development experience, including application, data, and OOP design patterns.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 875,
+  'skill_name': '• Minimum of 3 years related experience in technical writing and project management.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'},
+ {'id': 1023,
+  'skill_name': '• Splunk Lead Engineer with 18 years of IT experience, specializing in Splunk SIEM, Observability, and Cybersecurity '
+                'across enterprise environments.',
+  'catalog_tier': 'legacy_free_text',
+  'source': 'live_tenant_discovery'}]
 
-    # v63: confirmed modern AI / Job 1520-era Freddie VNDLY values.
-    "1–2 years of experience with containerization and orchestration technologies (e.g., Docker, Podman, Kubernetes)",
-    "2-4 years of experience in shell scripting, python, perl etc",
-    "Agentic AI",
-    "Agent-to-Agent / A2A",
-    "Amazon Q",
-    "Apache Spark",
-    "AWS Bedrock",
-    "AWS Bedrock (strongly preferred)",
-    "AWS cloud platforms",
-    "AWS EKS",
-    "AWS Kiro",
-    "AWS KnowledgeBase/Elastic",
-    "CI/CD best practices",
-    "Claude Code, Amazon Bedrock, Multi-Model LLM, AI Agents, AI Chatbots",
-    "Deep learning architectures",
-    "Docker",
-    "Experience in financial accounting, fixed income, and capital market",
-    "GenAI architectural patterns and Evaluation Framework",
-    "GenAI architectural patterns and Evaluation Frameworks (DeepEval)",
-    "Git",
-    "Kubernetes",
-    "LangChain",
-    "LangGraph",
-    "LLM/Generative AI Tools",
-    "ML algorithms",
-    "ML Ops tools",
-    "MLOps tools (MLflow, Kubeflow, Weights & Biases)",
-    "OpenAI",
-    "PySpark",
-    "Python and ML libraries (Transformers, LangChain, etc.)",
-    "SageMaker",
-    "Spec-Based Development",
-]
+# Compatibility collections used by the existing Freddie catalogue loader and
+# structured-skill logic. Exact display spelling is intentionally preserved.
+FREDDIE_CONFIRMED_CORE_VNDLY_SKILLS = ["+3 years' experience in SQL, RDBMS and Transaction processing",
+ '+5 years experience in Spring Boot',
+ '+5 years of experience in Java',
+ '1) AI risk governance, 2) technology risk governance, 3) technical background in e.g., architecture, app development, infrastructure, '
+ 'etc.',
+ '1000Eyes',
+ '12+ years of Solution and Enterprise Architecture.',
+ '1–2 years of experience with containerization and orchestration technologies (e.g., Docker, Podman, Kubernetes)',
+ '2+ years experience with Javascript, HTML, CSS',
+ '2+ years of experience in SQL Server',
+ "2+ years' experience in Snowflake or Databricks",
+ '2-4 years of cloud experience on Infrastructure/Platform like cloud formation, Terraform, EKS etc',
+ '2-4 years of cloud experience on Infrastructure/Platform like cloud formation, Terraform, EKS etc close',
+ '2-4 years of experience in shell scripting, python, perl etc',
+ '2-4 years of experience in shell scripting, python, perl etc close',
+ '2-4 years of supporting enterprise tools like Hashicorp Vault; AWS Secrets Manager;',
+ '2-4 years of supporting enterprise tools like Hashicorp Vault; AWS Secrets Manager; close',
+ '20+ years of IT experience with extensive Solution Architecture, Software Engineering and Technical Leadership background.',
+ '3+ year of java, spring framework experience',
+ '3+ years of hands-on ServiceNow ATF testing',
+ '3+ years of professional experience in JavaScript/TypeScript',
+ '4+ years’ experience in JavaScript, Ajax, XML, JSON, HTML, CSS.',
+ '5+ years full stack development experiences with core Java 8+, advance spring framework- understands the core concept.',
+ '5+ years of professional experience in building large-scale web-based applications using JavaScript/TypeScript, HTML, CSS, SASS',
+ '5+Years development experience in salesforce',
+ 'Access Data',
+ 'Access Management',
+ 'Accounting',
+ 'Accounting Center',
+ 'Active Directory (AD)',
+ 'Ad-Hoc Requests',
+ 'Adaptability',
+ 'Advanced Excel',
+ 'Advanced excel skills to enhance data reconciliation; good presentation skills: writing and verbal',
+ 'Advanced SQL',
+ 'Agent-to-Agent / A2A',
+ 'Agentic AI',
+ 'Agentic AI Development',
+ 'Agile Delivery',
+ 'Agile Framework',
+ 'Agile Scrum Development',
+ 'Agile Software Development',
+ 'AI risk governance',
+ 'AI/ML',
+ 'Amazon Q',
+ 'Analytical Thinking',
+ 'Angular',
+ 'Ansible',
+ 'Apache Spark',
+ 'Application Deployment',
+ 'Application Development',
+ 'Architecture Blueprints, Design Patterns, Technical Standards, Architecture Models',
+ 'Architecture Frameworks',
+ 'Articulate360',
+ 'At least 5 years of experience using Microsoft Excel (basic formulas such as xlookups/If, Pivot tables, Graphs), Tableau, PowerPoint, '
+ 'Sharepoint, Word, Adobe',
+ 'At least 7 years of hands-on software development experience using a modern programming language (e.g., Python, Java, OR C##). Candidate '
+ 'must have Git version control, SQL, and Unit testing.',
+ 'Auditing Techniques',
+ 'Authentication using jwt and oauth',
+ 'Automated unit testing tools such as Jest, Enzyme, React-testing-library',
+ 'Automation',
+ 'AWS',
+ 'AWS Backup',
+ 'AWS Bedrock',
+ 'AWS Bedrock (strongly preferred)',
+ 'AWS Bedrock, AWS Sagemaker, GenAI enablement , AWS IAM / least-privilege, AWS Networking (VPC, ALB, NLB) Infrastructure experience',
+ 'AWS cloud platforms',
+ 'AWS Core Services (EC2, S3, IAM, etc.)',
+ 'AWS EKS',
+ 'AWS GenAI services',
+ 'AWS Kiro',
+ 'AWS KnowledgeBase/Elastic',
+ 'AWS Lambda, API Gateway, DynamoDB, S3, CloudFront, AWS CDK',
+ 'AWS Native Services (S3, EKS, EC2, etc.)',
+ 'AWS Native Services (S3, EKS, EC2, etc.), Networking, IAM policies, Lambda, CFT, Python',
+ 'BIRT Reporting',
+ 'Bootstrap',
+ 'Business Analysis',
+ 'Business Communications',
+ 'Business Process Improvements',
+ 'Business Requirements',
+ 'Business Requirements Analysis',
+ 'Business Requirements Documentation (BRD)',
+ 'Business Requirements Elicitation',
+ 'Business Risk Management',
+ 'C#, .NET, ASP.NET, Python, JavaScript, TypeScript, Node.js',
+ 'Camtasia',
+ 'Capital Markets',
+ 'Cascading Style Sheets (CSS)',
+ 'CDQ',
+ 'Certified ServiceNow Application Developer with 7+ years of experience in designing and implementing complex ServiceNow solutions to '
+ 'meet business requirements.',
+ 'Change Management',
+ 'Change Request Management',
+ 'CI/CD best practices',
+ 'Claude Code, Amazon Bedrock, Multi-Model LLM, AI Agents, AI Chatbots',
+ 'Cloud ceritfications',
+ 'Cobol Mainframe',
+ 'Collibra Data Governance, Strong skills with various Collibra Connectors Mongo DB , SQL Server , Java . Experience with workflows in '
+ 'Collibra . Integration with CDQ',
+ 'Comfortable working with Linux/CLI interfaces',
+ 'Complex Project Management',
+ 'Credit Risks',
+ 'CSS3',
+ 'Dashboard Reporting',
+ 'Data Analysis',
+ 'Data Governance',
+ 'Data Migrations',
+ 'Data Modeling',
+ 'Data Quality',
+ 'Data Quality Improvement',
+ 'data validation',
+ 'Data Visualization',
+ 'DB2',
+ 'Deep learning architectures',
+ 'Dell Data Domains - DASD - PowerMax',
+ 'dependency mangement, Agile knowlege Sharepoint /confluence knowlege',
+ 'Docker',
+ 'End-to-end testing tools such as, WebDriver IO, Cypress, or other Selenium-based technologies',
+ 'Enterprise Program Management',
+ 'Enterprise Systems',
+ 'Enterprise transformation and legacy modernization experience',
+ 'Executive Reporting',
+ 'Experience in financial accounting, fixed income, and capital market',
+ 'Experience with containerization and orchestration',
+ 'Experience with containerization and orchestration (Docker, Kubernetes)',
+ 'Familiarity with application integration patterns like Databases(Aurora, Atlas, etc), LDAP/ActiveDirectory',
+ 'Financial Services Industry',
+ 'GenAI architectural patterns and Evaluation Framework',
+ 'GenAI architectural patterns and Evaluation Frameworks (DeepEval)',
+ 'Git',
+ 'Hands-on with tables, ACLs, flows, update sets, APIs, business rules.',
+ 'HTML5',
+ 'Hyper Text Markup Language (HTML)',
+ 'IAM, oauth',
+ 'Implementing REST API',
+ 'IMS',
+ 'Incident Investigation',
+ 'Incident Management',
+ 'Incident Response',
+ 'Jenkins/CI/CD',
+ 'Jira',
+ 'JobTrac',
+ 'Knowledge of containerization and orchestration tools',
+ 'Kubernetes',
+ 'Kubernetes/Docker, cloud databases, application servers, networking (VPC, load balancers, API gateways), Linux, and security/data flows',
+ 'LangChain',
+ 'LangGraph',
+ 'Led large-scale modernization projects, including 40 TB Sybase migration to AWS RDS and legacy WebLogic modernization.',
+ 'LLM/Generative AI Tools',
+ 'Mainframe Technologies',
+ 'Mainframe z15-16',
+ 'Material UI (MUI)',
+ 'Microservices Architecture',
+ 'Microsoft 365',
+ 'Microsoft PowerPoint',
+ 'Microsoft SharePoint',
+ 'Microsoft Word',
+ 'ML algorithms',
+ 'ML Ops tools',
+ 'MLOps tools (MLflow, Kubeflow, Weights & Biases)',
+ 'Mortgage Industry',
+ 'Must Have Qualifications: Front end focus with some back-end support, Angular - most recent four versions of angular (version 16 and '
+ 'up), framework for UI standards, front end design and UI development. Preferred: React',
+ 'Must Haves: Third Party/Vendor Risk Assessment experience Experience working with SOC 1 and SOC 2 type II reports Information Security '
+ 'knowledge(preferred) Risk framework experience(preferred)',
+ 'Network architecture',
+ 'OpenAI',
+ 'Orchestrate for Integrations (O4I)',
+ 'Performance Optimizations',
+ 'Power BI',
+ 'Power Platform',
+ 'Prior experience with operational risk management Strong at critical thinking and problem-solving skills Strong MS Excel skills '
+ 'Attention to details, produce concise, detailed, and insightful documents Ability to work both independently or in a team environment 5+ '
+ 'years of relevant experience',
+ 'Prior experience with operational risk management, Strong at critical thinking and problem-solving skills, Strong MS Excel skills, '
+ 'Attention to details, produce concise, detailed, and insightful documents, Ability to work both independently or in a team environment '
+ '5+ years of relevant experience',
+ 'Prism',
+ 'Product Management',
+ 'Proficiency with popular Python libraries such as NumPy, Pandas',
+ 'Proficient in using Python to efficiently process large datasets and perform analytics',
+ 'Program Management',
+ 'Project Management',
+ 'PySpark',
+ 'python',
+ 'Python and ML libraries (Transformers, LangChain, etc.)',
+ 'RACF',
+ 'React 18',
+ 'Redux',
+ 'Requirements Analysis',
+ 'RESTful APIs',
+ 'Results-driven Senior Business Analyst with 11+ years of experience delivering end-to-end business analysis across financial services, '
+ 'mortgage, retail, and enterprise domains, consistently bridging the gap between business stakeholders and technical teams.',
+ 'Risk Management',
+ 'SageMaker',
+ 'SAS',
+ 'SASS',
+ 'Selenium',
+ 'SharePoint',
+ 'Single Page Applications (SPA)',
+ 'Snowflake or Databricks or SQL Server',
+ 'Spec-Based Development',
+ 'Splunk',
+ 'Spring Framework',
+ 'Stakeholder Management',
+ 'Strong Experience in experience in DataStage (ETL) preferably 11.7, UNIX, shell scripting, ControlM and db2/Sybase/Oracle SQL, Jira',
+ 'Strong expertise in OAuth 2.0, OIDC, Zero Trust, DevSecOps, NIST, SOC 2 and PCI-DSS.',
+ 'Strong proficiency with Vite.js (or equivalent modern tooling), including configuration, optimization, and best practices.',
+ 'Systems Migration',
+ 'Unit Testing',
+ 'User Interfaces (UI)',
+ 'User Story',
+ 'video editing',
+ 'Web Services',
+ 'Windows PowerShell',
+ 'workday',
+ 'Workday Extend',
+ 'Workday Financials',
+ 'Workday Reporting',
+ 'Workday Studio',
+ 'writing/editing',
+ 'z/OS Systems Programmer',
+ '• 2+ years of experience with OOP design and coding',
+ '• 4+ years’ experience in JavaScript, Ajax, XML, JSON, HTML, CSS.',
+ '• Agile Scrum or Kanban experience',
+ '• At least 3 years of hands-on software development using Python and/or Java with knowledge of application, data and architecture design '
+ 'patterns and principles.',
+ '• Certified ServiceNow Application Developer with 7+ years of experience in designing and implementing complex ServiceNow solutions to '
+ 'meet business requirements.',
+ '• Collaborate with customers, stakeholders, and team members to understand and document business needs. • Building strong partnerships '
+ 'and effective working relationships. • Act as a liaison between business units, technology, management, and users. • Self-motivated, '
+ 'innovative and can work independently as well as in a team environment. • Participate in and lead as needed the agile daily standup, '
+ 'sprint and program Increment (PI) planning, and retrospectives. • Groom and manage assigned user stories through completion. • Iterate '
+ 'through business request and performing impact analysis. • Learn how to apply decision modeling and model rule requests as decision '
+ 'tables working with business partners to capture the proper behavior. • Build test scenarios and generated need test data. Execute test, '
+ 'review and validate results with stakeholders. • Working with IT and business partners to ensure alignment to approaches/solutions. • '
+ 'Solid understanding of system design and experience in 1 or 2 more phases of the change life cycle. • Sharing ideas for process '
+ 'improvements and automation opportunities. • Supporting a “full stack” team approach to maximize team productivity.',
+ '• College Degree or equivalent experience • Desire and willingness to participate in our Decision Modeling Assessment, Decision Modeling '
+ 'Training and required to become certified in Decision Modeling within 1 year of taking position • Desire and willingness to participate '
+ 'in team cross-training to learn different rule communities',
+ '• Experience in financial accounting, fixed income, and capital market',
+ '• Experience or solid background in fixed income finance, financial accounting and capital market',
+ '• Experience working with business users to collect, analyze, and implement complex business requirements.',
+ '• Experienced with SQL across multiple leading database solutions and large-scale, end-to-end project delivery.',
+ '• Extensive experience in data modeling with both relational and NoSQL databases, including MongoDB, XML, JSON schemas, and DDLs. • '
+ 'Proficient in Dimensional Data Modeling, such as designing star and snowflake schemas for Data Warehousing (identifying facts, measures, '
+ 'and dimensions). • Skilled in Data Mapping and Data Lineage mapping. • Strong background in Root Cause Analysis for resolving Data '
+ 'Quality Issues. • Expertise in analyzing data sources, data profiling, and creating interface documentation. • Experienced in developing '
+ 'Logical Data Models (LDM) and Physical Data Models (PDM) using ER Studio (Embarcadero), including forward and reverse engineering. • '
+ 'Adept at creating flowcharts, process workflows, and data flow diagrams. • Advanced use of Excel and basic use of MS Access for data '
+ 'extraction and analysis based on business requirements. • Familiar with Agile methodologies and terminology. • Proficient in eliciting '
+ 'and documenting requirements, understanding business needs, and assessing cross-functional impacts. • Excellent verbal and written '
+ 'communication skills, with the ability to negotiate and interact effectively with stakeholders at all levels. • Experience with '
+ 'Snowflake, including creating views. • Strong analytical skills, quick comprehension of complex concepts and relationships, and '
+ 'meticulous attention to detail.',
+ '• Extensive experience working with Python libraries like Pandas, Numpy, Gunicorn, Celery, SQLAlchemy, and Flask/FastAPI.',
+ '• Intermediate knowledge of SharePoint is required, including familiarity with SharePoint architecture, experience creating lists and '
+ 'document/form libraries, and utilizing web parts.',
+ '• Minimum 5 years of Python software development experience, including application, data, and OOP design patterns.',
+ '• Minimum of 3 years related experience in technical writing and project management.',
+ '• Splunk Lead Engineer with 18 years of IT experience, specializing in Splunk SIEM, Observability, and Cybersecurity across enterprise '
+ 'environments.']
 
+# Long sentence-style / years-threshold values are allowed when Freddie attached
+# that exact selectable value to the current Must/Nice field, but are NEVER used
+# as inferred supplemental recommendations on unrelated requisitions.
+FREDDIE_EXACT_ONLY_CONFIRMED_VNDLY_SKILLS = {"+3 years' experience in SQL, RDBMS and Transaction processing",
+ '+5 years experience in Spring Boot',
+ '+5 years of experience in Java',
+ '1) AI risk governance, 2) technology risk governance, 3) technical background in e.g., architecture, app development, infrastructure, '
+ 'etc.',
+ '12+ years of Solution and Enterprise Architecture.',
+ '1–2 years of experience with containerization and orchestration technologies (e.g., Docker, Podman, Kubernetes)',
+ '2+ years experience with Javascript, HTML, CSS',
+ '2+ years of experience in SQL Server',
+ "2+ years' experience in Snowflake or Databricks",
+ '2-4 years of cloud experience on Infrastructure/Platform like cloud formation, Terraform, EKS etc',
+ '2-4 years of cloud experience on Infrastructure/Platform like cloud formation, Terraform, EKS etc close',
+ '2-4 years of experience in shell scripting, python, perl etc',
+ '2-4 years of experience in shell scripting, python, perl etc close',
+ '2-4 years of supporting enterprise tools like Hashicorp Vault; AWS Secrets Manager;',
+ '2-4 years of supporting enterprise tools like Hashicorp Vault; AWS Secrets Manager; close',
+ '20+ years of IT experience with extensive Solution Architecture, Software Engineering and Technical Leadership background.',
+ '3+ year of java, spring framework experience',
+ '3+ years of hands-on ServiceNow ATF testing',
+ '3+ years of professional experience in JavaScript/TypeScript',
+ '4+ years’ experience in JavaScript, Ajax, XML, JSON, HTML, CSS.',
+ '5+ years full stack development experiences with core Java 8+, advance spring framework- understands the core concept.',
+ '5+ years of professional experience in building large-scale web-based applications using JavaScript/TypeScript, HTML, CSS, SASS',
+ '5+Years development experience in salesforce',
+ 'AWS Bedrock (strongly preferred)',
+ 'At least 5 years of experience using Microsoft Excel (basic formulas such as xlookups/If, Pivot tables, Graphs), Tableau, PowerPoint, '
+ 'Sharepoint, Word, Adobe',
+ 'At least 7 years of hands-on software development experience using a modern programming language (e.g., Python, Java, OR C##). Candidate '
+ 'must have Git version control, SQL, and Unit testing.',
+ 'Certified ServiceNow Application Developer with 7+ years of experience in designing and implementing complex ServiceNow solutions to '
+ 'meet business requirements.',
+ 'Experience in financial accounting, fixed income, and capital market',
+ 'GenAI architectural patterns and Evaluation Frameworks (DeepEval)',
+ 'Led large-scale modernization projects, including 40 TB Sybase migration to AWS RDS and legacy WebLogic modernization.',
+ 'Must Have Qualifications: Front end focus with some back-end support, Angular - most recent four versions of angular (version 16 and '
+ 'up), framework for UI standards, front end design and UI development. Preferred: React',
+ 'Must Haves: Third Party/Vendor Risk Assessment experience Experience working with SOC 1 and SOC 2 type II reports Information Security '
+ 'knowledge(preferred) Risk framework experience(preferred)',
+ 'Prior experience with operational risk management Strong at critical thinking and problem-solving skills Strong MS Excel skills '
+ 'Attention to details, produce concise, detailed, and insightful documents Ability to work both independently or in a team environment 5+ '
+ 'years of relevant experience',
+ 'Prior experience with operational risk management, Strong at critical thinking and problem-solving skills, Strong MS Excel skills, '
+ 'Attention to details, produce concise, detailed, and insightful documents, Ability to work both independently or in a team environment '
+ '5+ years of relevant experience',
+ 'Results-driven Senior Business Analyst with 11+ years of experience delivering end-to-end business analysis across financial services, '
+ 'mortgage, retail, and enterprise domains, consistently bridging the gap between business stakeholders and technical teams.',
+ 'Strong proficiency with Vite.js (or equivalent modern tooling), including configuration, optimization, and best practices.',
+ '• 2+ years of experience with OOP design and coding',
+ '• 4+ years’ experience in JavaScript, Ajax, XML, JSON, HTML, CSS.',
+ '• At least 3 years of hands-on software development using Python and/or Java with knowledge of application, data and architecture design '
+ 'patterns and principles.',
+ '• Certified ServiceNow Application Developer with 7+ years of experience in designing and implementing complex ServiceNow solutions to '
+ 'meet business requirements.',
+ '• Collaborate with customers, stakeholders, and team members to understand and document business needs. • Building strong partnerships '
+ 'and effective working relationships. • Act as a liaison between business units, technology, management, and users. • Self-motivated, '
+ 'innovative and can work independently as well as in a team environment. • Participate in and lead as needed the agile daily standup, '
+ 'sprint and program Increment (PI) planning, and retrospectives. • Groom and manage assigned user stories through completion. • Iterate '
+ 'through business request and performing impact analysis. • Learn how to apply decision modeling and model rule requests as decision '
+ 'tables working with business partners to capture the proper behavior. • Build test scenarios and generated need test data. Execute test, '
+ 'review and validate results with stakeholders. • Working with IT and business partners to ensure alignment to approaches/solutions. • '
+ 'Solid understanding of system design and experience in 1 or 2 more phases of the change life cycle. • Sharing ideas for process '
+ 'improvements and automation opportunities. • Supporting a “full stack” team approach to maximize team productivity.',
+ '• College Degree or equivalent experience • Desire and willingness to participate in our Decision Modeling Assessment, Decision Modeling '
+ 'Training and required to become certified in Decision Modeling within 1 year of taking position • Desire and willingness to participate '
+ 'in team cross-training to learn different rule communities',
+ '• Experience in financial accounting, fixed income, and capital market',
+ '• Experience or solid background in fixed income finance, financial accounting and capital market',
+ '• Experience working with business users to collect, analyze, and implement complex business requirements.',
+ '• Experienced with SQL across multiple leading database solutions and large-scale, end-to-end project delivery.',
+ '• Extensive experience in data modeling with both relational and NoSQL databases, including MongoDB, XML, JSON schemas, and DDLs. • '
+ 'Proficient in Dimensional Data Modeling, such as designing star and snowflake schemas for Data Warehousing (identifying facts, measures, '
+ 'and dimensions). • Skilled in Data Mapping and Data Lineage mapping. • Strong background in Root Cause Analysis for resolving Data '
+ 'Quality Issues. • Expertise in analyzing data sources, data profiling, and creating interface documentation. • Experienced in developing '
+ 'Logical Data Models (LDM) and Physical Data Models (PDM) using ER Studio (Embarcadero), including forward and reverse engineering. • '
+ 'Adept at creating flowcharts, process workflows, and data flow diagrams. • Advanced use of Excel and basic use of MS Access for data '
+ 'extraction and analysis based on business requirements. • Familiar with Agile methodologies and terminology. • Proficient in eliciting '
+ 'and documenting requirements, understanding business needs, and assessing cross-functional impacts. • Excellent verbal and written '
+ 'communication skills, with the ability to negotiate and interact effectively with stakeholders at all levels. • Experience with '
+ 'Snowflake, including creating views. • Strong analytical skills, quick comprehension of complex concepts and relationships, and '
+ 'meticulous attention to detail.',
+ '• Extensive experience working with Python libraries like Pandas, Numpy, Gunicorn, Celery, SQLAlchemy, and Flask/FastAPI.',
+ '• Intermediate knowledge of SharePoint is required, including familiarity with SharePoint architecture, experience creating lists and '
+ 'document/form libraries, and utilizing web parts.',
+ '• Minimum 5 years of Python software development experience, including application, data, and OOP design patterns.',
+ '• Minimum of 3 years related experience in technical writing and project management.',
+ '• Splunk Lead Engineer with 18 years of IT experience, specializing in Splunk SIEM, Observability, and Cybersecurity across enterprise '
+ 'environments.'}
 
-# Long requisition-specific values should be selectable when Freddie actually
-# attaches them to a req, but should not become generic supplemental suggestions
-# on unrelated roles merely because the fallback catalogue knows they exist.
-FREDDIE_EXACT_ONLY_CONFIRMED_VNDLY_SKILLS = {
-    "1–2 years of experience with containerization and orchestration technologies (e.g., Docker, Podman, Kubernetes)",
-    "2-4 years of experience in shell scripting, python, perl etc",
-    "AWS Bedrock (strongly preferred)",
-    "Experience in financial accounting, fixed income, and capital market",
-    "GenAI architectural patterns and Evaluation Frameworks (DeepEval)",
-}
-
-FREDDIE_COMPOUND_REVIEW_CONFIRMED_VNDLY_SKILLS = {
-    "Claude Code, Amazon Bedrock, Multi-Model LLM, AI Agents, AI Chatbots",
-    "MLOps tools (MLflow, Kubeflow, Weights & Biases)",
-}
+# Compound catalogue values remain eligible only through the normal candidate-
+# evidence + role-relevance gates and are lower-preference than clean canonical
+# values when both represent the same screening concept.
+FREDDIE_COMPOUND_REVIEW_CONFIRMED_VNDLY_SKILLS = {'AWS Bedrock, AWS Sagemaker, GenAI enablement , AWS IAM / least-privilege, AWS Networking (VPC, ALB, NLB) Infrastructure experience',
+ 'AWS Lambda, API Gateway, DynamoDB, S3, CloudFront, AWS CDK',
+ 'AWS Native Services (S3, EKS, EC2, etc.)',
+ 'AWS Native Services (S3, EKS, EC2, etc.), Networking, IAM policies, Lambda, CFT, Python',
+ 'Architecture Blueprints, Design Patterns, Technical Standards, Architecture Models',
+ 'Authentication using jwt and oauth',
+ 'Automated unit testing tools such as Jest, Enzyme, React-testing-library',
+ 'C#, .NET, ASP.NET, Python, JavaScript, TypeScript, Node.js',
+ 'Claude Code, Amazon Bedrock, Multi-Model LLM, AI Agents, AI Chatbots',
+ 'Collibra Data Governance, Strong skills with various Collibra Connectors Mongo DB , SQL Server , Java . Experience with workflows in '
+ 'Collibra . Integration with CDQ',
+ 'End-to-end testing tools such as, WebDriver IO, Cypress, or other Selenium-based technologies',
+ 'Familiarity with application integration patterns like Databases(Aurora, Atlas, etc), LDAP/ActiveDirectory',
+ 'Hands-on with tables, ACLs, flows, update sets, APIs, business rules.',
+ 'IAM, oauth',
+ 'Kubernetes/Docker, cloud databases, application servers, networking (VPC, load balancers, API gateways), Linux, and security/data flows',
+ 'MLOps tools (MLflow, Kubeflow, Weights & Biases)',
+ 'Proficiency with popular Python libraries such as NumPy, Pandas',
+ 'Snowflake or Databricks or SQL Server',
+ 'Strong Experience in experience in DataStage (ETL) preferably 11.7, UNIX, shell scripting, ControlM and db2/Sybase/Oracle SQL, Jira',
+ 'Strong expertise in OAuth 2.0, OIDC, Zero Trust, DevSecOps, NIST, SOC 2 and PCI-DSS.',
+ 'dependency mangement, Agile knowlege Sharepoint /confluence knowlege'}
 
 
 @st.cache_data(show_spinner=False)
 def fred_load_vndly_skill_catalog(path=FREDDIE_VNDLY_SKILLS_FILENAME):
     """
-    Load the curated VNDLY skill catalogue bundled with the Streamlit app.
+    Load and merge Freddie's curated VNDLY catalogue.
+
+    v67 keeps the external JSON as an optional source, but the formatter no
+    longer depends on that file existing: confirmed Freddie tenant records are
+    embedded in code.  Exact labels are deduplicated by normalized name while
+    preserving the best available real VNDLY ID and the most conservative tier.
     """
-    if not os.path.exists(path):
-        return []
+    merged = {}
+    tier_rank = {
+        "canonical_preferred": 0,
+        "compound_review": 1,
+        "legacy_free_text": 2,
+    }
 
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
+    def add_record(item):
+        if not isinstance(item, dict):
+            return
 
-        raw_skills = payload.get("skills", payload)
+        skill_name = str(
+            item.get("skill_name")
+            or item.get("value")
+            or item.get("label")
+            or ""
+        ).strip()
+        if not skill_name:
+            return
 
-        if not isinstance(raw_skills, list):
-            return []
+        # v67 deduplicates only exact display labels. Freddie's live tenant
+        # contains distinct selectable records whose labels normalize to the same
+        # text (for example bullet-prefixed/non-bullet variants), so normalized
+        # deduplication would silently destroy real VNDLY choices.
+        key = skill_name
+        incoming_tier = str(
+            item.get("catalog_tier", "canonical_preferred")
+            or "canonical_preferred"
+        ).strip()
+        if incoming_tier not in tier_rank:
+            incoming_tier = "canonical_preferred"
 
-        cleaned = []
+        current = merged.get(key)
+        if current is None:
+            merged[key] = {
+                "id": item.get("id"),
+                "skill_name": skill_name,
+                "catalog_tier": incoming_tier,
+            }
+            return
 
-        for item in raw_skills:
-            if not isinstance(item, dict):
-                continue
+        # Preserve a real tenant ID whenever one source has it.
+        if current.get("id") is None and item.get("id") is not None:
+            current["id"] = item.get("id")
 
-            skill_name = str(
-                item.get("skill_name")
-                or item.get("value")
-                or item.get("label")
-                or ""
-            ).strip()
+        # Preserve the more conservative classification if sources disagree.
+        if tier_rank[incoming_tier] > tier_rank.get(
+            current.get("catalog_tier", "canonical_preferred"), 0
+        ):
+            current["catalog_tier"] = incoming_tier
 
-            if not skill_name:
-                continue
+    # Optional legacy/curated JSON remains supported.
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            raw_skills = payload.get("skills", payload)
+            if isinstance(raw_skills, list):
+                for item in raw_skills:
+                    add_record(item)
+        except Exception:
+            pass
 
-            cleaned.append(
-                {
-                    "id": item.get("id"),
-                    "skill_name": skill_name,
-                    "catalog_tier": str(
-                        item.get("catalog_tier", "canonical_preferred")
-                    ).strip() or "canonical_preferred",
-                }
-            )
+    # v67 authoritative confirmed fallback/expansion.
+    for item in FREDDIE_CONFIRMED_VNDLY_SKILL_RECORDS:
+        add_record(item)
 
-        # Merge only exact labels already confirmed to exist in Freddie's VNDLY
-        # programme. They still must pass the normal candidate-evidence and
-        # requisition-relevance gates before recommendation.
-        existing = {
-            fred_normalize_skill_name(item.get("skill_name", ""))
-            for item in cleaned
-        }
-        for skill_name in FREDDIE_CONFIRMED_CORE_VNDLY_SKILLS:
-            key = fred_normalize_skill_name(skill_name)
-            if key in existing:
-                continue
-            if skill_name in FREDDIE_EXACT_ONLY_CONFIRMED_VNDLY_SKILLS:
-                fallback_tier = "legacy_free_text"
-            elif skill_name in FREDDIE_COMPOUND_REVIEW_CONFIRMED_VNDLY_SKILLS:
-                fallback_tier = "compound_review"
-            else:
-                fallback_tier = "canonical_preferred"
+    return sorted(
+        merged.values(),
+        key=lambda item: str(item.get("skill_name", "")).casefold(),
+    )
 
-            cleaned.append(
-                {
-                    "id": None,
-                    "skill_name": skill_name,
-                    "catalog_tier": fallback_tier,
-                }
-            )
-            existing.add(key)
-
-        return cleaned
-
-    except Exception:
-        return []
 
 
 def fred_cap_skill_details(value, max_items=6):
@@ -7270,50 +8169,51 @@ def fred_numeric_years(value):
 
 
 def fred_should_suppress_total_years(calculated_total_experience, vndly_context):
-    """Presentation-only guard against unnecessarily advertising overqualification."""
-    vndly_context = vndly_context or {}
-    total_years = fred_numeric_years(calculated_total_experience)
-    max_years = fred_numeric_years(vndly_context.get("max_experience", ""))
-    if total_years is None or max_years is None or max_years <= 0:
-        return False
-    # v65: if Freddie publishes a maximum experience value, do not advertise a
-    # higher total-career number in shortlist-facing prose. The underlying work
-    # history remains complete; this is presentation only.
-    return total_years > max_years
+    """
+    v66: do not use the configured VNDLY experience range to suppress a truthful
+    deterministic total-career figure. Freddie requisition ranges may be broad,
+    approximate, or administratively selected and are not a candidate-tenure cap.
+    """
+    return False
 
 
 def fred_suppress_total_career_years(value, calculated_total_experience, vndly_context):
     """
-    Remove only the deterministic total-career number when it is strategically
-    counterproductive. The replacement consumes modifiers such as "over" so it
-    cannot create broken phrases like "over extensive experience".
+    Compatibility wrapper retained for existing Freddie call sites.
+
+    v66 performs no experience-range suppression. Instead, when generated prose
+    explicitly states a TOTAL-career years figure, normalize that figure to the
+    exact Python-calculated value. This prevents a model from silently borrowing
+    the VNDLY maximum (for example 15+) when the deterministic career total is
+    20+. Requirement-specific tenure statements such as "4 years of Python" are
+    intentionally untouched.
     """
     text = str(value or "")
-    if not text or not fred_should_suppress_total_years(calculated_total_experience, vndly_context):
+    exact = str(calculated_total_experience or "").strip()
+    if not text or not exact or exact == "<1 year":
         return text
 
-    total_years = fred_numeric_years(calculated_total_experience)
-    if total_years is None:
+    exact_match = re.fullmatch(r"(\d+)\+\s+years", exact, flags=re.I)
+    if not exact_match:
         return text
-    year_token = str(int(total_years)) if float(total_years).is_integer() else str(total_years).rstrip("0").rstrip(".")
-    modifier = r"(?:(?:over|more\s+than|approximately|about|nearly)\s+)?"
+    exact_years = exact_match.group(1) + "+ years"
 
-    # e.g. "over 30+ years of professional experience" -> "extensive professional experience"
+    # Generic total-career descriptors only. Do not alter skill-specific tenure.
     text = re.sub(
-        rf"\b{modifier}{re.escape(year_token)}\s*\+?\s*years?\s+of\s+",
-        "extensive ",
+        r"\b\d+\s*\+?\s*years?\s+of\s+(?=(?:professional|enterprise(?:\s+IT)?|overall|total|career|industry|IT|technology|software)\b)",
+        exact_years + " of ",
         text,
-        flags=re.IGNORECASE,
+        count=1,
+        flags=re.I,
     )
-    # e.g. "30+ years professional experience" -> "extensive professional experience"
     text = re.sub(
-        rf"\b{modifier}{re.escape(year_token)}\s*\+?\s*years?\s+(?=(?:professional|overall|total)\s+experience\b)",
-        "extensive ",
+        r"\b\d+\s*\+?\s*years?\s+of\s+experience(?=\s+(?:spanning|across)\b|\s*[,;.])",
+        exact_years + " of experience",
         text,
-        flags=re.IGNORECASE,
+        count=1,
+        flags=re.I,
     )
     return re.sub(r"\s+", " ", text).strip()
-
 
 def fred_grounding_error_is_hard(error_text):
     """Only genuine fabrication/scope/exclusion issues are blocking safety issues."""
@@ -7890,7 +8790,7 @@ def fred_role_only_signal_tokens(output_text, role_text, resume_text, evidence_t
 
 
 def fred_catalog_lookup(catalog):
-    """Build a normalized-name -> exact VNDLY record lookup."""
+    """Build a normalized-name -> VNDLY record lookup for fuzzy fallback."""
     lookup = {}
 
     for item in catalog or []:
@@ -7901,8 +8801,23 @@ def fred_catalog_lookup(catalog):
         if not name:
             continue
 
-        lookup[fred_normalize_skill_name(name)] = item
+        # Keep the first normalized variant as the fuzzy fallback. Exact display
+        # matching is handled separately so real near-duplicate tenant labels are
+        # not silently rewritten to another VNDLY value.
+        lookup.setdefault(fred_normalize_skill_name(name), item)
 
+    return lookup
+
+
+def fred_catalog_exact_lookup(catalog):
+    """Build an exact-display-label lookup while preserving VNDLY spelling."""
+    lookup = {}
+    for item in catalog or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("skill_name", "")).strip()
+        if name:
+            lookup.setdefault(name.casefold(), item)
     return lookup
 
 
@@ -7914,6 +8829,7 @@ def fred_sanitize_recommended_skills(raw_items, catalog):
         return []
 
     lookup = fred_catalog_lookup(catalog)
+    exact_lookup = fred_catalog_exact_lookup(catalog)
     cleaned = []
     seen = set()
 
@@ -7932,7 +8848,10 @@ def fred_sanitize_recommended_skills(raw_items, catalog):
             evidence = ""
             reason = ""
 
-        exact = lookup.get(fred_normalize_skill_name(proposed))
+        proposed_text = str(proposed or "").strip()
+        exact = exact_lookup.get(proposed_text.casefold())
+        if not exact:
+            exact = lookup.get(fred_normalize_skill_name(proposed_text))
 
         if not exact:
             continue
@@ -10255,12 +11174,10 @@ LENGTH / STRUCTURE:
   such as former Freddie/rehire eligibility or confirmed availability for a
   required onsite schedule, a short opening clause may state it. Do not mention
   compensation or unnecessary immigration details.
-- If PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE exceeds the populated
-  structured VNDLY maximum experience value, do NOT state the total-career number
-  anywhere in Comments. Use a natural authority phrase instead.
-- Even when the number is within range, do NOT lead with a very large total-years
-  figure when it adds less shortlist value than the candidate's manager-priority
-  evidence.
+- The structured VNDLY experience range is requisition metadata only. Do NOT use
+  it to cap, truncate, or alter the candidate's truthful total-career experience.
+- If you state total career experience, use the exact Python-calculated value.
+  Do not substitute the VNDLY maximum or another rounded number.
 - Also return VNDLY_SUMMARY_EVIDENCE containing 2-8 short evidence excerpts
   that collectively support every candidate claim. Experience/skill/ownership
   evidence must come from the original resume or candidate-confirmed
@@ -10269,8 +11186,8 @@ LENGTH / STRUCTURE:
   structured CANDIDATE SUBMISSION FACTS. Role-source wording may explain
   transferability, but may not substitute for candidate evidence.
 - Sentence 1: natural candidate positioning title + the strongest genuine role
-  anchors. Use the deterministic total-career figure only when it strengthens
-  the shortlist case and does not unnecessarily advertise overqualification.
+  anchors. Use the deterministic total-career figure when it strengthens the
+  shortlist case; if used, it must remain exact.
 - Sentence 2: strongest concrete recent/repeated proof. Name the employer when
   it improves credibility. If a manager-ranked top priority is directly proven,
   make that match explicit here at the latest.
@@ -10530,6 +11447,17 @@ SELECTION PRINCIPLES:
   because it is a candidate strength.
 - Candidate evidence must genuinely support every selection.
 
+V67 CATALOGUE USAGE RULE:
+- The Freddie catalogue now contains a substantially broader set of REAL selectable
+  VNDLY values. Catalogue presence is NOT candidate evidence and is NOT a role
+  requirement. Continue to apply the candidate-evidence gate and current requisition
+  hierarchy before recommending anything.
+- `canonical_preferred` values are normal reusable skills.
+- `compound_review` values may be used only when the candidate supports the compound
+  competency and the full label adds useful role-specific signal.
+- `legacy_free_text` values are exact-structured-only and may NEVER be inferred as
+  supplemental recommendations merely because parts of the sentence match.
+
 STRUCTURED-SKILL RULE:
 - If source_category is `exact_structured_must`, skill_name MUST come from:
   {selected_must_json}
@@ -10784,6 +11712,24 @@ Return ONLY:
     ranked_skills = fred_prune_low_value_vndly_supplements(
         ranked_skills,
         structured_req,
+    )
+
+    # v66: perform the coding-agent rescue once more AFTER evidence reranking and
+    # low-value pruning. The earlier rescue can be pushed out of the bounded
+    # working pool when a requisition has many exact/required skills. This final
+    # no-cap pass guarantees candidate-proven manager-priority tools such as
+    # Amazon Q survive into the actual recruiter-facing VNDLY list.
+    ranked_skills = fred_rescue_manager_coding_agent_skills(
+        ranked_skills,
+        structured_req,
+        catalog,
+        candidate_evidence_text,
+        vndly_context,
+    )
+    ranked_skills = fred_apply_vndly_redundancy_control(
+        ranked_skills,
+        structured_req,
+        cap=None,
     )
 
     grouped_skills = fred_split_ranked_vndly_skills(
@@ -12578,7 +13524,10 @@ def fred_role_date_interval(dates, current_date):
     def parse_part(value, is_start):
         value = value.strip().upper()
 
-        if value in {"CURRENT", "PRESENT"}:
+        if value in {
+            "CURRENT", "PRESENT", "TILL DATE", "TIL DATE", "TO DATE",
+            "TILL PRESENT", "TIL PRESENT",
+        }:
             return current_date.year, current_date.month, True
 
         m = re.fullmatch(
@@ -14651,9 +15600,9 @@ CRITICAL:
 - PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE is available for accuracy,
   but it is NOT mandatory to lead with or even state total years in the Summary.
 - Use the total-years figure only when it materially strengthens the shortlist case.
-- If PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE exceeds a populated
-  structured VNDLY Maximum experience value, DO NOT state the total-career years
-  figure in the Summary. Use a natural authority phrase instead.
+- The structured VNDLY experience range is informational requisition metadata.
+  Do NOT use it to cap, truncate, or alter the candidate's truthful total-career
+  experience figure.
 - If you do state total career experience, use the exact deterministic value.
 - Do NOT independently recalculate it, round it up, or alter its wording.
 - If the calculated value is blank, do not invent a total-years figure.
@@ -14931,9 +15880,6 @@ Sentence 1 - IDENTITY + STRONGEST DIFFERENTIATOR
   the candidate's actual work clearly supports that functional identity.
 - You MAY use PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE when it
   strengthens the shortlist case, but do not force it into Sentence 1.
-- When the candidate is far above a stated target experience range, prefer
-  "extensive experience" or an equally natural authority phrase over a large
-  number that could create an unnecessary overqualification concern.
 - If you do state total career experience, use the exact deterministic value and
   never independently calculate or alter it.
 - CRITICAL GRAMMAR RULE: The total-career experience figure must NOT be written
