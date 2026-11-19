@@ -1,3 +1,4 @@
+# v65 FREDDIE SUBMISSION-MODE CONTEXT + SUMMARY/SKILLS + VNDLY CLEANUP
 # v64 AUTHORITATIVE RECRUITER-ENTERED NAMES + MULTILINE LINK FIELDS
 # v63 FREDDIE PRECISION TAILORING + EDUCATION FIDELITY + STRUCTURED VNDLY SKILLS
 # v62 FANNIE INTERVIEW Q&A SPACING + DYNAMIC DIVIDERS
@@ -2997,6 +2998,29 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
                     role_min = max(source_indices) + 1
                     global_min_index = max(source_indices) + 1
 
+        # v65 Freddie: after validating every AI-proposed history item, rebuild
+        # the rendered role from exact parsed source items. This preserves named
+        # project/system subsection labels and meaningful context even when the
+        # extractor omitted them, while remaining fully source-owned. It also
+        # marks those source blocks represented for the strict coverage audit.
+        if str(client_name or '').strip().casefold() == 'freddie mac':
+            deterministic_items = _resilient_source_items_for_role(
+                experience,
+                role_index,
+                blocks,
+                role_anchors,
+                client_name,
+            )
+            if deterministic_items:
+                restored = deterministic_items
+                start_idx = role_anchor + 1
+                end_idx = _next_distinct_anchor(role_index, role_anchors, len(blocks))
+                normalized_items = {_normalize_source_match(x) for x in restored if str(x).strip()}
+                for source_idx in range(start_idx, end_idx):
+                    source_text = _strip_list_marker_only(blocks[source_idx].get('text', ''))
+                    if _normalize_source_match(source_text) in normalized_items:
+                        matched_indices.append(source_idx)
+
         role['Bullets'] = restored
 
         # Environment/Technologies is also historical source content. Restore it
@@ -3195,7 +3219,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v64"
+_FORMATTER_BUILD_VERSION = "v65"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -3688,6 +3712,7 @@ def _resilient_source_items_for_role(experience, role_index, blocks, anchors, cl
 
     interval = []
     is_fannie = str(client_name or "").strip().casefold() == "fannie mae"
+    is_freddie = str(client_name or "").strip().casefold() == "freddie mac"
     for idx in range(start, end):
         block = blocks[idx]
         text = str(block.get("text", "") or "").strip()
@@ -3697,14 +3722,38 @@ def _resilient_source_items_for_role(experience, role_index, blocks, anchors, cl
             continue
         if is_fannie and _looks_like_fannie_compound_role_header(text, role):
             continue
-        if not block.get("is_list") and _looks_like_short_role_subheading(text):
+        # v65 Freddie: project/subsection labels inside a long role (for example
+        # eMBS, RMV Nightly Scenarios, Desktop Underwriter, JIT/ICR) carry real
+        # historical context. In Submission Mode preserve them rather than
+        # treating every short standalone line as disposable formatting.
+        if (
+            not block.get("is_list")
+            and _looks_like_short_role_subheading(text)
+            and not is_freddie
+        ):
             continue
         interval.append((idx, block))
 
     list_items = [(idx, block) for idx, block in interval if block.get("is_list")]
     source_items = []
 
-    if list_items:
+    if list_items and is_freddie:
+        # Freddie resumes frequently contain one employer/role with multiple
+        # named projects or systems followed by exact bullets. Preserve the
+        # source-owned project labels and meaningful narrative paragraphs in
+        # their original order so Submission Mode does not flatten away context.
+        # The emitted wording remains exact source text.
+        for _, block in interval:
+            text = _strip_list_marker_only(block.get("text", ""))
+            if not text or re.fullmatch(r"\d+", text):
+                continue
+            if block.get("is_list"):
+                source_items.append(text)
+                continue
+            if _looks_like_short_role_subheading(text) or len(text) >= 40:
+                source_items.append(text)
+
+    elif list_items:
         first_list_idx = list_items[0][0]
         # Preserve substantial narrative context before the first list item, but
         # exclude short labels/headings. Long narrative is exact source text.
@@ -7227,7 +7276,10 @@ def fred_should_suppress_total_years(calculated_total_experience, vndly_context)
     max_years = fred_numeric_years(vndly_context.get("max_experience", ""))
     if total_years is None or max_years is None or max_years <= 0:
         return False
-    return total_years >= max_years + 8 or (max_years <= 10 and total_years >= max_years * 2)
+    # v65: if Freddie publishes a maximum experience value, do not advertise a
+    # higher total-career number in shortlist-facing prose. The underlying work
+    # history remains complete; this is presentation only.
+    return total_years > max_years
 
 
 def fred_suppress_total_career_years(value, calculated_total_experience, vndly_context):
@@ -8535,6 +8587,66 @@ def fred_supplement_priority_skills(
     return output
 
 
+def fred_rescue_manager_coding_agent_skills(
+    ranked_skills,
+    structured_req,
+    catalog,
+    raw_resume_text,
+    vndly_context,
+):
+    """Ensure manager-explicit coding-agent tools are not lost to model variance."""
+    structured_req = fred_coerce_structured_req(structured_req)
+    vndly_context = vndly_context or {}
+    manager_text = "\n".join(
+        [
+            " ".join(str(x) for x in (structured_req.get("current_manager_priorities", []) or [])),
+            " ".join(str(x) for x in (structured_req.get("selection_feedback", []) or [])),
+            " ".join(str(x) for x in (structured_req.get("role_clarifications", []) or [])),
+            str(vndly_context.get("transcript", "") or ""),
+        ]
+    )
+    if not re.search(r"(?i)\b(?:coding agents?|coding assistants?|ai-assisted coding|spec(?:ification)? framework)\b", manager_text):
+        return [dict(x) for x in (ranked_skills or []) if isinstance(x, dict)]
+
+    output = [dict(x) for x in (ranked_skills or []) if isinstance(x, dict)]
+    seen = {fred_normalize_skill_name(x.get("skill_name", "")) for x in output}
+    catalog_by_key = {
+        fred_normalize_skill_name(x.get("skill_name", "")): x
+        for x in (catalog or [])
+        if isinstance(x, dict) and str(x.get("skill_name", "") or "").strip()
+    }
+
+    for skill_name in [
+        "AWS Kiro",
+        "Amazon Q",
+        "Claude Code, Amazon Bedrock, Multi-Model LLM, AI Agents, AI Chatbots",
+    ]:
+        key = fred_normalize_skill_name(skill_name)
+        if key in seen or key not in catalog_by_key:
+            continue
+        evidence_strength = fred_skill_work_history_evidence(skill_name, raw_resume_text)
+        if evidence_strength <= 0:
+            continue
+        evidence = fred_find_skill_evidence_excerpt(skill_name, raw_resume_text)
+        if not evidence:
+            continue
+        cat_item = catalog_by_key[key]
+        output.append(
+            {
+                "id": cat_item.get("id"),
+                "skill_name": skill_name,
+                "catalog_tier": str(cat_item.get("catalog_tier", "canonical_preferred") or "canonical_preferred"),
+                "source_category": "manager_priority",
+                "evidence": evidence,
+                "reason": "Manager-explicit coding-agent priority with direct candidate evidence",
+                "work_history_evidence_strength": evidence_strength,
+            }
+        )
+        seen.add(key)
+
+    return output
+
+
 def fred_vndly_skill_family(skill_name):
     """High-confidence skill families used for Freddie redundancy control."""
     key = fred_normalize_skill_name(skill_name)
@@ -9194,6 +9306,90 @@ def fred_apply_vndly_redundancy_control(
     if isinstance(cap, int) and cap > 0:
         return selected[:cap]
     return selected
+
+
+def fred_prune_low_value_vndly_supplements(ranked_skills, structured_req):
+    """
+    v65 final Freddie manual-skill cleanup.
+
+    Exact structured Must/Nice values are untouchable because Freddie attached
+    them to the requisition. For inferred/supplemental values only, remove broad
+    duplicates when a stronger structured/specific value is already selected,
+    suppress manager-de-emphasized JD coverage once higher-priority coverage is
+    strong, and drop a few generic extras that add little signal in an already
+    deep submission.
+    """
+    structured_req = fred_coerce_structured_req(structured_req)
+    items = [dict(x) for x in (ranked_skills or []) if isinstance(x, dict)]
+    selected_keys = {
+        fred_normalize_skill_name(x.get("skill_name", "")) for x in items
+    }
+    protected_categories = {"exact_structured_must", "exact_structured_nice"}
+
+    stronger_pairs = {
+        "ci/cd": {"ci/cd best practices"},
+        "aws": {"aws cloud platforms"},
+        "bedrock": {"aws bedrock", "aws bedrock (strongly preferred)"},
+        "eks": {"aws eks"},
+        "ai/ml": {
+            "llm/generative ai tools",
+            "ml algorithms",
+            "deep learning architectures",
+            "agentic ai",
+        },
+    }
+
+    deemphasized_text = " ".join(
+        str(x) for x in (structured_req.get("deemphasized_requirements", []) or [])
+    )
+    high_priority_count = sum(
+        1
+        for x in items
+        if str(x.get("source_category", "") or "").strip().lower()
+        in {
+            "exact_structured_must",
+            "required_job_intelligence",
+            "manager_priority",
+            "exact_structured_nice",
+        }
+    )
+
+    output = []
+    for item in items:
+        name = str(item.get("skill_name", "") or "").strip()
+        key = fred_normalize_skill_name(name)
+        category = str(item.get("source_category", "") or "").strip().lower()
+
+        if category in protected_categories:
+            output.append(item)
+            continue
+
+        stronger = stronger_pairs.get(key, set())
+        if stronger and any(candidate in selected_keys for candidate in stronger):
+            continue
+
+        if (
+            category == "jd_supported_coverage"
+            and deemphasized_text
+            and fred_skill_matches_text(name, deemphasized_text)
+            and high_priority_count >= 8
+        ):
+            continue
+
+        if (
+            key in {"rest", "automation"}
+            and category in {
+                "additional_high_value",
+                "jd_supported_coverage",
+                "preferred_job_intelligence",
+            }
+            and high_priority_count >= 12
+        ):
+            continue
+
+        output.append(item)
+
+    return output
 
 
 def fred_additional_skill_role_relevance(skill_name, structured_req, vndly_context):
@@ -10059,8 +10255,12 @@ LENGTH / STRUCTURE:
   such as former Freddie/rehire eligibility or confirmed availability for a
   required onsite schedule, a short opening clause may state it. Do not mention
   compensation or unnecessary immigration details.
-- Do NOT lead with a very large total-years number when it could create an
-  unnecessary overqualification concern. Use a natural authority phrase instead.
+- If PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE exceeds the populated
+  structured VNDLY maximum experience value, do NOT state the total-career number
+  anywhere in Comments. Use a natural authority phrase instead.
+- Even when the number is within range, do NOT lead with a very large total-years
+  figure when it adds less shortlist value than the candidate's manager-priority
+  evidence.
 - Also return VNDLY_SUMMARY_EVIDENCE containing 2-8 short evidence excerpts
   that collectively support every candidate claim. Experience/skill/ownership
   evidence must come from the original resume or candidate-confirmed
@@ -10075,9 +10275,12 @@ LENGTH / STRUCTURE:
   it improves credibility. If a manager-ranked top priority is directly proven,
   make that match explicit here at the latest.
 - Sentence 3: the next most important supported proof cluster, ideally including
-  relevant technical/domain depth.
+  relevant technical/domain depth and ONE strong production/result metric when
+  the candidate has a directly relevant supported outcome.
 - Sentence 4: explain why the proven experience transfers to THIS role and makes
-  the candidate worth manager review.
+  the candidate worth manager review. Prefer substantive candidate evidence over
+  lower-value logistics such as interview notice when the same logistics already
+  exist elsewhere in VNDLY.
 - Prefer four strong sentences when four fully make the case. Do not add a fifth
   sentence merely to inventory education, certifications, or generic technologies
   when stronger manager-priority evidence already establishes the shortlist case.
@@ -10557,6 +10760,13 @@ Return ONLY:
         selected_nice_items=selected_nice_items,
         vndly_context=vndly_context,
     )
+    ranked_skill_pool = fred_rescue_manager_coding_agent_skills(
+        ranked_skill_pool,
+        structured_req,
+        catalog,
+        candidate_evidence_text,
+        vndly_context,
+    )
 
     evidence_ranked_skills = fred_rerank_vndly_skills_by_evidence(
         ranked_skill_pool,
@@ -10570,6 +10780,10 @@ Return ONLY:
         evidence_ranked_skills,
         structured_req,
         cap=None,
+    )
+    ranked_skills = fred_prune_low_value_vndly_supplements(
+        ranked_skills,
+        structured_req,
     )
 
     grouped_skills = fred_split_ranked_vndly_skills(
@@ -11655,6 +11869,12 @@ SUMMARY:
   Summary makes it unmistakable by Sentence 1 or Sentence 2.
 - When prior Freddie experience directly strengthens this requisition, consider
   it once as a genuine differentiator rather than generic employer-name padding.
+- When the manager explicitly asks which named framework/coding agent candidates
+  used and the candidate directly supports one, prefer at least one exact named
+  tool in the first three sentences rather than only a generic umbrella phrase.
+- When a source-supported measurable production outcome is directly tied to the
+  role's highest-priority work, strongly prefer ONE meaningful metric in Sentence
+  2 or Sentence 3 instead of leaving the strongest quantified proof unused.
 - Never add defensive caveats such as "these are prior experiences" or "not work
   on Freddie Mac's current initiative/current project." Use ordinary
   transferability grammar to preserve the evidence/target-role boundary.
@@ -11703,6 +11923,14 @@ SKILLS TABLE:
 - When the manager explicitly screens for a particular framework/tool or
   competency dimension and candidate evidence supports it, prefer that exact
   supported term over a vaguer umbrella label.
+- Do not repeat the same named technology/tool in multiple detail items within
+  one row. If a compound detail repeats a tool already listed, rewrite that
+  detail to keep only the distinct supported concept.
+- Before finalizing, compare all four rows as a portfolio: each row must represent
+  a materially different screening dimension. If a row has only one or two weak
+  or redundant details while unused higher-priority supported evidence exists,
+  enrich that row with the stronger evidence rather than leaving obvious value
+  on the table.
 - Prefer direct operational/repeated evidence over impressive but secondary work.
 
 {error_section}
@@ -11818,6 +12046,40 @@ def fred_role_priority_quote_found(
             return True
 
     return False
+
+
+def fred_skill_detail_distinctive_terms(value):
+    """Named Freddie skill/tool concepts used only to detect redundant detail items."""
+    text = fred_normalize_skill_name(value)
+    concepts = {
+        "aws kiro": ["aws kiro", "kiro"],
+        "claude code": ["claude code"],
+        "amazon q": ["amazon q", "amazon q developer"],
+        "langgraph": ["langgraph"],
+        "langchain": ["langchain"],
+        "bedrock": ["amazon bedrock", "aws bedrock", "bedrock"],
+        "sagemaker": ["sagemaker"],
+        "eks": ["amazon eks", "aws eks", "eks"],
+        "pyspark": ["pyspark"],
+        "spark": ["apache spark", "spark"],
+        "git": ["git"],
+        "ci/cd": ["ci/cd", "continuous integration", "continuous deployment"],
+        "docker": ["docker"],
+        "kubernetes": ["kubernetes"],
+        "openai": ["openai"],
+        "a2a": ["agent-to-agent", "agent to agent", "a2a"],
+        "mcp": ["model context protocol", "mcp"],
+        "mlflow": ["mlflow", "ml flow"],
+    }
+    found = set()
+    for label, aliases in concepts.items():
+        if any(fred_normalize_skill_name(alias) in text for alias in aliases):
+            found.add(label)
+    # PySpark necessarily contains Spark text. Treat it as the more specific
+    # concept so one detail does not self-report both.
+    if "pyspark" in found:
+        found.discard("spark")
+    return found
 
 
 def fred_validate_grounded_tailoring(
@@ -11993,6 +12255,25 @@ def fred_validate_grounded_tailoring(
         if not details:
             errors.append(f"SKILL row {idx} has no grounded detail items.")
             continue
+
+        seen_detail_names = set()
+        seen_named_concepts = set()
+        for detail in details[:6]:
+            item = detail["item"]
+            item_key = fred_normalize_skill_name(item)
+            if item_key in seen_detail_names:
+                errors.append(
+                    f"SKILL row {idx} repeats the same detail item: {item}"
+                )
+            seen_detail_names.add(item_key)
+            concepts = fred_skill_detail_distinctive_terms(item)
+            repeated_concepts = concepts & seen_named_concepts
+            if repeated_concepts:
+                errors.append(
+                    f"SKILL row {idx} repeats named tool/technology concept(s) across detail items: "
+                    + ", ".join(sorted(repeated_concepts))
+                )
+            seen_named_concepts.update(concepts)
 
         for detail in details[:6]:
             item = detail["item"]
@@ -14093,8 +14374,15 @@ TITLE:
 
 BULLETS:
 - Preserve every substantive original bullet.
-- ONE SOURCE BULLET = ONE JSON ARRAY ITEM. NEVER concatenate, combine, merge,
-  summarize, or compress two separate source bullets into one array item, even
+- Freddie-specific project/subsection context is also historical evidence. When
+  a role contains a named project, system, product, initiative, or subsection
+  label followed by narrative or bullets (for example a short project name such
+  as "Desktop Underwriter" or "RMV Nightly Scenarios"), preserve that exact
+  source label as its own Bullets array item in source order rather than silently
+  discarding it. Preserve meaningful non-list project context paragraphs as their
+  own array items as well. Do not invent formatting or wording.
+- ONE SOURCE BULLET OR PRESERVED PROJECT-CONTEXT PARAGRAPH = ONE JSON ARRAY ITEM. NEVER concatenate, combine, merge,
+  summarize, or compress two separate source items into one array item, even
   when they discuss the same project, tool, or responsibility.
 - Preserve source bullet boundaries exactly. If three consecutive source bullets
   describe roadmaps, User Stories, and sprint planning, return THREE separate
@@ -14363,9 +14651,9 @@ CRITICAL:
 - PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE is available for accuracy,
   but it is NOT mandatory to lead with or even state total years in the Summary.
 - Use the total-years figure only when it materially strengthens the shortlist case.
-- If structured VNDLY experience guidance shows the candidate is materially
-  above the target range, DO NOT state the total-career years figure in the
-  Summary. Use a natural authority phrase such as "extensive experience".
+- If PYTHON-CALCULATED TOTAL PROFESSIONAL EXPERIENCE exceeds a populated
+  structured VNDLY Maximum experience value, DO NOT state the total-career years
+  figure in the Summary. Use a natural authority phrase instead.
 - If you do state total career experience, use the exact deterministic value.
 - Do NOT independently recalculate it, round it up, or alter its wording.
 - If the calculated value is blank, do not invent a total-years figure.
@@ -14674,6 +14962,10 @@ Sentence 1 - IDENTITY + STRONGEST DIFFERENTIATOR
   matches; the prior work must be materially relevant.
 - Prioritize approximately 2-4 of the most important supported Must Have
   competencies rather than trying to mention everything.
+- If the candidate has a source-supported measurable production result directly
+  tied to the manager's top priority, reserve room to surface ONE meaningful
+  metric by Sentence 2 or Sentence 3 rather than replacing it with a weaker
+  generic claim.
 - Keep this sentence understandable without requiring deep technical knowledge.
 
 ----------------------------------------------------------------------
@@ -15196,6 +15488,13 @@ SKILL DETAILS RULES
   the Skills table, list the capability cleanly (for example "Microsoft Power
   Platform"), while the work history/clarifications can carry timing context.
 - Do not repeat the exact same detail across multiple rows unless unavoidable.
+- Do not repeat the same named tool/technology in multiple details within the
+  same row. For example, if "AWS Kiro specifications" is already a detail, do
+  not spend another detail on "Claude Code and AWS Kiro"; keep the distinct
+  supported value such as "Claude Code" instead.
+- If a row contains only one or two details, check for unused higher-priority
+  candidate evidence before accepting a sparse row. Enrich it when stronger
+  supported details exist and still belong to that same competency family.
 
 ----------------------------------------------------------------------
 FINAL MSP / HIRING-MANAGER CHECK
