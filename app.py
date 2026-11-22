@@ -1,3 +1,4 @@
+# v68 SOURCE-STRUCTURE RESILIENCE + DIAGNOSTIC ACTION DETAIL
 # v67 FREDDIE VNDLY CATALOGUE EXPANSION + TIERED CONFIRMED SKILLS
 # v65 FREDDIE SUBMISSION-MODE CONTEXT + SUMMARY/SKILLS + VNDLY CLEANUP
 # v64 AUTHORITATIVE RECRUITER-ENTERED NAMES + MULTILINE LINK FIELDS
@@ -548,9 +549,35 @@ def _paragraph_is_list_item(paragraph, text=None):
     return bool(re.match(r"^(?:[•·▪◦●○■□►▸*]|[-–—])\s+|^\(?\d{1,3}[.)]\s+", text))
 
 
+def _canonical_section_heading_text(text):
+    """
+    Normalize only obvious resume section-heading artifacts.
+
+    PDF/DOCX conversion can letter-space headings such as ``S K I L L S`` or
+    ``C E R T I F I C A T I O N S``.  Collapse that exact structural pattern
+    without changing ordinary multi-word content.
+    """
+    value = re.sub(r"\s+", " ", str(text or "").strip())
+    if not value:
+        return ""
+
+    # Optional decorative underscore/line wrappers are common in Word resumes.
+    value = value.strip(" _=~")
+
+    # Collapse headings made almost entirely of single letters separated by spaces.
+    # Preserve separators such as /, &, and - so composite headings remain readable.
+    tokens = value.split()
+    letter_tokens = [t for t in tokens if re.fullmatch(r"[A-Za-z]", t)]
+    if len(letter_tokens) >= 3 and len(letter_tokens) >= max(3, int(len(tokens) * 0.75)):
+        value = re.sub(r"(?i)(?<![A-Za-z])([A-Za-z])(?:\s+)(?=[A-Za-z](?:\s|$))", r"\1", value)
+        value = re.sub(r"\s+", " ", value).strip()
+
+    return value
+
+
 def _looks_like_section_heading(text):
-    value = str(text or "").strip()
-    if not value or len(value) > 80:
+    value = _canonical_section_heading_text(text)
+    if not value or len(value) > 120:
         return False
 
     # Recognize standard resume section labels regardless of capitalization.
@@ -558,7 +585,18 @@ def _looks_like_section_heading(text):
         r"(?:professional summary|summary|profile|core competencies|competencies|"
         r"technical skills|skills|professional experience|work experience|employment history|"
         r"career history|additional experience|earlier experience|education|certifications?|"
-        r"certificates?|awards?|references?)\s*:?",
+        r"certificates?|awards?|references?|community involvement)\s*:?",
+        value,
+        flags=re.I,
+    ):
+        return True
+
+    # v68: projects outside employment history are a real section boundary, even
+    # when the heading carries a concise date marker (for example, Projects - Present).
+    if re.fullmatch(
+        r"(?:projects?|professional projects?|selected projects?|technical projects?|academic projects?)"
+        r"(?:\s*[-–—|:]\s*(?:present|current|(?:19|20)\d{2}"
+        r"(?:\s*[-–—]\s*(?:present|current|(?:19|20)\d{2}))?))?\s*:?",
         value,
         flags=re.I,
     ):
@@ -856,7 +894,56 @@ def _sentence_aligned_exact_subitem(target, source_text):
         search_at = pos + 1
 
 
-def _best_source_block_match(value, blocks, min_index=0, used=None):
+def _fused_role_header_trailing_source_item(value, source_text, role):
+    """
+    Return the exact trailing source substring when Word fused role metadata and
+    the first responsibility into one paragraph.  No fuzzy/semantic recovery is
+    allowed: the candidate item must normalize exactly to a trailing raw substring,
+    and the prefix must independently contain at least two proven role identifiers.
+    """
+    if not isinstance(role, dict):
+        return None
+    target = _normalize_source_match(_strip_list_marker_only(value))
+    source_raw = _strip_list_marker_only(source_text)
+    source_norm = _normalize_source_match(source_raw)
+    if len(target) < 20 or not source_norm.endswith(target) or source_norm == target:
+        return None
+
+    exact_tail = None
+    prefix_raw = ""
+    for match in re.finditer(r"\S+", source_raw):
+        tail = source_raw[match.start():].strip()
+        if _normalize_source_match(tail) == target:
+            exact_tail = tail
+            prefix_raw = source_raw[:match.start()].strip()
+            break
+    if not exact_tail or not prefix_raw:
+        return None
+
+    prefix_norm = _normalize_source_match(prefix_raw)
+    company = _normalize_source_match(clean_company_name(role.get("Company", "")))
+    title = _normalize_source_match(clean_job_title(role.get("Title", "")))
+    role_years = set(_extract_years(role.get("Dates", "")))
+    prefix_years = set(_extract_years(prefix_raw))
+
+    identifiers = 0
+    if company and company in prefix_norm:
+        identifiers += 1
+    if title and title in prefix_norm:
+        identifiers += 1
+    if role_years and role_years & prefix_years:
+        identifiers += 1
+    if identifiers < 2:
+        return None
+
+    # Do not strip a genuine narrative preface.  The prefix should be concise
+    # metadata rather than a completed accomplishment sentence.
+    if len(prefix_raw) > 320 or re.search(r"[.!?]\s*$", prefix_raw):
+        return None
+    return exact_tail
+
+
+def _best_source_block_match(value, blocks, min_index=0, used=None, role=None):
     """
     Return the best source match for a generated/extracted historical item.
 
@@ -873,7 +960,7 @@ def _best_source_block_match(value, blocks, min_index=0, used=None):
     - Single-block exact/near-exact matching remains the first choice.
     - Sentence recovery is exact-only, list-item-only, and sentence-boundary-aligned.
     - Sentence recovery emits the whole original source bullet, never the shortened AI text.
-    - Continuation spans are limited to three adjacent blocks.
+    - Continuation spans are limited to six adjacent blocks.
     - A span may continue only while the prior fragment does NOT end in terminal
       punctuation, preventing two complete source bullets from being merged.
     - Every block in the span must be unused and in source order.
@@ -887,6 +974,7 @@ def _best_source_block_match(value, blocks, min_index=0, used=None):
 
     exact = []
     sentence_recovery = []
+    fused_role_recovery = []
     fuzzy = []
 
     def consider(candidate_text, start_idx, source_indices, base_block):
@@ -924,12 +1012,23 @@ def _best_source_block_match(value, blocks, min_index=0, used=None):
             synthetic['_restored_from_sentence_subitem'] = True
             sentence_recovery.append((idx, synthetic))
 
+        # v68: Word can fuse Company/Location/Date/Title metadata and the first
+        # responsibility into one paragraph. Recover only the exact trailing source
+        # substring after independently proven role metadata.
+        fused_tail = _fused_role_header_trailing_source_item(value, source_text, role)
+        if fused_tail:
+            synthetic = dict(block)
+            synthetic['text'] = fused_tail
+            synthetic['_source_indices'] = [idx]
+            synthetic['_restored_from_fused_role_header'] = True
+            fused_role_recovery.append((idx, synthetic))
+
         # PDF/Word continuation case: one visible bullet was split across adjacent
         # parsed blocks. Never cross a completed sentence/bullet boundary.
         pieces = [source_text]
         source_indices = [idx]
         previous_piece = source_text
-        for next_idx in range(idx + 1, min(len(blocks), idx + 3)):
+        for next_idx in range(idx + 1, min(len(blocks), idx + 6)):
             if next_idx in used:
                 break
             if re.search(r'[.!?;]\s*$', previous_piece):
@@ -949,6 +1048,9 @@ def _best_source_block_match(value, blocks, min_index=0, used=None):
     if exact:
         exact.sort(key=lambda x: x[0])
         return exact[0]
+    if fused_role_recovery:
+        fused_role_recovery.sort(key=lambda x: x[0])
+        return fused_role_recovery[0]
     if sentence_recovery:
         sentence_recovery.sort(key=lambda x: x[0])
         return sentence_recovery[0]
@@ -1718,7 +1820,7 @@ def _looks_like_role_metadata_label(text):
         r"role|position|job\s+title|"
         r"project(?:\s+name)?|program(?:\s+name)?|initiative|workstream|engagement|assignment|"
         r"location|dates?|duration|"
-        r"environment|technologies"
+        r"environment|environments|technologies|tech\s+stack|technology\s+stack"
         r")\s*:\s*\S",
         value,
         flags=re.I,
@@ -1727,7 +1829,7 @@ def _looks_like_role_metadata_label(text):
         return False
 
     label = match.group("label").casefold()
-    if label in {"environment", "technologies"}:
+    if label in {"environment", "environments", "technologies", "tech stack", "technology stack"}:
         # Environment inventories commonly run several hundred characters. They are
         # metadata when explicitly labeled, regardless of length.
         return True
@@ -1770,6 +1872,45 @@ def _looks_like_pagination_artifact(text):
     return False
 
 
+def _looks_like_company_location_metadata(text, role):
+    """
+    Recognize a proven company header followed only by location/work-arrangement
+    metadata, e.g. ``Iron Bow Technologies | Remote`` or ``Acme | Dallas, TX``.
+
+    This stays intentionally narrow: the company must begin the source line and
+    exactly match the already source-verified role company after normalization;
+    the remainder must look like location/work-arrangement metadata rather than
+    narrative work content.
+    """
+    value = _strip_list_marker_only(str(text or "").strip())
+    company = clean_company_name(role.get("Company", "")) if isinstance(role, dict) else ""
+    company_norm = _normalize_source_match(company)
+    source_norm = _normalize_source_match(value)
+    if not value or not company_norm or not source_norm.startswith(company_norm):
+        return False
+    if source_norm == company_norm:
+        return True
+
+    remainder_norm = source_norm[len(company_norm):].strip()
+    if not remainder_norm or len(remainder_norm) > 90:
+        return False
+    if re.search(r"\b(?:managed|led|built|developed|designed|implemented|supported|created|performed|responsible|worked|provided|administered|maintained|resolved|coordinated)\b", remainder_norm, flags=re.I):
+        return False
+    if re.search(r"[.!?]", value):
+        return False
+
+    # Strong work-arrangement signal.
+    if re.fullmatch(r"(?:remote|hybrid|onsite|on\s+site|fully\s+remote|fully\s+onsite)(?:\s+[a-z]{2})?", remainder_norm, flags=re.I):
+        return True
+
+    # Conventional US city/state/ZIP or city/state plus work arrangement.
+    if re.search(r"\b[A-Z]{2}\b(?:\s+\d{5}(?:-\d{4})?)?", value) and len(value) <= len(company) + 90:
+        return True
+    if re.search(r"\b(?:remote|hybrid|onsite|on\s+site)\b", value, flags=re.I) and len(value) <= len(company) + 90:
+        return True
+    return False
+
+
 def _likely_role_metadata_block(text, role):
     source = _normalize_source_match(text)
     if not source:
@@ -1789,6 +1930,8 @@ def _likely_role_metadata_block(text, role):
     company = _normalize_source_match(clean_company_name(role.get('Company', '')))
     title = _normalize_source_match(clean_job_title(role.get('Title', '')))
     dates = str(role.get('Dates', '') or '').strip()
+    if _looks_like_company_location_metadata(text, role):
+        return True
     if company and source == company:
         return True
     if title and (source == title or title in source and len(source) <= len(title) + 45):
@@ -2123,13 +2266,37 @@ def _candidate_matches_navy_role_context(candidate, context_indices, blocks):
     return False
 
 
-def _validate_role_date_precision(role, blocks, anchor_index, client_name, role_num):
+def _exact_duplicate_source_item_already_represented(source_item, represented_indices, blocks):
+    """Count an exact repeated source block as covered when its identical twin was restored."""
+    target = _normalize_source_match(_strip_list_marker_only(source_item))
+    if not target:
+        return False
+    for source_idx in set(represented_indices or []):
+        if source_idx < 0 or source_idx >= len(blocks):
+            continue
+        other = _normalize_source_match(_strip_list_marker_only(blocks[source_idx].get("text", "")))
+        if other and other == target:
+            return True
+    return False
+
+
+def _validate_role_date_precision(role, blocks, anchor_index, client_name, role_num, role_interval=None):
     dates = str(role.get('Dates', '') or '').strip()
     if not dates or anchor_index is None:
         return
+    nearby_indices = range(max(0, anchor_index - 2), min(len(blocks), anchor_index + 4))
+    if role_interval and str(client_name or '').strip().casefold() == 'freddie mac':
+        interval_start, interval_end = role_interval
+        if (
+            isinstance(interval_start, int)
+            and isinstance(interval_end, int)
+            and 0 <= interval_start < interval_end <= len(blocks)
+            and interval_start <= anchor_index < interval_end
+        ):
+            nearby_indices = range(interval_start, interval_end)
     nearby = ' '.join(
         str(blocks[i].get('text', '') or '')
-        for i in range(max(0, anchor_index - 2), min(len(blocks), anchor_index + 4))
+        for i in nearby_indices
     )
     output_years = set(_extract_years(dates))
     source_years = set(_extract_years(nearby))
@@ -2213,7 +2380,7 @@ def _experience_section_bounds(blocks, role_anchors):
     for idx in range(scan_from, len(blocks)):
         text = str(blocks[idx].get('text', '') or '').strip()
         if _looks_like_section_heading(text) and re.search(
-            r"\b(?:education|certifications?|skills|technical skills|awards?|references?)\b",
+            r"\b(?:education|certifications?|skills|technical skills|awards?|references?|projects?)\b",
             text,
             flags=re.I,
         ):
@@ -2589,6 +2756,51 @@ def _freddie_education_section_ranges(blocks):
     return ranges
 
 
+def _generic_education_entry_source_supported(school, degree, blocks, raw_text=""):
+    """
+    Verify a conventional education entry across adjacent source blocks without
+    weakening source fidelity. Every displayed school/degree component must be
+    present in an Education-context window, and a formal academic credential signal
+    is required. This handles layouts such as ``College, AA`` on one line and the
+    concentration on the immediately following line.
+    """
+    school = clean_school(school)
+    degree = re.sub(r"\s+", " ", str(degree or "")).strip()
+    degree_core = re.sub(r"\s*\(?\b(?:19|20)\d{2}\b\)?\s*$", "", degree).strip(" ,-–—")
+    if degree_core and not _has_formal_academic_credential_signal(degree_core):
+        return False
+
+    # Reuse the context-aware verifier, but use the degree without a trailing year
+    # because completion years are often stored in a neighboring column/block.
+    if _education_entry_has_source_context(school, degree_core or degree, blocks):
+        return True
+
+    school_norm = _normalize_source_match(school)
+    degree_value = degree_core or degree
+    degree_norm = _normalize_source_match(degree_value)
+    degree_parts = [
+        _normalize_source_match(part)
+        for part in re.split(r"\s*,\s*", degree_value)
+        if _normalize_source_match(part)
+    ]
+    for start, end in _education_section_ranges(blocks):
+        for idx in range(start, end):
+            window_text = " ".join(
+                str(blocks[j].get("text", "") or "")
+                for j in range(max(start, idx - 1), min(end, idx + 3))
+            )
+            window_norm = _normalize_source_match(window_text)
+            school_ok = (not school_norm) or school_norm in window_norm
+            degree_ok = (
+                (not degree_norm)
+                or degree_norm in window_norm
+                or (len(degree_parts) >= 2 and all(part in window_norm for part in degree_parts))
+            )
+            if school_ok and degree_ok and _has_formal_academic_credential_signal(window_text):
+                return True
+    return False
+
+
 def _freddie_education_entry_source_supported(school, degree, blocks, raw_text=""):
     """
     Verify Freddie education when degree, school, and year are interleaved on one
@@ -2632,6 +2844,61 @@ def _freddie_education_entry_source_supported(school, degree, blocks, raw_text="
             return True
 
     return bool(raw_text and context_supports(raw_text))
+
+
+def _freddie_parent_assignment_interval(role, role_index, experience, blocks, role_anchors):
+    """
+    Return a conservative source interval for a Freddie parent employer assignment
+    when multiple extracted subroles/projects share that assignment. This is used
+    only to prove dates already present in source, never to invent or widen dates.
+    """
+    if not isinstance(role, dict) or role_index >= len(role_anchors):
+        return None
+    anchor = role_anchors[role_index]
+    if anchor is None:
+        return None
+    company = _normalize_source_match(clean_company_name(role.get("Company", "")))
+    if not company:
+        return None
+
+    # Walk backward to the earliest adjacent extracted role with the same proven company.
+    first = role_index
+    while first > 0:
+        prior = experience[first - 1]
+        if not isinstance(prior, dict):
+            break
+        prior_company = _normalize_source_match(clean_company_name(prior.get("Company", "")))
+        if prior_company != company:
+            break
+        first -= 1
+
+    # Walk forward through adjacent same-company subroles.
+    last = role_index
+    while last + 1 < len(experience):
+        nxt = experience[last + 1]
+        if not isinstance(nxt, dict):
+            break
+        next_company = _normalize_source_match(clean_company_name(nxt.get("Company", "")))
+        if next_company != company:
+            break
+        last += 1
+
+    start_anchor = role_anchors[first] if first < len(role_anchors) else anchor
+    if start_anchor is None:
+        start_anchor = anchor
+    end = len(blocks)
+    for idx in range(last + 1, len(role_anchors)):
+        next_anchor = role_anchors[idx]
+        if next_anchor is not None and next_anchor > anchor:
+            end = next_anchor
+            break
+
+    # Include a tiny pre-anchor window because employer/date headers can precede the
+    # exact title/project anchor chosen for a subrole. Never cross the prior role anchor.
+    start = max(0, start_anchor - 2)
+    if first > 0 and role_anchors[first - 1] is not None:
+        start = max(start, role_anchors[first - 1] + 1)
+    return (start, end) if start < end else None
 
 
 def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatter"):
@@ -2687,14 +2954,21 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
                     school, degree, blocks, raw_text=raw_text
                 )
             )
-            if school and not _source_supports_display_value(school, blocks) and not freddie_education_ok:
+            generic_education_ok = (
+                not is_freddie
+                and _generic_education_entry_source_supported(
+                    school, degree, blocks, raw_text=raw_text
+                )
+            )
+            education_context_ok = freddie_education_ok or generic_education_ok
+            if school and not _source_supports_display_value(school, blocks) and not education_context_ok:
                 raise RuntimeError(
                     f"{client_name} source-fidelity check could not verify school name: {school}"
                 )
             if degree and not _source_supports_display_value(degree, blocks):
                 if (
                     _normalize_source_match(degree) not in _normalize_source_match(raw_text)
-                    and not freddie_education_ok
+                    and not education_context_ok
                 ):
                     raise RuntimeError(
                         f"{client_name} source-fidelity check could not verify degree: {degree}"
@@ -2809,12 +3083,18 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
         )
 
     for role_num, role in enumerate(experience, start=1):
+        role_interval = None
+        if str(client_name or '').strip().casefold() == 'freddie mac':
+            role_interval = _freddie_parent_assignment_interval(
+                role, role_num - 1, experience, blocks, role_anchors
+            )
         _validate_role_date_precision(
             role,
             blocks,
             role_anchors[role_num - 1],
             client_name,
             role_num,
+            role_interval=role_interval,
         )
 
     _validate_no_dated_roles_omitted(
@@ -2954,6 +3234,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
                         blocks,
                         min_index=role_min,
                         used=global_used,
+                        role=role,
                     )
                     # v53 Fannie PDF hardening: recover an exact final bullet when
                     # Adobe structurally fuses the next short role subheading to the
@@ -3030,7 +3311,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
         if env_value:
             env_clean = _strip_list_marker_only(env_value)
             env_clean = re.sub(
-                r"^(?:environment|technologies)\s*:\s*",
+                r"^(?:environment|environments|technologies|tech\s+stack|technology\s+stack)\s*:\s*",
                 "",
                 env_clean,
                 flags=re.I,
@@ -3046,7 +3327,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
                     str(blocks[env_idx].get('text', '') or '').strip()
                 )
                 match = re.match(
-                    r"^(?:environment|technologies)\s*:\s*(.+)$",
+                    r"^(?:environment|environments|technologies|tech\s+stack|technology\s+stack)\s*:\s*(.+)$",
                     source_env,
                     flags=re.I,
                 )
@@ -3102,7 +3383,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
         for idx in range(start, end):
             text = blocks[idx].get('text', '')
             if _looks_like_section_heading(text) and re.search(
-                r"\b(?:education|certifications?|skills|technical skills|awards?|references?|additional experience|earlier experience|professional experience)\b",
+                r"\b(?:education|certifications?|skills|technical skills|awards?|references?|projects?|additional experience|earlier experience|professional experience)\b",
                 text,
                 flags=re.I,
             ):
@@ -3167,6 +3448,10 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
                 )
             ):
                 continue
+            if _exact_duplicate_source_item_already_represented(
+                source_item, matched_by_role[role_idx], blocks
+            ):
+                continue
             missing.append(source_item)
         if missing:
             preview = ' | '.join(x[:140] for x in missing[:3])
@@ -3220,7 +3505,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v67"
+_FORMATTER_BUILD_VERSION = "v68"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -3763,7 +4048,7 @@ def _resilient_source_items_for_role(experience, role_index, blocks, anchors, cl
     for idx in range(start, end):
         text = str(blocks[idx].get("text", "") or "").strip()
         if _looks_like_section_heading(text) and re.search(
-            r"\b(?:education|certifications?|skills|technical skills|awards?|references?|"
+            r"\b(?:education|certifications?|skills|technical skills|awards?|references?|projects?|"
             r"additional experience|earlier experience|professional experience|community involvement)\b",
             text,
             flags=re.I,
@@ -4735,6 +5020,7 @@ def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_erro
 
     result = copy.deepcopy(data)
     warnings = [f"Strict QA fallback activated: {strict_error}"]
+    fallback_actions = []
 
     # Candidate name: keep direct source/filename support for clients that derive
     # identity from the resume. Fannie v57 intentionally excludes AI/source name
@@ -4750,6 +5036,7 @@ def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_erro
             or _normalize_source_match(full_name) in _normalize_source_match(filename)
         ):
             warnings.append(f"Unverified candidate name removed from output: {full_name}")
+            fallback_actions.append("Candidate name removed because source/filename support could not be proven")
             full_name = ""
     result["FullName"] = full_name
 
@@ -4769,21 +5056,31 @@ def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_erro
                     school, degree, blocks, raw_text=raw_text
                 )
             )
+            generic_education_ok = (
+                not is_freddie
+                and _generic_education_entry_source_supported(
+                    school, degree, blocks, raw_text=raw_text
+                )
+            )
+            education_context_ok = freddie_education_ok or generic_education_ok
             school_ok = (
                 (not school)
                 or _source_supports_display_value(school, blocks)
-                or freddie_education_ok
+                or education_context_ok
             )
             degree_ok = (
                 (not degree)
                 or _source_supports_display_value(degree, blocks)
                 or _normalize_source_match(degree) in _normalize_source_match(raw_text)
-                or freddie_education_ok
+                or education_context_ok
             )
             if not (school_ok and degree_ok):
                 warnings.append(
                     "Unsupported education item omitted in Submission Mode: "
                     + " / ".join(x for x in [school, degree] if x)
+                )
+                fallback_actions.append(
+                    "Education item omitted because all displayed components could not be proven in academic source context"
                 )
                 continue
             if (
@@ -4811,12 +5108,14 @@ def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_erro
 
         if company and not _source_supports_display_value(company, blocks):
             warnings.append(f"Role {role_num}: unsupported company removed: {company}")
+            fallback_actions.append(f"Role {role_num}: unsupported company removed")
             company = ""
         if title and not (
             _source_supports_display_value(title, blocks)
             or _source_supports_split_job_title(title, blocks)
         ):
             warnings.append(f"Role {role_num}: unsupported title removed: {title}")
+            fallback_actions.append(f"Role {role_num}: unsupported title removed")
             title = ""
 
         role["Company"] = company
@@ -4826,12 +5125,21 @@ def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_erro
         anchor = anchors[role_index] if role_index < len(anchors) else None
         if dates and anchor is not None:
             try:
-                _validate_role_date_precision(role, blocks, anchor, client_name, role_num)
+                role_interval = None
+                if str(client_name or '').strip().casefold() == 'freddie mac':
+                    role_interval = _freddie_parent_assignment_interval(
+                        role, role_index, experience, blocks, anchors
+                    )
+                _validate_role_date_precision(
+                    role, blocks, anchor, client_name, role_num, role_interval=role_interval
+                )
             except Exception:
                 warnings.append(f"Role {role_num}: unsupported/increased date precision removed: {dates}")
+                fallback_actions.append(f"Role {role_num}: date text removed because source precision could not be proven")
                 role["Dates"] = ""
         elif dates and _normalize_source_match(dates) not in _normalize_source_match(raw_text):
             warnings.append(f"Role {role_num}: unverified date text removed: {dates}")
+            fallback_actions.append(f"Role {role_num}: unverified date text removed")
             role["Dates"] = ""
 
         source_items = _resilient_source_items_for_role(
@@ -4844,6 +5152,9 @@ def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_erro
 
         if source_items:
             role["Bullets"] = source_items
+            fallback_actions.append(
+                f"Role {role_num}: rebuilt work history from {len(source_items)} exact source item(s)"
+            )
         else:
             # No reliable role interval: retain only AI bullets that can be restored
             # to an exact/near-exact source item anywhere in the source, in order.
@@ -4862,12 +5173,14 @@ def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_erro
                     blocks,
                     min_index=min_idx,
                     used=used,
+                    role=role,
                 )
                 if block is None:
                     warnings.append(
                         f"Role {role_num}: unsupported AI bullet omitted: "
                         f"{str(bullet)[:160]}"
                     )
+                    fallback_actions.append(f"Role {role_num}: unsupported AI bullet omitted")
                     continue
                 exact = _strip_list_marker_only(block.get("text", ""))
                 restored.append(exact)
@@ -4880,7 +5193,7 @@ def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_erro
         env = str(role.get("Environment", "") or "").strip()
         if env:
             env_clean = re.sub(
-                r"^(?:environment|technologies)\s*:\s*",
+                r"^(?:environment|environments|technologies|tech\s+stack|technology\s+stack)\s*:\s*",
                 "",
                 _strip_list_marker_only(env),
                 flags=re.I,
@@ -4888,13 +5201,14 @@ def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_erro
             supported = False
             for block in blocks:
                 source = _strip_list_marker_only(str(block.get("text", "") or "").strip())
-                match = re.match(r"^(?:environment|technologies)\s*:\s*(.+)$", source, flags=re.I)
+                match = re.match(r"^(?:environment|environments|technologies|tech\s+stack|technology\s+stack)\s*:\s*(.+)$", source, flags=re.I)
                 if match and _normalize_source_match(match.group(1)) == _normalize_source_match(env_clean):
                     supported = True
                     role["Environment"] = match.group(1).strip()
                     break
             if not supported:
                 warnings.append(f"Role {role_num}: unsupported Environment/Technologies removed")
+                fallback_actions.append(f"Role {role_num}: unsupported environment/technology inventory removed")
                 role["Environment"] = ""
 
         if "Responsible" in role:
@@ -4939,10 +5253,26 @@ def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_erro
             clean_certs.append(cleaned)
         elif cleaned:
             warnings.append(f"Unverifiable certification omitted: {cleaned}")
+            fallback_actions.append("Unverifiable certification omitted")
 
     result["Certifications"] = clean_certs if isinstance(certs, list) else ", ".join(clean_certs)
     result["Experience"] = experience
+
+    # v68 diagnostic detail: summarize what Submission Mode actually changed.
+    # Keep the list deterministic, concise, and free of candidate PII where possible.
+    deduped_actions = []
+    for action in fallback_actions:
+        action = str(action or "").strip()
+        if action and action not in deduped_actions:
+            deduped_actions.append(action)
+    if deduped_actions:
+        warnings.append("Fallback actions:")
+        warnings.extend(f"- {action}" for action in deduped_actions[:30])
+    else:
+        warnings.append("Fallback actions: no historical fields were removed; source-owned structure was rebuilt conservatively.")
+
     result["_FidelityWarnings"] = warnings
+    result["_FidelityFallbackActions"] = deduped_actions
     return result, warnings
 
 
@@ -4998,12 +5328,19 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
             ) from fallback_error
 
         warning_text = str(strict_error)
+        diagnostic_lines = [str(x) for x in warnings[:18]]
+        fallback_actions = recovered.get("_FidelityFallbackActions", []) if isinstance(recovered, dict) else []
+        if fallback_actions:
+            # Always surface the action summary in the email even when the warning
+            # list itself is long enough that a simple [:25] slice would hide it.
+            diagnostic_lines.append("Fallback actions:")
+            diagnostic_lines.extend(f"- {str(x)}" for x in fallback_actions[:12])
         notify_formatter_diagnostic(
             client_name,
             "WARNING",
             warning_text,
             raw_text=raw_text,
-            technical_details="\n".join(str(x) for x in warnings[:25]),
+            technical_details="\n".join(diagnostic_lines[:32]),
         )
         st.warning(
             "⚠️ Source-structure QA warning: the strict audit could not perfectly reconcile "
@@ -20228,7 +20565,7 @@ def deloitte_rfp_evidence_catalog(experience, raw_text=""):
         environment = str(role.get("Environment", "") or "").strip()
         if environment:
             env_text = re.sub(
-                r"^(?:environment|technologies)\s*:\s*",
+                r"^(?:environment|environments|technologies|tech\s+stack|technology\s+stack)\s*:\s*",
                 "",
                 _strip_list_marker_only(environment),
                 flags=re.I,
