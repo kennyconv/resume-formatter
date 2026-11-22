@@ -1,3 +1,5 @@
+# v72 FREDDIE DONT-HAVE EXCLUSION RESTORED
+# v71 ALL GOOGLE-SHEET JOBS VISIBLE IN CLIENT DROPDOWNS
 # v70 PRIVATE GSHEETS + DEDICATED FANNIE FIELDGLASS JOB HUB
 # v69 BULLHORN JOB HUB + DELOITTE MATRIX AUTO-EXTRACTION
 # v68 SOURCE-STRUCTURE RESILIENCE + DIAGNOSTIC ACTION DETAIL
@@ -6541,10 +6543,8 @@ def load_fannie_formatter_jobs(url=FANNIE_FORMATTER_SHEET_URL):
 
 
 def _bullhorn_formatter_is_active_job(row):
-    """Submission dropdowns show only jobs that are open AND accepting candidates."""
-    open_closed = _bullhorn_formatter_clean_text(row.get("Open/Closed", "")).casefold()
-    stage = _bullhorn_formatter_clean_text(row.get("Job Stage", "")).casefold()
-    return open_closed == "open" and stage == "accepting candidates"
+    """v71: Keep every client-matched Bullhorn job visible regardless of status/stage."""
+    return True
 
 
 def _bullhorn_formatter_client_rows(client_key):
@@ -6635,7 +6635,7 @@ def _bullhorn_formatter_requisition_options(client_key):
 
 
 def _fannie_formatter_requisition_options():
-    """Return active Fannie Fieldglass dropdown options and authoritative row data."""
+    """Return all Fannie Fieldglass dropdown options and authoritative row data."""
     options = ["None"]
     mapping = {}
     df = load_fannie_formatter_jobs()
@@ -6648,11 +6648,8 @@ def _fannie_formatter_requisition_options():
         title = _bullhorn_formatter_clean_text(row.get("Job Posting Title", ""))
         manager = _bullhorn_formatter_clean_text(row.get("Hiring Manager", ""))
 
-        # Match v69's submission-only philosophy. In the Fieldglass feed,
-        # Submitted is the live requisition state; Halted and Closed are not
-        # candidate-submission options and must stay out of the dropdown.
-        if status.casefold() != "submitted":
-            continue
+        # v71: Keep every Fannie job from the linked Fieldglass worksheet visible
+        # regardless of Job Posting Status (Submitted, Halted, Closed, etc.).
         if not req_id:
             continue
 
@@ -15310,9 +15307,9 @@ def freddie_mac_app():
             manager = str(row.get("Resource Manager", "")).strip()
             status = str(row.get("Status", "")).strip()
 
-            # MSP-only requisitions that were never distributed to Convergenz
-            # remain in the VNDLY tracker but must not appear in the
-            # Resume Formatter requisition dropdown.
+            # Freddie exception: MSP-only requisitions that were never distributed
+            # to Convergenz remain in the VNDLY tracker but must not appear in the
+            # Resume Formatter requisition dropdown. All other Freddie statuses stay visible.
             if status.lower() in {"don't have", "dont have"}:
                 continue
 
