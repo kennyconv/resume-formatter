@@ -1,3 +1,4 @@
+# v70 PRIVATE GSHEETS + DEDICATED FANNIE FIELDGLASS JOB HUB
 # v69 BULLHORN JOB HUB + DELOITTE MATRIX AUTO-EXTRACTION
 # v68 SOURCE-STRUCTURE RESILIENCE + DIAGNOSTIC ACTION DETAIL
 # v67 FREDDIE VNDLY CATALOGUE EXPANSION + TIERED CONFIRMED SKILLS
@@ -6421,21 +6422,31 @@ def process_word_doc(temp_path, mapping, out_path):
 
 
 # ====================================================================
-# --- v69 SHARED BULLHORN JOB HUB (NON-FREDDIE CLIENTS) ---
+# --- v70 PRIVATE GOOGLE-SHEET JOB HUBS ---
 # ====================================================================
 # Freddie Mac intentionally remains on its separate private VNDLY/API sheet.
-# All clients below use the Bullhorn Jobs - Formatter Data workbook instead of
-# the retired multi-client requisition tracker.
+# Fannie Mae now uses its dedicated private Fieldglass Jobs workbook.
+# Deloitte/Navy Federal/BNSF/Peraton/ADUSA/Capital One/CBRE continue to use
+# Bullhorn Jobs - Formatter Data, but v70 removes the public CSV path entirely.
+# Both workbooks are read through the same authenticated Streamlit "gsheets"
+# service-account connection already used by Freddie Mac.
 BULLHORN_FORMATTER_SHEET_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "115KRDjRJI-nfOjzce1B2o2EwBIAcKMffGreqNNCLjck/edit?usp=sharing"
 )
 BULLHORN_FORMATTER_WORKSHEET = "Bullhorn Jobs"
 
+FANNIE_FORMATTER_SHEET_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1cTHvbfPjQbQ37M95USDRyiYyyvIwlUVwXIjzxe_-zPU/edit?usp=sharing"
+)
+FANNIE_FORMATTER_WORKSHEET = "Fannie Mae Jobs"
+
 # Bullhorn company labels are not always identical to the formatter's client tab.
 # Keep aliases explicit so a new unrelated company can never drift into a client.
+# Fannie Mae is intentionally absent because v70 sources Fannie only from its
+# dedicated Fieldglass workbook above.
 _BULLHORN_FORMATTER_CLIENT_ALIASES = {
-    "fannie mae": {"fannie mae"},
     "navy federal": {"navy federal credit union", "navy federal"},
     "deloitte": {"deloitte consulting, llp", "deloitte consulting", "deloitte"},
     "bnsf": {"bnsf", "bnsf railway"},
@@ -6475,38 +6486,58 @@ def _bullhorn_formatter_company_key(value):
     return value
 
 
-@st.cache_data(ttl=600, show_spinner=False)
-def load_bullhorn_formatter_jobs(url=BULLHORN_FORMATTER_SHEET_URL):
-    """
-    Load the Bullhorn Jobs tab used by every non-Freddie requisition dropdown.
-
-    Preferred path is Google's public CSV endpoint because it is fast and does
-    not require per-user OAuth inside Streamlit. If the workbook is kept private,
-    the existing Streamlit GSheets connection is attempted as a fallback.
-    """
-    try:
-        base_url = str(url).split("/edit")[0]
-        csv_url = (
-            base_url
-            + "/gviz/tq?tqx=out:csv&sheet=Bullhorn%20Jobs"
-        )
-        df = pd.read_csv(csv_url)
-        df.columns = [str(col).strip() for col in df.columns]
-        return df.fillna("")
-    except Exception:
-        pass
-
+def _private_gsheet_read(url, worksheet, source_label):
+    """Read one private Google worksheet through Streamlit's service account."""
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
         df = conn.read(
             spreadsheet=url,
-            worksheet=BULLHORN_FORMATTER_WORKSHEET,
+            worksheet=worksheet,
             ttl=600,
         )
+        if df is None:
+            return pd.DataFrame()
         df.columns = [str(col).strip() for col in df.columns]
         return df.fillna("")
-    except Exception:
+    except Exception as exc:
+        st.error(
+            f"❌ Unable to load the private {source_label} Google Sheet. "
+            "Make sure this spreadsheet is shared with the Streamlit Google "
+            f"service-account email configured under connections.gsheets. {str(exc)}"
+        )
         return pd.DataFrame()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_bullhorn_formatter_jobs(url=BULLHORN_FORMATTER_SHEET_URL):
+    """
+    Load the private Bullhorn Jobs tab used by non-Fannie/non-Freddie dropdowns.
+
+    v70 intentionally has NO public CSV fallback. The workbook can therefore be
+    returned to Restricted/private sharing as long as the Streamlit service-account
+    email has Viewer access.
+    """
+    return _private_gsheet_read(
+        url=url,
+        worksheet=BULLHORN_FORMATTER_WORKSHEET,
+        source_label="Bullhorn Jobs - Formatter Data",
+    )
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_fannie_formatter_jobs(url=FANNIE_FORMATTER_SHEET_URL):
+    """
+    Load Fannie's dedicated private Fieldglass Jobs worksheet.
+
+    The selected row is authoritative for the Fannie requisition ID, title,
+    hiring manager, official description, Fieldglass chat messages, and Spotlight
+    transcript. The three text areas remain editable after auto-population.
+    """
+    return _private_gsheet_read(
+        url=url,
+        worksheet=FANNIE_FORMATTER_WORKSHEET,
+        source_label="Fannie Mae Fieldglass Jobs",
+    )
 
 
 def _bullhorn_formatter_is_active_job(row):
@@ -6603,6 +6634,67 @@ def _bullhorn_formatter_requisition_options(client_key):
     return options, mapping
 
 
+def _fannie_formatter_requisition_options():
+    """Return active Fannie Fieldglass dropdown options and authoritative row data."""
+    options = ["None"]
+    mapping = {}
+    df = load_fannie_formatter_jobs()
+    if df.empty:
+        return options, mapping
+
+    for _, row in df.iterrows():
+        req_id = _bullhorn_formatter_clean_id(row.get("Job Posting ID", ""))
+        status = _bullhorn_formatter_clean_text(row.get("Job Posting Status", ""))
+        title = _bullhorn_formatter_clean_text(row.get("Job Posting Title", ""))
+        manager = _bullhorn_formatter_clean_text(row.get("Hiring Manager", ""))
+
+        # Match v69's submission-only philosophy. In the Fieldglass feed,
+        # Submitted is the live requisition state; Halted and Closed are not
+        # candidate-submission options and must stay out of the dropdown.
+        if status.casefold() != "submitted":
+            continue
+        if not req_id:
+            continue
+
+        description = str(row.get("Description", "") or "").strip()
+        chat_messages = str(row.get("Chat Messages", "") or "").strip()
+        spotlight_transcript = str(row.get("Spotlight Call Transcript", "") or "").strip()
+
+        option_parts = [req_id, title, manager]
+        option_str = " - ".join(part for part in option_parts if str(part).strip())
+        if not option_str:
+            continue
+
+        if option_str in mapping:
+            suffix = 2
+            candidate = f"{option_str} [{suffix}]"
+            while candidate in mapping:
+                suffix += 1
+                candidate = f"{option_str} [{suffix}]"
+            option_str = candidate
+
+        mapping[option_str] = {
+            "req_id": req_id,
+            "id": req_id,
+            "title": title,
+            "job_title": title,
+            "manager": manager,
+            "status": status,
+            "description": description,
+            "chat_messages": chat_messages,
+            "spotlight_transcript": spotlight_transcript,
+            "site": _bullhorn_formatter_clean_text(row.get("Site", "")),
+            "cost_center": _bullhorn_formatter_clean_text(row.get("Cost Center", "")),
+            "hiring_manager_email": _bullhorn_formatter_clean_text(row.get("Hiring Manager Email", "")),
+            "job_posting_comments": str(row.get("Job Posting Comments", "") or "").strip(),
+            "fieldglass_details_link": _bullhorn_formatter_clean_text(row.get("Fieldglass Details Link", "")),
+            "requisition_start_date": _bullhorn_formatter_clean_text(row.get("Requisition Start Date", "")),
+        }
+        options.append(option_str)
+
+    return options, mapping
+
+
 def render_bullhorn_formatter_job_selector(
     client_key,
     selector_key,
@@ -6635,7 +6727,6 @@ def render_bullhorn_formatter_job_selector(
         on_change=_update_selected_bullhorn_jd,
     )
     return selected, req_mapping
-
 
 def extract_deloitte_skills_matrix_from_jd(job_description):
     """
@@ -6808,10 +6899,10 @@ def fannie_mae_app():
 
     st.header("📝 Job Description & Notes")
 
-    # v69: Fannie requisitions now come from Bullhorn Jobs - Formatter Data.
-    # Chat Notes and Spotlight Transcript remain editable recruiter inputs because
-    # those fields do not exist in the Bullhorn report.
-    options, req_mapping = _bullhorn_formatter_requisition_options("Fannie Mae")
+    # v70: Fannie requisitions come exclusively from the dedicated private
+    # Fieldglass Jobs workbook. The selected row auto-populates the authoritative
+    # Description, Chat Messages, and Spotlight Call Transcript columns.
+    options, req_mapping = _fannie_formatter_requisition_options()
 
     if "fm_jd" not in st.session_state:
         st.session_state.fm_jd = ""
@@ -6823,13 +6914,16 @@ def fannie_mae_app():
     def update_jd_text():
         selected = st.session_state.get("fm_req_selector", "None")
         if selected != "None" and selected in req_mapping:
+            selected_row = req_mapping[selected]
             st.session_state.fm_jd = str(
-                req_mapping[selected].get("description", "") or ""
+                selected_row.get("description", "") or ""
             ).strip()
-            # The Bullhorn source has no authoritative Fieldglass Chat Notes or
-            # Spotlight transcript. Clear stale values when changing requisitions.
-            st.session_state.fm_notes = ""
-            st.session_state.fm_trans = ""
+            st.session_state.fm_notes = str(
+                selected_row.get("chat_messages", "") or ""
+            ).strip()
+            st.session_state.fm_trans = str(
+                selected_row.get("spotlight_transcript", "") or ""
+            ).strip()
         else:
             st.session_state.fm_jd = ""
             st.session_state.fm_notes = ""
