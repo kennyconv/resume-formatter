@@ -1,3 +1,4 @@
+# v69 BULLHORN JOB HUB + DELOITTE MATRIX AUTO-EXTRACTION
 # v68 SOURCE-STRUCTURE RESILIENCE + DIAGNOSTIC ACTION DETAIL
 # v67 FREDDIE VNDLY CATALOGUE EXPANSION + TIERED CONFIRMED SKILLS
 # v65 FREDDIE SUBMISSION-MODE CONTEXT + SUMMARY/SKILLS + VNDLY CLEANUP
@@ -3505,7 +3506,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v68"
+_FORMATTER_BUILD_VERSION = "v69"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -6418,6 +6419,343 @@ def process_word_doc(temp_path, mapping, out_path):
     return out_path
 
 
+
+# ====================================================================
+# --- v69 SHARED BULLHORN JOB HUB (NON-FREDDIE CLIENTS) ---
+# ====================================================================
+# Freddie Mac intentionally remains on its separate private VNDLY/API sheet.
+# All clients below use the Bullhorn Jobs - Formatter Data workbook instead of
+# the retired multi-client requisition tracker.
+BULLHORN_FORMATTER_SHEET_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "115KRDjRJI-nfOjzce1B2o2EwBIAcKMffGreqNNCLjck/edit?usp=sharing"
+)
+BULLHORN_FORMATTER_WORKSHEET = "Bullhorn Jobs"
+
+# Bullhorn company labels are not always identical to the formatter's client tab.
+# Keep aliases explicit so a new unrelated company can never drift into a client.
+_BULLHORN_FORMATTER_CLIENT_ALIASES = {
+    "fannie mae": {"fannie mae"},
+    "navy federal": {"navy federal credit union", "navy federal"},
+    "deloitte": {"deloitte consulting, llp", "deloitte consulting", "deloitte"},
+    "bnsf": {"bnsf", "bnsf railway"},
+    "peraton": {"peraton"},
+    # ADUSA requisitions currently arrive from Bullhorn under the RBS label.
+    "adusa": {
+        "adusa",
+        "ahold delhaize usa",
+        "retail business services (rbs)",
+        "retail business services",
+        "rbs",
+    },
+    "capital one": {"capital one"},
+    "cbre": {"cbre", "cbre group", "cbre, inc.", "cbre inc."},
+}
+
+
+def _bullhorn_formatter_clean_text(value):
+    if value is None:
+        return ""
+    text = str(value).replace("\u00a0", " ")
+    if text.strip().casefold() in {"nan", "none", "null"}:
+        return ""
+    return re.sub(r"[ \t]+", " ", text).strip()
+
+
+def _bullhorn_formatter_clean_id(value):
+    text = _bullhorn_formatter_clean_text(value)
+    if re.fullmatch(r"\d+\.0", text):
+        text = text[:-2]
+    return text
+
+
+def _bullhorn_formatter_company_key(value):
+    value = unicodedata.normalize("NFKC", _bullhorn_formatter_clean_text(value))
+    value = re.sub(r"\s+", " ", value).strip().casefold()
+    return value
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_bullhorn_formatter_jobs(url=BULLHORN_FORMATTER_SHEET_URL):
+    """
+    Load the Bullhorn Jobs tab used by every non-Freddie requisition dropdown.
+
+    Preferred path is Google's public CSV endpoint because it is fast and does
+    not require per-user OAuth inside Streamlit. If the workbook is kept private,
+    the existing Streamlit GSheets connection is attempted as a fallback.
+    """
+    try:
+        base_url = str(url).split("/edit")[0]
+        csv_url = (
+            base_url
+            + "/gviz/tq?tqx=out:csv&sheet=Bullhorn%20Jobs"
+        )
+        df = pd.read_csv(csv_url)
+        df.columns = [str(col).strip() for col in df.columns]
+        return df.fillna("")
+    except Exception:
+        pass
+
+    try:
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        df = conn.read(
+            spreadsheet=url,
+            worksheet=BULLHORN_FORMATTER_WORKSHEET,
+            ttl=600,
+        )
+        df.columns = [str(col).strip() for col in df.columns]
+        return df.fillna("")
+    except Exception:
+        return pd.DataFrame()
+
+
+def _bullhorn_formatter_is_active_job(row):
+    """Submission dropdowns show only jobs that are open AND accepting candidates."""
+    open_closed = _bullhorn_formatter_clean_text(row.get("Open/Closed", "")).casefold()
+    stage = _bullhorn_formatter_clean_text(row.get("Job Stage", "")).casefold()
+    return open_closed == "open" and stage == "accepting candidates"
+
+
+def _bullhorn_formatter_client_rows(client_key):
+    df = load_bullhorn_formatter_jobs()
+    if df.empty:
+        return []
+
+    aliases = _BULLHORN_FORMATTER_CLIENT_ALIASES.get(
+        str(client_key or "").strip().casefold(),
+        set(),
+    )
+    if not aliases:
+        return []
+
+    rows = []
+    for _, row in df.iterrows():
+        if _bullhorn_formatter_company_key(row.get("Company Name", "")) not in aliases:
+            continue
+        if not _bullhorn_formatter_is_active_job(row):
+            continue
+        rows.append(row)
+    return rows
+
+
+def _bullhorn_formatter_requisition_options(client_key):
+    """Return dropdown options and source-owned Bullhorn metadata for one client."""
+    options = ["None"]
+    mapping = {}
+
+    for row in _bullhorn_formatter_client_rows(client_key):
+        job_id = _bullhorn_formatter_clean_id(row.get("Job ID", ""))
+        vms_id = _bullhorn_formatter_clean_id(row.get("VMS ID", ""))
+        title = _bullhorn_formatter_clean_text(row.get("Job Title", ""))
+        manager = _bullhorn_formatter_clean_text(row.get("Contact", ""))
+        company = _bullhorn_formatter_clean_text(row.get("Company Name", ""))
+        description = str(row.get("Job Description", "") or "").strip()
+        additional_details = str(row.get("Additional Job Details", "") or "").strip()
+        if not description:
+            description = additional_details
+
+        if not any([job_id, vms_id, title]):
+            continue
+
+        option_parts = [job_id, vms_id, title, manager]
+        option_str = " - ".join(part for part in option_parts if str(part).strip())
+        if not option_str or option_str == "-":
+            continue
+
+        # Bullhorn Job ID is included, so duplicate VMS IDs remain unambiguous.
+        # If an exact display collision somehow occurs, append a stable row suffix.
+        if option_str in mapping:
+            suffix = 2
+            candidate = f"{option_str} [{suffix}]"
+            while candidate in mapping:
+                suffix += 1
+                candidate = f"{option_str} [{suffix}]"
+            option_str = candidate
+
+        top_skills = []
+        for col in ("Top Skills #1", "Top Skills #2", "Top Skills #3"):
+            value = _bullhorn_formatter_clean_text(row.get(col, ""))
+            if value and value.casefold() not in {"n/a", "na", "-"}:
+                top_skills.append(value)
+
+        mapping[option_str] = {
+            "req_id": job_id,
+            "id": job_id,
+            "vms_id": vms_id,
+            "title": title,
+            "job_title": title,
+            "manager": manager,
+            "client_company": company,
+            "description": description,
+            "additional_details": additional_details,
+            "job_stage": _bullhorn_formatter_clean_text(row.get("Job Stage", "")),
+            "open_closed": _bullhorn_formatter_clean_text(row.get("Open/Closed", "")),
+            "date_added": _bullhorn_formatter_clean_text(row.get("Date Added", "")),
+            "work_address": _bullhorn_formatter_clean_text(row.get("Work Address", "")),
+            "city": _bullhorn_formatter_clean_text(row.get("City", "")),
+            "state": _bullhorn_formatter_clean_text(row.get("State or Province", "")),
+            "remote_work": _bullhorn_formatter_clean_text(row.get("Remote Work?", "")),
+            "program_name": _bullhorn_formatter_clean_text(row.get("Program Name", "")),
+            "top_skills": top_skills,
+        }
+        options.append(option_str)
+
+    return options, mapping
+
+
+def render_bullhorn_formatter_job_selector(
+    client_key,
+    selector_key,
+    jd_state_key,
+    label,
+):
+    """
+    Render a searchable Bullhorn requisition selector and keep the existing JD
+    text area editable after auto-population. Manual paste remains available when
+    no requisition is selected or the sheet is temporarily unreachable.
+    """
+    options, req_mapping = _bullhorn_formatter_requisition_options(client_key)
+
+    if jd_state_key not in st.session_state:
+        st.session_state[jd_state_key] = ""
+
+    def _update_selected_bullhorn_jd():
+        selected = st.session_state.get(selector_key, "None")
+        if selected != "None" and selected in req_mapping:
+            st.session_state[jd_state_key] = str(
+                req_mapping[selected].get("description", "") or ""
+            ).strip()
+        else:
+            st.session_state[jd_state_key] = ""
+
+    selected = st.selectbox(
+        label,
+        options=options,
+        key=selector_key,
+        on_change=_update_selected_bullhorn_jd,
+    )
+    return selected, req_mapping
+
+
+def extract_deloitte_skills_matrix_from_jd(job_description):
+    """
+    Deterministically extract only Deloitte's explicit Skills Matrix skill names.
+
+    Deloitte JDs are inconsistent in the wild: proficiency may be on the same
+    line, on a following line, absent entirely, misspelled ("Avanced"), or followed
+    by Required/Preferred/Optional. RFP requisitions may list only bare skill names.
+    This parser never infers skills from the general JD. If an explicit Skills
+    Matrix section is absent or empty, it returns an empty list.
+    """
+    text = unicodedata.normalize("NFKC", str(job_description or ""))
+    text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\u00a0", " ")
+
+    heading = re.search(
+        r"(?im)^[ \t]*skills?[ \t]+matrix[ \t]*:[ \t]*(.*)$",
+        text,
+    )
+    if not heading:
+        return []
+
+    first_tail = heading.group(1).strip()
+    remainder = text[heading.end():]
+
+    # Deloitte normally uses an underscore divider. Some JDs fuse the following
+    # title onto that same divider line, so stop at the START of the divider.
+    divider = re.search(r"(?m)^[ \t]*[_=]{5,}", remainder)
+    if divider:
+        remainder = remainder[:divider.start()]
+
+    lines = ([first_tail] if first_tail else []) + remainder.splitlines()
+    results = []
+    seen = set()
+
+    level_word = r"(?:Entry(?:\s+Level)?|Intermediate|Advanced|Avanced|Expert)"
+    year_span = r"\d+\s*(?:\+|-\s*\d+)?"
+    standalone_level = (
+        rf"{level_word}\s*"
+        rf"(?:[-,:]?\s*\(?\s*{year_span}\s*years?(?:\s+experience)?\s*\)?)?"
+        rf"(?:\s+(?:Required|Preferred|Optional))?"
+    )
+
+    for raw_line in lines[:40]:
+        line = re.sub(r"\s+", " ", str(raw_line or "")).strip()
+        line = re.sub(r"^[•▪◦●○‣⁃\-–—]+\s*", "", line).strip()
+        if not line:
+            continue
+
+        if re.search(
+            r"\bconfirm(?:ing)?\s+(?:the\s+)?level\s+of\s+experience\b",
+            line,
+            flags=re.I,
+        ):
+            continue
+
+        # Defensive stop for a JD that lacks the usual underscore divider.
+        if not divider and results and re.fullmatch(
+            r"(?:required|preferred)\s+qualifications?|responsibilities?|overview|"
+            r"position\s+overview|role|description|key\s+qualifications?|core\s+competencies",
+            line,
+            flags=re.I,
+        ):
+            break
+
+        if re.fullmatch(standalone_level, line, flags=re.I):
+            continue
+        if re.fullmatch(r"(?:Required|Preferred|Optional)", line, flags=re.I):
+            continue
+
+        # Remove Required / Preferred / Optional after the matrix metadata.
+        line = re.sub(
+            r"\s+(?:Required|Preferred|Optional)\s*$",
+            "",
+            line,
+            flags=re.I,
+        ).strip()
+
+        # Common: "Skill - Intermediate (3-5 years experience)". Closing ')'
+        # is optional because the Bullhorn source occasionally omits it.
+        line = re.sub(
+            rf"\s*(?:[-–—]\s*)?{level_word}\s*\(?\s*{year_span}\s*years?\s*"
+            rf"(?:experience)?\s*\)?\s*$",
+            "",
+            line,
+            flags=re.I,
+        ).strip()
+
+        # Variant: "Skill - Advanced, 6-9 years".
+        line = re.sub(
+            rf"\s*(?:[-–—]\s*)?{level_word}\s*,\s*{year_span}\s*years?\s*"
+            rf"(?:experience)?\s*$",
+            "",
+            line,
+            flags=re.I,
+        ).strip()
+
+        # Variant: "Business Analyst - 10 years".
+        line = re.sub(
+            rf"\s*[-–—]\s*{year_span}\s*years?\s*(?:experience)?\s*$",
+            "",
+            line,
+            flags=re.I,
+        ).strip()
+
+        line = line.strip(" \t:;,-–—")
+        if not line:
+            continue
+
+        key = _normalize_source_match(line)
+        if key and key not in seen:
+            seen.add(key)
+            results.append(line)
+
+    return results[:20]
+
+
+def deloitte_skills_matrix_text_from_jd(job_description):
+    return "\n".join(extract_deloitte_skills_matrix_from_jd(job_description))
+
+
 # ====================================================================
 # --- 🔴 CLIENT APP 1: FANNIE MAE 🔴 ---
 # ====================================================================
@@ -6470,46 +6808,10 @@ def fannie_mae_app():
 
     st.header("📝 Job Description & Notes")
 
-    # --- NEW GOOGLE SHEET LOGIC ---
-    # IMPORTANT: Replace this placeholder with your actual Google Sheet link. 
-    # The sheet's share settings MUST be set to "Anyone with the link can view".
-    SHEET_URL = "https://docs.google.com/spreadsheets/d/1swKaDhGdlmO0ILv7tngkRCbsK-7jF89cdCpf5bypzwM/edit?usp=sharing"
-
-    @st.cache_data(ttl=600)
-    def load_reqs(url):
-        try:
-            # Converts standard Google Sheet URL to a direct CSV download link
-            if "/edit" in url:
-                csv_url = url.split("/edit")[0] + "/export?format=csv"
-            else:
-                csv_url = url
-            df = pd.read_csv(csv_url)
-            return df.fillna("")
-        except Exception:
-            return pd.DataFrame()
-
-    df_reqs = load_reqs(SHEET_URL)
-    options = ["None"]
-    req_mapping = {}
-
-    if not df_reqs.empty:
-        for idx, row in df_reqs.iterrows():
-            req_id = str(row.get("ID", "")).replace(".0", "")
-            vms_id = str(row.get("VMS ID", "")).replace(".0", "")
-            title = str(row.get("Job Title", ""))
-            manager = str(row.get("Manager", "")) # NEW: Extract Manager
-            desc = str(row.get("Description", ""))
-            notes = str(row.get("FG Notes", ""))
-            transcript = str(row.get("Spotlight Transcript", "")) # NEW: Extract Transcript
-
-            # Build the dropdown string safely, ignoring empty values
-            option_parts = [req_id, vms_id, title, manager]
-            option_str = " - ".join([p.strip() for p in option_parts if p.strip()])
-            
-            if option_str and option_str != "-":
-                options.append(option_str)
-                # Added transcript to the mapping dictionary
-                req_mapping[option_str] = {"desc": desc, "notes": notes, "transcript": transcript}
+    # v69: Fannie requisitions now come from Bullhorn Jobs - Formatter Data.
+    # Chat Notes and Spotlight Transcript remain editable recruiter inputs because
+    # those fields do not exist in the Bullhorn report.
+    options, req_mapping = _bullhorn_formatter_requisition_options("Fannie Mae")
 
     if "fm_jd" not in st.session_state:
         st.session_state.fm_jd = ""
@@ -6519,25 +6821,25 @@ def fannie_mae_app():
         st.session_state.fm_trans = ""
 
     def update_jd_text():
-        if "fm_req_selector" not in st.session_state:
-            return
-
-        selected = st.session_state.fm_req_selector
+        selected = st.session_state.get("fm_req_selector", "None")
         if selected != "None" and selected in req_mapping:
-            st.session_state.fm_jd = req_mapping[selected].get("desc", "").strip()
-            st.session_state.fm_notes = req_mapping[selected].get("notes", "").strip()
-            st.session_state.fm_trans = req_mapping[selected].get("transcript", "").strip()
+            st.session_state.fm_jd = str(
+                req_mapping[selected].get("description", "") or ""
+            ).strip()
+            # The Bullhorn source has no authoritative Fieldglass Chat Notes or
+            # Spotlight transcript. Clear stale values when changing requisitions.
+            st.session_state.fm_notes = ""
+            st.session_state.fm_trans = ""
         else:
-            # Clear the text boxes if "None" is selected
             st.session_state.fm_jd = ""
             st.session_state.fm_notes = ""
             st.session_state.fm_trans = ""
-            
+
     selected_req = st.selectbox(
         "🔍 Select a Fannie Mae Requisition (Type to search):",
         options=options,
         key="fm_req_selector",
-        on_change=update_jd_text
+        on_change=update_jd_text,
     )
 
     Job_Description = st.text_area(
@@ -17537,6 +17839,10 @@ def peraton_app():
     Answer_5 = row5_c2.text_area("Answer 5", height=68, key="per_a5")
 
     st.header("📝 Job Description & Notes")
+    selected_per_req, per_req_mapping = render_bullhorn_formatter_job_selector(
+        "Peraton", "per_req_selector", "per_jd",
+        "🔍 Select a Peraton Requisition (Type to search):",
+    )
     Job_Description_Notes_etc = st.text_area("Paste JD, Manager Notes, etc. here:", height=200, key="per_jd")
 
     st.header("📂 File Uploads")
@@ -18099,6 +18405,10 @@ def capital_one_app():
     Answer_5 = row5_c2.text_area("Answer 5", height=68, key="co_a5")
 
     st.header("📝 Job Description & Notes")
+    selected_co_req, co_req_mapping = render_bullhorn_formatter_job_selector(
+        "Capital One", "co_req_selector", "co_jd",
+        "🔍 Select a Capital One Requisition (Type to search):",
+    )
     Job_Description_Notes_etc = st.text_area("Paste JD, Manager Notes, etc. here:", height=200, key="co_jd")
 
     st.header("📂 File Uploads")
@@ -18504,6 +18814,10 @@ def adusa_app():
     Answer_5 = row5_c2.text_area("Answer 5", height=68, key="ad_a5")
 
     st.header("📝 Job Description & Notes")
+    selected_ad_req, ad_req_mapping = render_bullhorn_formatter_job_selector(
+        "ADUSA", "ad_req_selector", "ad_jd",
+        "🔍 Select an ADUSA Requisition (Type to search):",
+    )
     Job_Description_Notes_etc = st.text_area("Paste JD, Manager Notes, etc. here:", height=200, key="ad_jd")
 
     st.header("📂 File Uploads")
@@ -18879,6 +19193,10 @@ def cbre_app():
     Answer_5 = row5_c2.text_area("Answer 5", height=68, key="cb_a5")
 
     st.header("📝 Job Description & Notes")
+    selected_cb_req, cb_req_mapping = render_bullhorn_formatter_job_selector(
+        "CBRE", "cb_req_selector", "cb_jd",
+        "🔍 Select a CBRE Requisition (Type to search):",
+    )
     Job_Description_Notes_etc = st.text_area("Paste JD, Manager Notes, etc. here:", height=200, key="cb_jd")
 
     st.header("📂 File Uploads")
@@ -19514,6 +19832,10 @@ def bnsf_app():
     Answer_5 = row5_c2.text_area("Answer 5", height=68, key="bn_a5")
 
     st.header("📝 Job Description & Notes")
+    selected_bn_req, bn_req_mapping = render_bullhorn_formatter_job_selector(
+        "BNSF", "bn_req_selector", "bn_jd",
+        "🔍 Select a BNSF Requisition (Type to search):",
+    )
     Job_Description_Notes_etc = st.text_area("Paste JD, Manager Notes, etc. here:", height=200, key="bn_jd")
 
     st.header("📂 File Uploads")
@@ -22474,49 +22796,10 @@ def deloitte_app():
 
     st.header("📝 Job Description & Notes")
 
-    # --- GOOGLE SHEET LOGIC FOR DELOITTE ---
-    SHEET_URL = "https://docs.google.com/spreadsheets/d/1swKaDhGdlmO0ILv7tngkRCbsK-7jF89cdCpf5bypzwM/edit?gid=2029588481#gid=2029588481"
-
-    @st.cache_data(ttl=600)
-    def load_deloitte_reqs(url):
-        try:
-            # Use the exact GID for the Deloitte sheet
-            base_url = url.split("/edit")[0]
-            csv_url = base_url + "/export?format=csv&gid=2029588481"
-            df = pd.read_csv(csv_url)
-            return df.fillna("")
-        except Exception:
-            return pd.DataFrame()
-
-    df_reqs = load_deloitte_reqs(SHEET_URL)
-    options = ["None"]
-    req_mapping = {}
-
-    if not df_reqs.empty:
-        for idx, row in df_reqs.iterrows():
-            # Column A (index 0) = ID, Column B (index 1) = VMS ID, Column C (index 2) = Job Title
-            req_id = str(row.iloc[0]).replace(".0", "") if len(row) > 0 else ""
-            vms_id = str(row.iloc[1]).replace(".0", "") if len(row) > 1 else ""
-            title = str(row.iloc[2]) if len(row) > 2 else ""
-            
-            # Column I (index 8) = Job Description
-            desc = str(row.iloc[8]) if len(row) > 8 else ""
-
-            # Skills starting from Column J (index 9) to the end of the row
-            skills = []
-            if len(row) > 9:
-                for val in row.iloc[9:]:
-                    val_str = str(val).strip()
-                    if val_str:
-                        skills.append(val_str)
-            skills_matrix_text = "\n".join(skills)
-
-            option_parts = [req_id, vms_id, title]
-            option_str = " - ".join([p.strip() for p in option_parts if p.strip()])
-            
-            if option_str and option_str != "-":
-                options.append(option_str)
-                req_mapping[option_str] = {"desc": desc, "skills": skills_matrix_text, "req_id": req_id, "vms_id": vms_id, "title": title}
+    # v69: Deloitte requisitions now come from Bullhorn Jobs - Formatter Data.
+    # Skills Matrix is parsed directly from the selected JD, eliminating the
+    # manually maintained matrix columns from the retired tracker.
+    options, req_mapping = _bullhorn_formatter_requisition_options("Deloitte")
 
     if "del_jd" not in st.session_state:
         st.session_state.del_jd = ""
@@ -22526,23 +22809,26 @@ def deloitte_app():
         st.session_state.del_skills = ""
 
     def update_jd_text():
-        if "del_req_selector" not in st.session_state:
-            return
-        selected = st.session_state.del_req_selector
+        selected = st.session_state.get("del_req_selector", "None")
         if selected != "None" and selected in req_mapping:
-            st.session_state.del_jd = req_mapping[selected].get("desc", "").strip()
-            st.session_state.del_skills = req_mapping[selected].get("skills", "").strip()
+            description = str(
+                req_mapping[selected].get("description", "") or ""
+            ).strip()
+            st.session_state.del_jd = description
+            st.session_state.del_skills = deloitte_skills_matrix_text_from_jd(
+                description
+            )
             st.session_state.del_notes = ""
         else:
             st.session_state.del_jd = ""
             st.session_state.del_skills = ""
             st.session_state.del_notes = ""
-            
+
     selected_req = st.selectbox(
         "🔍 Select a Deloitte Requisition (Type to search):",
         options=options,
         key="del_req_selector",
-        on_change=update_jd_text
+        on_change=update_jd_text,
     )
 
     selected_req_data = req_mapping.get(selected_req, {}) if selected_req != "None" else {}
@@ -22552,7 +22838,20 @@ def deloitte_app():
     if is_deloitte_rfp:
         st.info("📄 This RFP requisition will use the Deloitte Candidate Evaluation Report template.")
 
-    Job_Description = st.text_area("1. Official Job Description (Paste generic JD here):", height=150, key="del_jd")
+    def refresh_deloitte_matrix_from_jd():
+        # Also supports a manually pasted/edited Deloitte JD when no dropdown
+        # requisition is available. Matrix content always comes only from the
+        # explicit Skills Matrix section of the current JD.
+        st.session_state.del_skills = deloitte_skills_matrix_text_from_jd(
+            st.session_state.get("del_jd", "")
+        )
+
+    Job_Description = st.text_area(
+        "1. Official Job Description (Paste generic JD here):",
+        height=150,
+        key="del_jd",
+        on_change=refresh_deloitte_matrix_from_jd,
+    )
     Chat_Notes = st.text_area("2. Notes (Optional - Overrides JD):", height=100, key="del_notes")
     Skills_Matrix = st.text_area("3. Skills Matrix:", height=100, key="del_skills")
 
@@ -25223,103 +25522,21 @@ def navy_federal_app():
     # ================================================================
     st.header("📝 Navy Federal Requisition")
 
-    SHEET_URL = (
-        "https://docs.google.com/spreadsheets/d/"
-        "1swKaDhGdlmO0ILv7tngkRCbsK-7jF89cdCpf5bypzwM/"
-        "edit?usp=sharing"
-    )
-
-    @st.cache_data(ttl=600)
-    def load_navy_federal_reqs(url):
-        """Load the Navy Federal worksheet from the shared req tracker."""
-        # First use the same public-sheet approach already used by Fannie/Deloitte.
-        try:
-            base_url = url.split("/edit")[0]
-            csv_url = (
-                base_url
-                + "/gviz/tq?tqx=out:csv&sheet=Navy%20Federal"
-            )
-            df = pd.read_csv(csv_url)
-            return df.fillna("")
-        except Exception:
-            pass
-
-        # Fallback to the configured Streamlit Google Sheets connection.
-        try:
-            conn = st.connection(
-                "gsheets",
-                type=GSheetsConnection,
-            )
-            df = conn.read(
-                spreadsheet=url,
-                worksheet="Navy Federal",
-                ttl=600,
-            )
-            return df.fillna("")
-        except Exception as e:
-            st.error(
-                "❌ Unable to load the Navy Federal requisition sheet. "
-                f"{str(e)}"
-            )
-            return pd.DataFrame()
-
-    df_reqs = load_navy_federal_reqs(SHEET_URL)
-
-    options = ["None"]
-    req_mapping = {}
-
-    if not df_reqs.empty:
-        for _, row in df_reqs.iterrows():
-            req_id = str(row.get("ID", "")).replace(".0", "").strip()
-            vms_id = str(row.get("VMS ID", "")).replace(".0", "").strip()
-            title = str(row.get("Job Title", "")).strip()
-            manager = str(row.get("Manager", "")).strip()
-            status = str(row.get("Status", "")).strip()
-            client_company = str(row.get("Client Company", "")).strip()
-            description = str(row.get("Description", "") or "").strip()
-            published_description = str(
-                row.get("Published Description", "") or ""
-            ).strip()
-
-            if not any([req_id, vms_id, title]):
-                continue
-
-            option_parts = [req_id, vms_id, title, manager]
-            option_str = " - ".join(
-                part for part in option_parts if part
-            )
-
-            if option_str and option_str != "-":
-                options.append(option_str)
-                req_mapping[option_str] = {
-                    "id": req_id,
-                    "vms_id": vms_id,
-                    "job_title": title,
-                    "manager": manager,
-                    "client_company": client_company,
-                    "status": status,
-                    "date_added": str(row.get("Date Added", "") or "").strip(),
-                    "published_description": published_description,
-                    # Per Annabelle's workflow, Column I / Description is the
-                    # official Fieldglass job description used by the formatter.
-                    "description": description,
-                }
+    # v69: Navy Federal requisitions now come from Bullhorn Jobs - Formatter Data.
+    options, req_mapping = _bullhorn_formatter_requisition_options("Navy Federal")
 
     if "navy_jd" not in st.session_state:
         st.session_state.navy_jd = ""
-
     if "navy_internal_notes" not in st.session_state:
         st.session_state.navy_internal_notes = ""
 
     def update_navy_jd_text():
         selected = st.session_state.get("navy_req_selector", "None")
-
         if selected != "None" and selected in req_mapping:
-            st.session_state.navy_jd = req_mapping[selected].get(
-                "description",
-                "",
+            st.session_state.navy_jd = str(
+                req_mapping[selected].get("description", "") or ""
             ).strip()
-            # Internal Notes are intentionally recruiter-entered only for now.
+            # Internal Notes remain recruiter-entered, not inferred from Bullhorn.
             st.session_state.navy_internal_notes = ""
         else:
             st.session_state.navy_jd = ""
