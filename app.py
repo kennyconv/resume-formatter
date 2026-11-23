@@ -1,3 +1,4 @@
+# v73 QA EMAIL ON EVERY SUCCESSFUL FORMATTER RUN + DUAL RESUME ATTACHMENTS
 # v72 FREDDIE DONT-HAVE EXCLUSION RESTORED
 # v71 ALL GOOGLE-SHEET JOBS VISIBLE IN CLIENT DROPDOWNS
 # v70 PRIVATE GSHEETS + DEDICATED FANNIE FIELDGLASS JOB HUB
@@ -3509,7 +3510,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v69"
+_FORMATTER_BUILD_VERSION = "v73"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -3568,6 +3569,8 @@ _DIAGNOSTIC_CLIENT_PREFIXES = {
 
 _DIAGNOSTIC_FIELD_LABELS = {
     "name": "Candidate Name",
+    "first_name": "Candidate First Name",
+    "last_name": "Candidate Last Name",
     "loc": "Current Location",
     "loc_name": "Location Name",
     "rem": "Remote / Onsite / Hybrid",
@@ -3607,6 +3610,9 @@ def _diagnostic_field_label(session_key, prefix):
         return f"Question {suffix[1:]}"
     if re.fullmatch(r"a[1-5]", suffix):
         return f"Answer {suffix[1:]}"
+    if suffix.startswith("vetting_answer_"):
+        match = re.search(r"_(\d+)$", suffix)
+        return f"Supplier Vetting Response {match.group(1) if match else ''}".strip()
     return _DIAGNOSTIC_FIELD_LABELS.get(
         suffix,
         suffix.replace("_", " ").strip().title(),
@@ -3637,6 +3643,8 @@ def _diagnostic_form_snapshot(client_name):
         if not key.startswith(prefix + "_"):
             continue
         if key == f"{prefix}_res":
+            continue
+        if key in {"fred_sent_email_keys", "navy_generate"}:
             continue
 
         # Only serialize simple form values. Never stringify file objects, dataframes,
@@ -3752,7 +3760,7 @@ def _formatter_diagnostic_config():
 
 
 def _send_formatter_diagnostic_email(config, subject, body, attachment=None):
-    """SMTP worker. Never called on the Streamlit critical path directly."""
+    """SMTP worker. Supports one attachment dict or a list of attachment dicts."""
     try:
         msg = EmailMessage()
         msg["From"] = config["sender"]
@@ -3760,26 +3768,370 @@ def _send_formatter_diagnostic_email(config, subject, body, attachment=None):
         msg["Subject"] = subject
         msg.set_content(body)
 
-        if attachment and attachment.get("data"):
-            mime_type = str(attachment.get("mime_type", "") or "application/octet-stream")
+        if attachment is None:
+            attachments = []
+        elif isinstance(attachment, (list, tuple)):
+            attachments = [item for item in attachment if isinstance(item, dict)]
+        elif isinstance(attachment, dict):
+            attachments = [attachment]
+        else:
+            attachments = []
+
+        for item in attachments:
+            if not item.get("data"):
+                continue
+            mime_type = str(item.get("mime_type", "") or "application/octet-stream")
             maintype, subtype = (
                 mime_type.split("/", 1)
                 if "/" in mime_type
                 else ("application", "octet-stream")
             )
             msg.add_attachment(
-                attachment["data"],
+                item["data"],
                 maintype=maintype or "application",
                 subtype=subtype or "octet-stream",
-                filename=str(attachment.get("filename", "") or "resume"),
+                filename=str(item.get("filename", "") or "attachment"),
             )
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=8) as smtp:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=12) as smtp:
             smtp.login(config["sender"], config["app_password"])
             smtp.send_message(msg)
     except Exception:
-        # Diagnostics must never become a production dependency or recruiter blocker.
+        # QA/diagnostic email must never become a production dependency or recruiter blocker.
         pass
+
+
+def _formatter_run_state_key(client_name):
+    slug = re.sub(r"[^a-z0-9]+", "_", str(client_name or "").casefold()).strip("_")
+    return f"_formatter_active_run_{slug or 'unknown'}"
+
+
+def begin_formatter_run(client_name):
+    """Start a fresh per-session formatter run so warning emails can wait for the output file."""
+    client = str(client_name or "Resume Formatter").strip() or "Resume Formatter"
+    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    seed = f"{timestamp}|{client}|{time.time_ns()}"
+    run_id = hashlib.sha256(seed.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    try:
+        st.session_state[_formatter_run_state_key(client)] = {
+            "run_id": run_id,
+            "started_at": timestamp,
+            "warnings": [],
+        }
+    except Exception:
+        pass
+    return run_id
+
+
+def _formatter_active_run(client_name):
+    try:
+        state = st.session_state.get(_formatter_run_state_key(client_name))
+    except Exception:
+        state = None
+    return state if isinstance(state, dict) else None
+
+
+def _clear_formatter_run(client_name):
+    try:
+        st.session_state.pop(_formatter_run_state_key(client_name), None)
+    except Exception:
+        pass
+
+
+def _record_formatter_run_warning(client_name, message, technical_details=""):
+    state = _formatter_active_run(client_name)
+    if state is None:
+        return False
+    warnings = list(state.get("warnings", []) or [])
+    warnings.append(
+        {
+            "message": str(message or "").strip(),
+            "technical_details": str(technical_details or "").strip(),
+            "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+    )
+    state["warnings"] = warnings
+    try:
+        st.session_state[_formatter_run_state_key(client_name)] = state
+    except Exception:
+        pass
+    return True
+
+
+def _formatter_usage_email_config():
+    """Reuse the existing working formatter/Freddie Gmail credentials for QA emails."""
+    sender = str(
+        _diagnostic_secret(
+            "FORMATTER_DIAGNOSTIC_EMAIL_SENDER",
+            _diagnostic_secret("FREDDIE_EMAIL_SENDER", "kennyconv@gmail.com"),
+        )
+        or ""
+    ).strip()
+    recipient = str(
+        _diagnostic_secret(
+            "FORMATTER_QA_EMAIL_RECIPIENT",
+            "kennyconv@gmail.com",
+        )
+        or "kennyconv@gmail.com"
+    ).strip()
+    app_password = str(
+        _diagnostic_secret(
+            "FORMATTER_DIAGNOSTIC_EMAIL_APP_PASSWORD",
+            _diagnostic_secret("FREDDIE_EMAIL_APP_PASSWORD", ""),
+        )
+        or ""
+    ).replace(" ", "").strip()
+    if not sender or not recipient or not app_password:
+        return None
+    return {
+        "sender": sender,
+        "recipient": recipient,
+        "app_password": app_password,
+    }
+
+
+def _formatter_output_attachment(output_path):
+    path = str(output_path or "").strip()
+    if not path or not os.path.exists(path):
+        return None, "Generated output attachment was unavailable."
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except Exception as exc:
+        return None, f"Generated output attachment could not be read: {exc}"
+    if not data:
+        return None, "Generated output attachment was empty."
+
+    ext = os.path.splitext(path)[1].lower()
+    mime_type = {
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".pdf": "application/pdf",
+        ".doc": "application/msword",
+    }.get(ext, "application/octet-stream")
+    return {
+        "filename": os.path.basename(path) or "generated_resume",
+        "data": data,
+        "mime_type": mime_type,
+    }, ""
+
+
+def _formatter_qa_attachment_bundle(client_name, output_path, raw_text=""):
+    """Capture original + generated resume bytes before temporary-file cleanup."""
+    notes = []
+    original, original_note = _diagnostic_resume_attachment(client_name, raw_text=raw_text)
+    output, output_note = _formatter_output_attachment(output_path)
+    if original_note:
+        notes.append(original_note)
+    if output_note:
+        notes.append(output_note)
+
+    attachments = [item for item in (original, output) if item and item.get("data")]
+
+    # Gmail's 25 MB message limit includes base64/MIME overhead. Keep raw attachments
+    # below ~18 MB total. If necessary, preserve the generated output first because it
+    # is the artifact that did not exist when earlier warning emails were emitted.
+    max_raw_bytes = 18 * 1024 * 1024
+    total = sum(len(item.get("data", b"")) for item in attachments)
+    if total > max_raw_bytes:
+        kept = []
+        running = 0
+        for item in sorted(
+            attachments,
+            key=lambda x: 0 if x is output else 1,
+        ):
+            size = len(item.get("data", b""))
+            if running + size <= max_raw_bytes:
+                kept.append(item)
+                running += size
+            else:
+                notes.append(
+                    f"Attachment skipped because the combined raw attachment size would exceed "
+                    f"the 18 MB safety limit: {item.get('filename', 'attachment')} ({size} bytes)."
+                )
+        attachments = kept
+
+    return attachments, notes
+
+
+def _formatter_snapshot_value(snapshot, label):
+    for current_label, value in snapshot:
+        if current_label == label:
+            return str(value or "").strip()
+    return ""
+
+
+def _formatter_candidate_from_snapshot(snapshot):
+    for label in ("Candidate Name", "Candidate Legal Name", "Full Legal Name"):
+        value = _formatter_snapshot_value(snapshot, label)
+        if value:
+            return value
+    first = _formatter_snapshot_value(snapshot, "Candidate First Name")
+    last = _formatter_snapshot_value(snapshot, "Candidate Last Name")
+    return " ".join(part for part in (first, last) if part).strip()
+
+
+def _send_formatter_usage_email_batch(config, messages):
+    """One background worker sends the successful-run QA email and any deferred warning email."""
+    try:
+        for subject, body, attachments in messages:
+            _send_formatter_diagnostic_email(
+                config,
+                subject,
+                body,
+                attachments,
+            )
+    except Exception:
+        pass
+
+
+def notify_formatter_usage(
+    client_name,
+    output_path,
+    raw_text="",
+    uploaded_filename="",
+):
+    """
+    Email the account owner after every successful formatter generation.
+
+    The email includes the selected client, selected job/requisition (when present),
+    every client form value currently represented in Streamlit session state, the
+    original uploaded resume, and the generated output resume. Any warning raised
+    earlier in the run is also sent after output creation so that warning email can
+    include both attachments.
+    """
+    client = str(client_name or "Resume Formatter").strip() or "Resume Formatter"
+    state = _formatter_active_run(client) or {}
+    run_id = str(state.get("run_id", "") or "").strip()
+    if not run_id:
+        timestamp_seed = datetime.now().astimezone().isoformat(timespec="seconds")
+        run_id = hashlib.sha256(
+            f"{timestamp_seed}|{client}|{time.time_ns()}".encode("utf-8", errors="ignore")
+        ).hexdigest()[:12]
+    warnings = list(state.get("warnings", []) or [])
+
+    snapshot = _diagnostic_form_snapshot(client)
+    candidate = _formatter_candidate_from_snapshot(snapshot)
+    selected_job = _formatter_snapshot_value(snapshot, "Selected Requisition")
+    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    source_filename = str(
+        uploaded_filename or _formatter_source_filename(raw_text) or "Unknown"
+    ).strip()
+    output_filename = os.path.basename(str(output_path or "")) or "Unknown"
+
+    body_lines = [
+        f"Formatter build: {_FORMATTER_BUILD_VERSION}",
+        "Event: Successful formatter generation",
+        f"Client: {client}",
+        f"Run ID: {run_id}",
+        f"Timestamp: {timestamp}",
+        f"Candidate: {candidate or '[blank]'}",
+        f"Selected job/requisition: {selected_job or '[none selected]'}",
+        f"Original resume: {source_filename}",
+        f"Generated output: {output_filename}",
+        "",
+        "FORM INPUTS / AUTO-POPULATED FORM VALUES:",
+    ]
+    if snapshot:
+        for label, value in snapshot:
+            body_lines.extend(
+                [
+                    "",
+                    f"{label}:",
+                    value if str(value or "") else "[blank]",
+                ]
+            )
+    else:
+        body_lines.append("[No client form values were available in session state.]")
+
+    if warnings:
+        body_lines.extend(["", "WARNINGS RECORDED DURING THIS RUN:"])
+        for index, warning in enumerate(warnings, start=1):
+            body_lines.extend(
+                [
+                    "",
+                    f"Warning {index}:",
+                    str(warning.get("message", "") or "").strip(),
+                ]
+            )
+            details = str(warning.get("technical_details", "") or "").strip()
+            if details:
+                body_lines.extend(["Technical details:", details])
+
+    attachments, attachment_notes = _formatter_qa_attachment_bundle(
+        client,
+        output_path,
+        raw_text=raw_text,
+    )
+    if attachments:
+        body_lines.extend(["", "ATTACHMENTS:"])
+        for item in attachments:
+            body_lines.append(f"- {item.get('filename', 'attachment')}")
+    for note in attachment_notes:
+        body_lines.extend(["", note])
+
+    subject_parts = [f"Formatter QA [{_FORMATTER_BUILD_VERSION}]", client]
+    if candidate:
+        subject_parts.append(candidate.replace("\n", " ").strip())
+    if selected_job and selected_job.casefold() != "none":
+        job_id = selected_job.split(" - ", 1)[0].strip()
+        if job_id:
+            subject_parts.append(job_id)
+    subject = " - ".join(subject_parts)
+
+    config = _formatter_usage_email_config()
+    messages = []
+    if config is not None:
+        messages.append((subject, "\n".join(body_lines), attachments))
+
+        if warnings:
+            warning_lines = [
+                f"Formatter build: {_FORMATTER_BUILD_VERSION}",
+                "Severity: WARNING",
+                f"Client: {client}",
+                f"Run ID: {run_id}",
+                f"Timestamp: {timestamp}",
+                f"Candidate: {candidate or '[blank]'}",
+                f"Selected job/requisition: {selected_job or '[none selected]'}",
+                "",
+                "The run completed and the generated resume now exists, so both the original",
+                "resume and the generated output are attached to this warning email.",
+                "",
+                "WARNINGS:",
+            ]
+            for index, warning in enumerate(warnings, start=1):
+                warning_lines.extend(
+                    [
+                        "",
+                        f"Warning {index}:",
+                        str(warning.get("message", "") or "").strip(),
+                    ]
+                )
+                details = str(warning.get("technical_details", "") or "").strip()
+                if details:
+                    warning_lines.extend(["Technical details:", details])
+            warning_lines.extend(["", "FORM INPUTS / AUTO-POPULATED FORM VALUES:"])
+            for label, value in snapshot:
+                warning_lines.extend(
+                    [
+                        "",
+                        f"{label}:",
+                        value if str(value or "") else "[blank]",
+                    ]
+                )
+            warning_subject = f"Formatter WARNING [{_FORMATTER_BUILD_VERSION}] - {client} - {run_id}"
+            messages.append((warning_subject, "\n".join(warning_lines), attachments))
+
+    _clear_formatter_run(client)
+
+    if messages:
+        try:
+            threading.Thread(
+                target=_send_formatter_usage_email_batch,
+                args=(config, messages),
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
 
 
 def notify_formatter_diagnostic(
@@ -3804,6 +4156,15 @@ def notify_formatter_diagnostic(
 
     client = str(client_name or "Resume Formatter").strip() or "Resume Formatter"
     level = str(severity or "INFO").strip().upper()
+
+    # Successful-run warnings are deferred until the generated document exists so
+    # the warning email can include BOTH the original and output resumes.
+    if level == "WARNING" and _record_formatter_run_warning(
+        client,
+        message,
+        technical_details=technical_details,
+    ):
+        return
     filename = str(uploaded_filename or _formatter_source_filename(raw_text) or "Unknown").strip()
     source_format = _formatter_source_format(raw_text) or "Unknown"
     timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -3825,6 +4186,22 @@ def notify_formatter_diagnostic(
     ]
     if str(technical_details or "").strip():
         body_lines.extend(["", "Technical details:", str(technical_details).strip()])
+
+    pending_state = _formatter_active_run(client) or {}
+    pending_warnings = list(pending_state.get("warnings", []) or [])
+    if level == "FATAL" and pending_warnings:
+        body_lines.extend(["", "Warnings recorded earlier in this run before the fatal error:"])
+        for index, warning in enumerate(pending_warnings, start=1):
+            body_lines.extend(
+                [
+                    "",
+                    f"Warning {index}:",
+                    str(warning.get("message", "") or "").strip(),
+                ]
+            )
+            details = str(warning.get("technical_details", "") or "").strip()
+            if details:
+                body_lines.extend(["Technical details:", details])
 
     attachment = None
     attachment_note = ""
@@ -3885,6 +4262,9 @@ def notify_formatter_diagnostic(
         ).start()
     except Exception:
         pass
+    finally:
+        if level == "FATAL":
+            _clear_formatter_run(client)
 
 
 
@@ -6964,6 +7344,7 @@ def fannie_mae_app():
         elif not os.path.exists(TEMPLATE_FILENAME):
             st.error(f"❌ Error: The preloaded template '{TEMPLATE_FILENAME}' was not found. Please make sure it is uploaded to your GitHub repository.")
         else:
+            begin_formatter_run("Fannie Mae")
             with st.spinner("Processing document and querying AI..."):
                 try:
                     resume_path = f"temp_{resume_file.name}"
@@ -7634,6 +8015,13 @@ def fannie_mae_app():
                     safe_name_for_file = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_") or "Candidate"
                     out_file = f"Submission_Fannie_{safe_name_for_file}.docx"
                     process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
+
+                    notify_formatter_usage(
+                        "Fannie Mae",
+                        output_path=out_file,
+                        raw_text=raw_text,
+                        uploaded_filename=resume_file.name,
+                    )
                     
                     with open(out_file, "rb") as file:
                         btn = st.download_button(
@@ -15958,6 +16346,8 @@ def freddie_mac_app():
 
             return
 
+        begin_formatter_run("Freddie Mac")
+
         # ------------------------------------------------------------
         # PROCESS
         # ------------------------------------------------------------
@@ -17839,6 +18229,13 @@ FULL ORIGINAL RESUME
                         "submission package was not available."
                     )
 
+                notify_formatter_usage(
+                    "Freddie Mac",
+                    output_path=out_file,
+                    raw_text=raw_text,
+                    uploaded_filename=resume_file.name,
+                )
+
                 with open(
                     out_file,
                     "rb",
@@ -17949,6 +18346,7 @@ def peraton_app():
         elif not os.path.exists(TEMPLATE_FILENAME):
             st.error(f"❌ Error: The preloaded template '{TEMPLATE_FILENAME}' was not found. Please make sure it is uploaded to your GitHub repository.")
         else:
+            begin_formatter_run("Peraton")
             with st.spinner("Processing document and querying AI..."):
                 try:
                     resume_path = f"temp_{resume_file.name}"
@@ -18205,6 +18603,13 @@ def peraton_app():
 
                     out_file = f"Submission_Peraton_{name.replace(' ', '_')}.docx"
                     process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
+
+                    notify_formatter_usage(
+                        "Peraton",
+                        output_path=out_file,
+                        raw_text=raw_text,
+                        uploaded_filename=resume_file.name,
+                    )
                     
                     with open(out_file, "rb") as file:
                         btn = st.download_button(
@@ -18515,6 +18920,7 @@ def capital_one_app():
         elif not os.path.exists(TEMPLATE_FILENAME):
             st.error(f"❌ Error: The preloaded template '{TEMPLATE_FILENAME}' was not found. Please make sure it is uploaded to your GitHub repository.")
         else:
+            begin_formatter_run("Capital One")
             with st.spinner("Processing document and querying AI..."):
                 try:
                     resume_path = f"temp_{resume_file.name}"
@@ -18794,6 +19200,14 @@ def capital_one_app():
                         st.error(f"⚠️ PDF Conversion failed: {e}. Ensure 'libreoffice' is in packages.txt.")
                     
                     # 3. Provide the PDF for download (fallback to docx if PDF fails to generate)
+                    qa_output_file = pdf_file if os.path.exists(pdf_file) else docx_file
+                    notify_formatter_usage(
+                        "Capital One",
+                        output_path=qa_output_file,
+                        raw_text=raw_text,
+                        uploaded_filename=resume_file.name,
+                    )
+
                     if os.path.exists(pdf_file):
                         with open(pdf_file, "rb") as file:
                             btn = st.download_button(
@@ -18924,6 +19338,7 @@ def adusa_app():
         elif not os.path.exists(TEMPLATE_FILENAME):
             st.error(f"❌ Error: The preloaded template '{TEMPLATE_FILENAME}' was not found. Please make sure it is uploaded to your GitHub repository.")
         else:
+            begin_formatter_run("ADUSA")
             with st.spinner("Processing document and querying AI..."):
                 try:
                     resume_path = f"temp_{resume_file.name}"
@@ -19184,6 +19599,13 @@ def adusa_app():
 
                     out_file = f"Submission_ADUSA_{name.replace(' ', '_')}.docx"
                     process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
+
+                    notify_formatter_usage(
+                        "ADUSA",
+                        output_path=out_file,
+                        raw_text=raw_text,
+                        uploaded_filename=resume_file.name,
+                    )
                     
                     with open(out_file, "rb") as file:
                         btn = st.download_button(
@@ -19303,6 +19725,7 @@ def cbre_app():
         elif not os.path.exists(TEMPLATE_FILENAME):
             st.error(f"❌ Error: The preloaded template '{TEMPLATE_FILENAME}' was not found. Please make sure it is uploaded to your GitHub repository.")
         else:
+            begin_formatter_run("CBRE")
             with st.spinner("Processing document and querying AI..."):
                 try:
                     resume_path = f"temp_{resume_file.name}"
@@ -19563,6 +19986,13 @@ def cbre_app():
 
                     out_file = f"Submission_CBRE_{name.replace(' ', '_')}.docx"
                     process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
+
+                    notify_formatter_usage(
+                        "CBRE",
+                        output_path=out_file,
+                        raw_text=raw_text,
+                        uploaded_filename=resume_file.name,
+                    )
                     
                     with open(out_file, "rb") as file:
                         btn = st.download_button(
@@ -19942,6 +20372,7 @@ def bnsf_app():
         elif not os.path.exists(TEMPLATE_FILENAME):
             st.error(f"❌ Error: The preloaded template '{TEMPLATE_FILENAME}' was not found. Please make sure it is uploaded to your GitHub repository.")
         else:
+            begin_formatter_run("BNSF")
             with st.spinner("Processing document and querying AI..."):
                 try:
                     resume_path = f"temp_{resume_file.name}"
@@ -20212,6 +20643,13 @@ def bnsf_app():
 
                     out_file = f"Submission_BNSF_{name.replace(' ', '_')}.docx"
                     process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
+
+                    notify_formatter_usage(
+                        "BNSF",
+                        output_path=out_file,
+                        raw_text=raw_text,
+                        uploaded_filename=resume_file.name,
+                    )
                     
                     with open(out_file, "rb") as file:
                         btn = st.download_button(
@@ -20315,6 +20753,7 @@ def dallas_generic_app():
         elif not os.path.exists(TEMPLATE_FILENAME):
             st.error(f"❌ Error: The preloaded template '{TEMPLATE_FILENAME}' was not found. Please make sure it is uploaded to your GitHub repository.")
         else:
+            begin_formatter_run("Dallas Generic")
             with st.spinner("Processing document and querying AI..."):
                 try:
                     resume_path = f"temp_{resume_file.name}"
@@ -20580,6 +21019,13 @@ def dallas_generic_app():
 
                     out_file = f"Submission_DallasGeneric_{name.replace(' ', '_')}.docx"
                     process_word_doc(TEMPLATE_FILENAME, mapping, out_file)
+
+                    notify_formatter_usage(
+                        "Dallas Generic",
+                        output_path=out_file,
+                        raw_text=raw_text,
+                        uploaded_filename=resume_file.name,
+                    )
                     
                     with open(out_file, "rb") as file:
                         btn = st.download_button(
@@ -22960,6 +23406,7 @@ def deloitte_app():
                 "Make sure the required Deloitte template is uploaded to the GitHub repository."
             )
         else:
+            begin_formatter_run("Deloitte")
             with st.spinner("Processing document and querying AI..."):
                 try:
                     resume_path = f"temp_{resume_file.name}"
@@ -23446,6 +23893,13 @@ def deloitte_app():
                             resume_docx_path,
                             out_file
                         )
+
+                    notify_formatter_usage(
+                        "Deloitte",
+                        output_path=out_file,
+                        raw_text=raw_text,
+                        uploaded_filename=resume_file.name,
+                    )
                     
                     with open(out_file, "rb") as file:
                         btn = st.download_button(
@@ -25703,6 +26157,8 @@ def navy_federal_app():
                 st.error(f"❌ {error}")
             return
 
+        begin_formatter_run("Navy Federal")
+
         with st.spinner("Building hiring-manager-focused Navy Federal submission..."):
             resume_path = None
 
@@ -26424,6 +26880,13 @@ FULL ORIGINAL RESUME:
                     TEMPLATE_FILENAME,
                     mapping,
                     out_file,
+                )
+
+                notify_formatter_usage(
+                    "Navy Federal",
+                    output_path=out_file,
+                    raw_text=raw_text,
+                    uploaded_filename=resume_file.name,
                 )
 
                 with open(out_file, "rb") as file:
