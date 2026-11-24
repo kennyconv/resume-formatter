@@ -1,3 +1,4 @@
+# v76 FREDDIE STRUCTURED SKILL RESOLUTION + EVIDENCE ALIASES + TARGETED NARRATIVE REFINEMENTS
 # v75 FREDDIE SOURCE STRUCTURE, ADDRESS METADATA, EDUCATION AND GROUPED DATES
 # v74 NAVY SECTION-BOUNDARY HARDENING + SINGLE QA WARNING EMAIL + AUTO EASTERN DATE
 # v73 QA EMAIL ON EVERY SUCCESSFUL FORMATTER RUN + DUAL RESUME ATTACHMENTS
@@ -3786,7 +3787,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v75"
+_FORMATTER_BUILD_VERSION = "v76"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -8719,6 +8720,8 @@ FREDDIE_CONFIRMED_VNDLY_SKILL_RECORDS = [{'id': 980,
  {'id': None, 'skill_name': 'Web Services', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
  {'id': None, 'skill_name': 'Windows PowerShell', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
  {'id': None, 'skill_name': 'workday', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Workday Adaptive', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
+ {'id': None, 'skill_name': 'Prism Analytics', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
  {'id': None, 'skill_name': 'Workday Extend', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
  {'id': None, 'skill_name': 'Workday Financials', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
  {'id': None, 'skill_name': 'Workday Reporting', 'catalog_tier': 'canonical_preferred', 'source': 'manual_confirmed'},
@@ -9037,6 +9040,8 @@ FREDDIE_CONFIRMED_CORE_VNDLY_SKILLS = ["+3 years' experience in SQL, RDBMS and T
  'Web Services',
  'Windows PowerShell',
  'workday',
+ 'Workday Adaptive',
+ 'Prism Analytics',
  'Workday Extend',
  'Workday Financials',
  'Workday Reporting',
@@ -10271,6 +10276,25 @@ def fred_dedupe_skill_groups(*groups):
     return output
 
 
+def fred_is_compact_structured_skill_label(label):
+    """Conservative gate for a new short tag in a flattened structured field."""
+    label = str(label or "").strip()
+    return bool(
+        2 <= len(label) <= 80
+        and len(label.split()) <= 8
+        and re.search(r"[A-Za-z]", label)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 .+#&()/\-]*", label)
+        and not re.search(r"(?i)\b(?:years?|experience|proficiency|required|preferred|must have|nice to have|none|null|nan|n/a|not applicable)\b", label)
+        and label.count("(") == label.count(")")
+    )
+
+
+def fred_job_only_vndly_skill_record(label):
+    """Job-scoped exact-only tag; no invented tenant ID or permanent catalog entry."""
+    return {"id": None, "skill_name": str(label).strip(),
+            "catalog_tier": "legacy_free_text", "source": "requisition_structured"}
+
+
 def fred_resolve_structured_vndly_skills(raw_field, catalog):
     """
     Resolve a raw Google-Sheet Must/Nice field back to the exact VNDLY skill
@@ -10281,6 +10305,28 @@ def fred_resolve_structured_vndly_skills(raw_field, catalog):
     catalogue and a longest-match dynamic-programming pass so we do not mistake
     a JD keyword such as "Java" for an exact requisition-selected skill.
     """
+    structured_list = raw_field if isinstance(raw_field, (list, tuple)) else None
+    if structured_list is None and str(raw_field or "").strip().startswith("["):
+        try:
+            parsed = json.loads(str(raw_field))
+            if isinstance(parsed, list):
+                structured_list = parsed
+        except (ValueError, TypeError):
+            pass
+    if structured_list is not None:
+        lookup = fred_catalog_lookup(catalog)
+        result = []
+        for entry in structured_list:
+            if not isinstance(entry, str):
+                continue
+            label = entry.strip()
+            known = lookup.get(fred_normalize_skill_name(label))
+            if known:
+                result.append(known)
+            elif fred_is_compact_structured_skill_label(label):
+                result.append(fred_job_only_vndly_skill_record(label))
+        return result
+
     raw = re.sub(r"\s+", " ", str(raw_field or "").replace("\u00a0", " ")).strip()
 
     if not raw:
@@ -10361,12 +10407,46 @@ def fred_resolve_structured_vndly_skills(raw_field, catalog):
     if resolved is not None:
         return resolved
 
-    # Conservative fallback: only accept a whole-field exact catalogue match.
-    whole = fred_catalog_lookup(catalog).get(
-        fred_normalize_skill_name(raw)
-    )
-
-    return [whole] if whole else []
+    # v76: an unknown tag must not erase independently identifiable tags.
+    # Recover known labels longest-first at separator boundaries. Unknown text
+    # in a comma-flattened field is ambiguous (it could belong to a compound
+    # label), so never create permanent catalog entries from such fragments.
+    recovered = []
+    unknown = []
+    pos = 0
+    while pos < len(raw):
+        hit = None
+        for name, item in candidates:
+            end = pos + len(name)
+            if not raw_fold.startswith(name.casefold(), pos):
+                continue
+            check = end
+            while check < len(raw) and raw[check].isspace():
+                check += 1
+            if check == len(raw) or raw[check] in {",", ";", "|"}:
+                hit = (item, check)
+                break
+        if hit:
+            recovered.append(hit[0])
+            pos = skip_separator(hit[1])
+        else:
+            end = pos
+            while end < len(raw) and raw[end] not in {",", ";", "|"}:
+                end += 1
+            unknown.append(raw[pos:end].strip())
+            pos = skip_separator(end)
+    # One short, independently bounded unknown label in an otherwise known
+    # list may be a new requisition tag. Keep it ONLY for this job, without an
+    # ID, and never infer it from the JD. Multiple unknown comma fragments are
+    # too ambiguous; retain the known tags and leave those for manual review.
+    if len(unknown) == 1 and (recovered or not re.search(r"[,;|]", raw)):
+        label = unknown[0]
+        if fred_is_compact_structured_skill_label(label):
+            record = fred_job_only_vndly_skill_record(label)
+            # Keep the original field order for display/ranking ties.
+            recovered.append(record)
+            recovered.sort(key=lambda item: raw_fold.find(str(item.get("skill_name", "")).casefold()))
+    return recovered
 
 
 def fred_filter_exact_req_recommendations(raw_items, allowed_items, catalog):
@@ -10498,6 +10578,16 @@ def fred_evidence_text_satisfies_groups(text_value, groups):
         fred_text_contains_any(text_value, aliases)
         for aliases in groups
     )
+
+
+def fred_workday_vndly_aliases(skill_name):
+    """Narrow equivalent labels, not related Workday modules or report types."""
+    return {
+        "workday adaptive": ["workday adaptive", "workday adaptive planning"],
+        "workday adaptive planning": ["workday adaptive planning", "workday adaptive"],
+        "workday reporting": ["workday reporting", "workday report writer", "workday reporting & analytics", "workday reporting and analytics"],
+        "prism analytics": ["prism analytics", "workday prism"],
+    }.get(fred_normalize_skill_name(skill_name), [])
 
 
 def fred_skill_work_history_evidence(skill_name, raw_resume_text):
@@ -10637,7 +10727,7 @@ def fred_skill_work_history_evidence(skill_name, raw_resume_text):
         "mortgage industry": ["mortgage", "appraisal", "loan", "collateral", "uad", "underwriting"],
     }
 
-    aliases = alias_map.get(key)
+    aliases = fred_workday_vndly_aliases(skill) or alias_map.get(key)
 
     if aliases:
         if fred_text_contains_any(work, aliases):
@@ -10835,6 +10925,9 @@ def fred_supplement_priority_skills(
         if tier not in {"canonical_preferred", "compound_review", "legacy_free_text"}:
             continue
 
+        job_only = cat_item.get("source") == "requisition_structured"
+        if job_only and not fred_text_contains_term(raw_resume_text, name):
+            continue
         evidence_strength = fred_skill_work_history_evidence(name, raw_resume_text)
         if evidence_strength <= 0:
             continue
@@ -10863,6 +10956,7 @@ def fred_supplement_priority_skills(
         output.append(
             {
                 "id": cat_item.get("id"),
+                **({"source": "requisition_structured"} if job_only else {}),
                 "skill_name": name,
                 "catalog_tier": tier,
                 "source_category": category,
@@ -11248,7 +11342,7 @@ def fred_skill_aliases_for_requirement(skill_name):
         "sagemaker": ["sagemaker"],
         "claude code, amazon bedrock, multi-model llm, ai agents, ai chatbots": ["claude code", "amazon bedrock", "ai agents", "ai chatbots", "multi-model llm"],
     }
-    return aliases.get(key, [key])
+    return fred_workday_vndly_aliases(skill_name) or aliases.get(key, [key])
 
 
 def fred_skill_matches_text(skill_name, text_value):
@@ -11615,6 +11709,10 @@ def fred_prune_low_value_vndly_supplements(ranked_skills, structured_req):
     }
     protected_categories = {"exact_structured_must", "exact_structured_nice"}
 
+    exact_keys = {
+        fred_normalize_skill_name(x.get("skill_name", "")) for x in items
+        if str(x.get("source_category", "")).strip().lower() in protected_categories
+    }
     stronger_pairs = {
         "ci/cd": {"ci/cd best practices"},
         "aws": {"aws cloud platforms"},
@@ -11653,6 +11751,10 @@ def fred_prune_low_value_vndly_supplements(ranked_skills, structured_req):
             output.append(item)
             continue
 
+        if (key == "prism" and "prism analytics" in exact_keys) or (
+            key == "prism analytics" and "prism" in exact_keys
+        ):
+            continue
         stronger = stronger_pairs.get(key, set())
         if stronger and any(candidate in selected_keys for candidate in stronger):
             continue
@@ -11712,7 +11814,7 @@ def fred_additional_skill_role_relevance(skill_name, structured_req, vndly_conte
         "enterprise program management": ["program management", "program specialist", "portfolio", "multiple projects", "concurrent projects"],
         "business risk management": ["risk", "issue tracking", "escalation", "program health"],
         "snowflake": ["snowflake", "data warehouse", "data engineering", "data platform", "sql database"],
-        "git": ["source control", "version control", "software development", "developer", "engineering"],
+        "git": ["source control", "version control", "source code management", "code repositories", "code repository", "branching strategy", "pull requests", "git-based", "github", "gitlab"],
         "amazon q": ["coding agent", "coding agents", "coding assistant", "coding assistants", "ai-assisted coding"],
         "langgraph": ["agentic workflow", "agentic workflows", "multi-agent", "multi agent", "ai agents", "orchestrator agent"],
     }
@@ -11749,6 +11851,9 @@ def fred_rerank_vndly_skills_by_evidence(
         if not name:
             continue
 
+        job_only = item.get("source") == "requisition_structured"
+        if job_only and not fred_text_contains_term(raw_resume_text, name):
+            continue
         evidence_strength = fred_skill_work_history_evidence(
             name,
             raw_resume_text,
@@ -11767,7 +11872,11 @@ def fred_rerank_vndly_skills_by_evidence(
         if (
             not candidate_evidence
             or not fred_source_quote_found(raw_resume_text, candidate_evidence)
-            or not fred_claim_supported_by_evidence(name, candidate_evidence)
+            or not (
+                fred_text_contains_any(candidate_evidence, fred_workday_vndly_aliases(name))
+                if fred_workday_vndly_aliases(name)
+                else fred_claim_supported_by_evidence(name, candidate_evidence)
+            )
         ):
             candidate_evidence = fred_find_skill_evidence_excerpt(
                 name,
@@ -11776,6 +11885,11 @@ def fred_rerank_vndly_skills_by_evidence(
 
         if not candidate_evidence:
             continue
+        if job_only and not fred_text_contains_term(candidate_evidence, name):
+            candidate_evidence = next((line.strip() for line in str(raw_resume_text).splitlines()
+                                       if fred_text_contains_term(line, name)), "")
+            if not candidate_evidence:
+                continue
 
         copy_item["evidence"] = candidate_evidence
         copy_item["work_history_evidence_strength"] = evidence_strength
@@ -11931,6 +12045,13 @@ def fred_build_final_ranked_vndly_skills(
         )
 
         # Exact structured categories must actually come from the exact req field.
+        # If the AI gave an inferred category to an actual attached tag, preserve
+        # its real structured category rather than letting later supplementation skip it.
+        if category not in {"exact_structured_must", "exact_structured_nice"}:
+            if key in allowed_must:
+                category = "exact_structured_must"
+            elif key in allowed_nice:
+                category = "exact_structured_nice"
         if category == "exact_structured_must":
             if key not in allowed_must:
                 continue
@@ -11949,6 +12070,7 @@ def fred_build_final_ranked_vndly_skills(
         output.append(
             {
                 "id": exact.get("id"),
+                **({"source": "requisition_structured"} if exact.get("source") == "requisition_structured" else {}),
                 "skill_name": name,
                 "catalog_tier": tier,
                 "source_category": category,
@@ -12264,7 +12386,11 @@ RULES:
   candidate evidence supports them and they do not displace current priorities.
 - If a claim is not directly supported, remove or soften it rather than inventing
   evidence.
-- Final sentence may explain truthful transferability to the Freddie need.
+- Lead with strongest documented match and technical proof; connect the manager
+  name to a genuinely supported priority, not an unproven one. Disclose any
+  material mandatory-skill gap briefly after strengths if needed for accuracy;
+  distinguish not documented from confirmed absence. Final sentence may explain
+  truthful transferability to the Freddie need.
 - NEVER use an em dash.
 - Never mention "VNDLY requirements" or similar process-oriented matching language.
 - Return 2-8 short candidate-evidence excerpts supporting every claim. Resume
@@ -12335,6 +12461,33 @@ def fred_build_vndly_candidate_package(
             "was not found or could not be read."
         )
 
+    vndly_context = vndly_context or {}
+
+    spotlight_hiring_manager_name = fred_extract_spotlight_hiring_manager_name(
+        vndly_context.get("transcript", "")
+    )
+
+    raw_must = vndly_context.get("must_have_skills", "") or ""
+    raw_nice = vndly_context.get("nice_to_have_skills", "") or ""
+
+    selected_must_items = fred_resolve_structured_vndly_skills(
+        raw_must,
+        catalog,
+    )
+    selected_nice_items = fred_resolve_structured_vndly_skills(
+        raw_nice,
+        catalog,
+    )
+
+    # Job-only labels supplement a copy, never the cached/global catalog.
+    catalog = list(catalog)
+    catalog_keys = set(fred_catalog_lookup(catalog))
+    for item in selected_must_items + selected_nice_items:
+        key = fred_normalize_skill_name(item.get("skill_name", ""))
+        if key and key not in catalog_keys:
+            catalog.append(item)
+            catalog_keys.add(key)
+
     catalog_for_ai = [
         {
             "id": item.get("id"),
@@ -12351,24 +12504,6 @@ def fred_build_vndly_candidate_package(
         catalog_for_ai,
         ensure_ascii=False,
         separators=(",", ":"),
-    )
-
-    vndly_context = vndly_context or {}
-
-    spotlight_hiring_manager_name = fred_extract_spotlight_hiring_manager_name(
-        vndly_context.get("transcript", "")
-    )
-
-    raw_must = str(vndly_context.get("must_have_skills", "") or "").strip()
-    raw_nice = str(vndly_context.get("nice_to_have_skills", "") or "").strip()
-
-    selected_must_items = fred_resolve_structured_vndly_skills(
-        raw_must,
-        catalog,
-    )
-    selected_nice_items = fred_resolve_structured_vndly_skills(
-        raw_nice,
-        catalog,
     )
 
     selected_must_json = json.dumps(
@@ -12579,7 +12714,9 @@ HIRING-MANAGER NAME RULE:
   ONCE in the Comments. This is expected, not optional.
 - It may contain one or multiple first names (for example "Bruce and Colton").
 - Best use: connect proven candidate evidence to a priority the hiring manager
-  explicitly emphasized on the supplier/Spotlight call.
+  explicitly emphasized on the supplier/Spotlight call, even if that proven
+  priority is preferred rather than mandatory. Never lead with an unproven
+  manager priority merely to satisfy the name rule.
 - If the manager explicitly calls a candidate competency the number-one/top/
   primary/most-important priority AND the candidate directly proves it, use the
   manager name + that priority by Sentence 2. Do not save the strongest manager
@@ -12679,10 +12816,16 @@ OTHER RULES:
 - Never invent or infer candidate experience.
 - Do not merge evidence from separate employers into one sentence in a way that
   falsely implies all tools/responsibilities occurred together.
-- Do not discuss weaknesses, missing skills, compensation, citizenship,
-  sponsorship, submission mechanics, shortlisting strategy, or AI matching
-  strategy. A concise former-Freddie/rehire or required-onsite availability fact
-  may be used when it materially reduces MSP uncertainty.
+- Lead with the strongest documented role-relevant match and technical evidence,
+  not a missing skill or a manager priority the candidate does not demonstrate.
+- After the supported strengths, briefly disclose material mandatory-skill gaps
+  when necessary for an accurate shortlist picture. Describe them as not
+  documented or as explicitly limited by candidate clarification; do not infer
+  absence from silence, exaggerate transferability, or turn gaps into a list of
+  weaknesses. Omit irrelevant gaps.
+- Do not discuss compensation, citizenship, sponsorship, submission mechanics,
+  shortlisting strategy, or AI matching strategy. A concise former-Freddie/rehire
+  or required-onsite availability fact may be used when it materially reduces MSP uncertainty.
 - Never write phrases such as "aligns with VNDLY requirements", "matches the
   VNDLY requirements", or otherwise tell the reader that the candidate was
   optimized against VNDLY/JD requirements. Demonstrate the match through facts.
@@ -12710,7 +12853,10 @@ CRITICAL:
 - Return every candidate-supported skill that materially improves requirement
   coverage, MSP search/review value, or hiring-manager relevance.
 - Stop adding SUPPLEMENTAL skills when additional items would be redundant,
-  weak, tangential, or manager-de-emphasized noise.
+  weak, tangential, or manager-de-emphasized noise. Use the actual work and
+  responsibilities, not the generic title, to judge incremental shortlist value.
+  For example, a developer title alone is not enough reason to recommend Git;
+  source-control or repository/workflow relevance is needed.
 - It is completely acceptable to return a short list for a narrow role or a
   longer list for a broad role.
 - Rank every item from highest to lowest submission value.
@@ -14199,8 +14345,13 @@ SUMMARY:
 - Sentence 1: identity + strongest supported role anchors.
 - Sentence 2: strongest concrete recent/repeated proof.
 - Sentence 3: supporting execution/depth/impact.
-- Sentence 4: truthful transferability to Freddie's current need; clearly keep
-  target-role application separate from candidate past experience.
+- Sentence 4: add distinct, concrete candidate evidence not already conveyed in
+  Sentences 1-3; explain truthful transferability to Freddie's current need when
+  useful. Never use a generic relevance-only closer. Clearly keep target-role
+  application separate from candidate past experience.
+- Preserve meaningful source-supported tenure and accomplishments when relevant;
+  do not weaken an explicitly supported action (e.g. led, built, architected) into
+  generic support or infer greater ownership than the candidate evidence proves.
 - For EACH sentence return 1-3 short VERBATIM candidate-evidence excerpts
   proving the candidate claims in that sentence.
 - Avoid harmless recruiter-language leakage from role text. Generic glue words such
@@ -14212,7 +14363,10 @@ SKILLS TABLE:
 - Treat the four rows as scarce real estate.
 - Spotlight/MSP current selection guidance controls emphasis first, then formal
   Must Haves, then explicit Preferred/Nice-to-Haves.
-- Each row must be a distinct screening dimension.
+- Each row must be a distinct screening dimension. Compare the rows together:
+  avoid repeating the same capability or detail across rows when other relevant,
+  supported evidence is available. Shared tools are acceptable for genuinely
+  different competencies; never remove an important detail just to avoid overlap.
 - For each row return:
   * skill_area: concise high-level competency
   * area_evidence: 1-3 VERBATIM candidate-evidence excerpts proving the competency
@@ -17387,13 +17541,17 @@ Sentence 3 - SUPPORTING DEPTH + IMPACT
 Sentence 4 - TRANSFER TO THIS FREDDIE ROLE
 ----------------------------------------------------------------------
 
-- Tie together the strongest remaining evidence that increases confidence in
-  the shortlist decision.
+- Introduce the strongest remaining concrete candidate evidence that increases
+  confidence in the shortlist decision; do not simply restate the relevance of
+  Sentences 1-3. Connect that evidence to the target role only when useful.
+- Preserve material source-supported tenure, outcomes and action verbs across
+  the four sentences; do not downgrade demonstrated ownership without reason or
+  claim more than the evidence supports.
 - When Freddie requires or strongly values domain experience such as mortgage,
   financial services, appraisal, capital markets, fixed income, ServiceNow
   IRM/GRC, etc., make that domain connection explicit when genuinely supported.
-- State the specific value the candidate's demonstrated experience indicates
-  they can provide to THIS Freddie role.
+- If a transferability bridge adds value, connect the additional demonstrated
+  experience to a specific Freddie need; avoid generic relevance-only statements.
 - This is the ONE sentence where target-role language may be used explicitly to
   explain transferability, even when the candidate did not previously work in
   that exact Freddie environment.
@@ -17876,7 +18034,9 @@ Review the four rows together and ask:
 2. Are Freddie's most important supported Must Haves visible using recognizable
    terminology?
 
-3. Does each row represent a materially different screening dimension?
+3. Does each row represent a materially different screening dimension, without
+   duplicating the same capability when stronger unused evidence is available?
+   A tool may appear in two rows when it proves genuinely different competencies.
 
 4. Did a broad secondary strength consume a row that should instead show a more
    important supported Must Have?
