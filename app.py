@@ -1,3 +1,4 @@
+# v74 NAVY SECTION-BOUNDARY HARDENING + SINGLE QA WARNING EMAIL + AUTO EASTERN DATE
 # v73 QA EMAIL ON EVERY SUCCESSFUL FORMATTER RUN + DUAL RESUME ATTACHMENTS
 # v72 FREDDIE DONT-HAVE EXCLUSION RESTORED
 # v71 ALL GOOGLE-SHEET JOBS VISIBLE IN CLIENT DROPDOWNS
@@ -41,6 +42,7 @@ import unicodedata
 from email.message import EmailMessage
 from copy import deepcopy
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 # ====================================================================
 # --- STREAMLIT UI & PASSWORD LOGIC ---
@@ -94,6 +96,35 @@ def check_password():
 # 🛑 STOP THE APP HERE IF THEY DON'T HAVE THE PASSWORD
 if not check_password():
     st.stop()
+
+
+# ====================================================================
+# --- AUTHORITATIVE FORMATTER DATE / TIME (America/New_York) ---
+# ====================================================================
+
+_FORMATTER_EASTERN_TZ = ZoneInfo("America/New_York")
+
+
+def _formatter_now_eastern():
+    """Return the formatter's authoritative current timestamp in U.S. Eastern time."""
+    return datetime.now(_FORMATTER_EASTERN_TZ)
+
+
+def _formatter_today_eastern():
+    """Return the formatter's authoritative current calendar date in U.S. Eastern time."""
+    return _formatter_now_eastern().date()
+
+
+def _formatter_current_date_iso():
+    return _formatter_today_eastern().isoformat()
+
+
+def _formatter_current_month_year():
+    return _formatter_today_eastern().strftime("%B %Y")
+
+
+def _formatter_current_year():
+    return _formatter_today_eastern().year
 
 
 # ====================================================================
@@ -588,7 +619,7 @@ def _looks_like_section_heading(text):
     # Recognize standard resume section labels regardless of capitalization.
     if re.fullmatch(
         r"(?:professional summary|summary|profile|core competencies|competencies|"
-        r"technical skills|skills|professional experience|work experience|employment history|"
+        r"technical skills|technical proficiencies|skills|proficiencies|professional experience|work experience|employment history|"
         r"career history|additional experience|earlier experience|education|certifications?|"
         r"certificates?|awards?|references?|community involvement)\s*:?",
         value,
@@ -611,6 +642,19 @@ def _looks_like_section_heading(text):
     if len(letters) < 3:
         return False
     return value.upper() == value and not re.search(r"[.!?]$", value)
+
+
+def _is_skills_section_heading(text):
+    """Recognize explicit skills/proficiencies section headings as hard work-history boundaries."""
+    value = _canonical_section_heading_text(text)
+    return bool(
+        re.fullmatch(
+            r"(?:technical skills|technical proficiencies|skills|proficiencies|"
+            r"core competencies|competencies)\s*:?",
+            value,
+            flags=re.I,
+        )
+    )
 
 
 def _iter_container_blocks(container, kind_prefix="BODY"):
@@ -2334,10 +2378,13 @@ def _source_certification_context(blocks):
     end = len(blocks)
     for idx in range(start, len(blocks)):
         text = str(blocks[idx].get('text', '') or '').strip()
-        if _looks_like_section_heading(text) and re.search(
-            r"\b(?:education|experience|skills|technical skills|awards?|references?)\b",
-            text,
-            flags=re.I,
+        if _looks_like_section_heading(text) and (
+            _is_skills_section_heading(text)
+            or re.search(
+                r"\b(?:education|experience|awards?|references?)\b",
+                text,
+                flags=re.I,
+            )
         ):
             end = idx
             break
@@ -2384,10 +2431,13 @@ def _experience_section_bounds(blocks, role_anchors):
     scan_from = (role_anchors[-1] + 1) if role_anchors else start
     for idx in range(scan_from, len(blocks)):
         text = str(blocks[idx].get('text', '') or '').strip()
-        if _looks_like_section_heading(text) and re.search(
-            r"\b(?:education|certifications?|skills|technical skills|awards?|references?|projects?)\b",
-            text,
-            flags=re.I,
+        if _looks_like_section_heading(text) and (
+            _is_skills_section_heading(text)
+            or re.search(
+                r"\b(?:education|certifications?|awards?|references?|projects?)\b",
+                text,
+                flags=re.I,
+            )
         ):
             end = idx
             break
@@ -2445,7 +2495,7 @@ def _additional_experience_ranges(blocks):
         flags=re.I,
     )
     stop_re = re.compile(
-        r"\b(?:education|certifications?|certificates?|skills|technical skills|awards?|references?|projects?)\b",
+        r"\b(?:education|certifications?|certificates?|awards?|references?|projects?)\b",
         flags=re.I,
     )
     for idx, block in enumerate(blocks):
@@ -2455,7 +2505,9 @@ def _additional_experience_ranges(blocks):
         end = len(blocks)
         for j in range(idx + 1, len(blocks)):
             nxt = str(blocks[j].get('text', '') or '').strip()
-            if _looks_like_section_heading(nxt) and stop_re.search(nxt):
+            if _looks_like_section_heading(nxt) and (
+                _is_skills_section_heading(nxt) or stop_re.search(nxt)
+            ):
                 end = j
                 break
         ranges.append((idx + 1, end))
@@ -2533,14 +2585,14 @@ def _education_section_ranges(blocks):
         end = len(blocks)
         stop_re = re.compile(
             r"^(?:professional summary|summary|profile|core competencies|competencies|"
-            r"technical skills|skills|professional experience|work experience|employment history|"
+            r"technical skills|technical proficiencies|skills|proficiencies|professional experience|work experience|employment history|"
             r"career history|additional experience|earlier experience|prior experience|previous experience|"
             r"certifications?|certificates?|awards?|references?|military service|projects?)\b",
             flags=re.I,
         )
         for j in range(idx + 1, len(blocks)):
             nxt = str(blocks[j].get('text', '') or '').strip()
-            if stop_re.search(nxt):
+            if _is_skills_section_heading(nxt) or stop_re.search(nxt):
                 end = j
                 break
         ranges.append((idx + 1, end))
@@ -2635,7 +2687,7 @@ def _additional_experience_section_for_anchor(blocks, anchor_index):
         flags=re.I,
     )
     stop_re = re.compile(
-        r"\b(?:education|certifications?|certificates?|skills|technical skills|awards?|references?|projects?|military service)\b",
+        r"\b(?:education|certifications?|certificates?|awards?|references?|projects?|military service)\b",
         flags=re.I,
     )
 
@@ -2653,7 +2705,9 @@ def _additional_experience_section_for_anchor(blocks, anchor_index):
         end = len(blocks)
         for j in range(idx + 1, len(blocks)):
             nxt = str(blocks[j].get('text', '') or '').strip()
-            if _looks_like_section_heading(nxt) and stop_re.search(nxt):
+            if _looks_like_section_heading(nxt) and (
+                _is_skills_section_heading(nxt) or stop_re.search(nxt)
+            ):
                 end = j
                 break
         if idx < anchor_index < end:
@@ -2754,7 +2808,7 @@ def _freddie_education_section_ranges(blocks):
         end = len(blocks)
         for j in range(idx + 1, len(blocks)):
             nxt = str(blocks[j].get("text", "") or "").strip()
-            if stop_re.search(nxt):
+            if _is_skills_section_heading(nxt) or stop_re.search(nxt):
                 end = j
                 break
         ranges.append((idx + 1, end))
@@ -3387,10 +3441,13 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
         # Stop the last role at the next major non-experience section.
         for idx in range(start, end):
             text = blocks[idx].get('text', '')
-            if _looks_like_section_heading(text) and re.search(
-                r"\b(?:education|certifications?|skills|technical skills|awards?|references?|projects?|additional experience|earlier experience|professional experience)\b",
-                text,
-                flags=re.I,
+            if _looks_like_section_heading(text) and (
+                _is_skills_section_heading(text)
+                or re.search(
+                    r"\b(?:education|certifications?|awards?|references?|projects?|additional experience|earlier experience|professional experience)\b",
+                    text,
+                    flags=re.I,
+                )
             ):
                 end = idx
                 break
@@ -3510,7 +3567,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v73"
+_FORMATTER_BUILD_VERSION = "v74"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -3807,9 +3864,9 @@ def _formatter_run_state_key(client_name):
 
 
 def begin_formatter_run(client_name):
-    """Start a fresh per-session formatter run so warning emails can wait for the output file."""
+    """Start a fresh per-session formatter run so warnings can be included in the final QA email."""
     client = str(client_name or "Resume Formatter").strip() or "Resume Formatter"
-    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    timestamp = _formatter_now_eastern().isoformat(timespec="seconds")
     seed = f"{timestamp}|{client}|{time.time_ns()}"
     run_id = hashlib.sha256(seed.encode("utf-8", errors="ignore")).hexdigest()[:12]
     try:
@@ -3847,7 +3904,7 @@ def _record_formatter_run_warning(client_name, message, technical_details=""):
         {
             "message": str(message or "").strip(),
             "technical_details": str(technical_details or "").strip(),
-            "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "timestamp": _formatter_now_eastern().isoformat(timespec="seconds"),
         }
     )
     state["warnings"] = warnings
@@ -3971,7 +4028,7 @@ def _formatter_candidate_from_snapshot(snapshot):
 
 
 def _send_formatter_usage_email_batch(config, messages):
-    """One background worker sends the successful-run QA email and any deferred warning email."""
+    """Background worker for the single successful-run QA email."""
     try:
         for subject, body, attachments in messages:
             _send_formatter_diagnostic_email(
@@ -3996,14 +4053,14 @@ def notify_formatter_usage(
     The email includes the selected client, selected job/requisition (when present),
     every client form value currently represented in Streamlit session state, the
     original uploaded resume, and the generated output resume. Any warning raised
-    earlier in the run is also sent after output creation so that warning email can
-    include both attachments.
+    earlier in the run is included in this same QA email after output creation so
+    one successful run produces only one QA message with both attachments.
     """
     client = str(client_name or "Resume Formatter").strip() or "Resume Formatter"
     state = _formatter_active_run(client) or {}
     run_id = str(state.get("run_id", "") or "").strip()
     if not run_id:
-        timestamp_seed = datetime.now().astimezone().isoformat(timespec="seconds")
+        timestamp_seed = _formatter_now_eastern().isoformat(timespec="seconds")
         run_id = hashlib.sha256(
             f"{timestamp_seed}|{client}|{time.time_ns()}".encode("utf-8", errors="ignore")
         ).hexdigest()[:12]
@@ -4012,7 +4069,7 @@ def notify_formatter_usage(
     snapshot = _diagnostic_form_snapshot(client)
     candidate = _formatter_candidate_from_snapshot(snapshot)
     selected_job = _formatter_snapshot_value(snapshot, "Selected Requisition")
-    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    timestamp = _formatter_now_eastern().isoformat(timespec="seconds")
     source_filename = str(
         uploaded_filename or _formatter_source_filename(raw_text) or "Unknown"
     ).strip()
@@ -4020,7 +4077,7 @@ def notify_formatter_usage(
 
     body_lines = [
         f"Formatter build: {_FORMATTER_BUILD_VERSION}",
-        "Event: Successful formatter generation",
+        "Event: Successful formatter generation with WARNING" if warnings else "Event: Successful formatter generation",
         f"Client: {client}",
         f"Run ID: {run_id}",
         f"Timestamp: {timestamp}",
@@ -4069,7 +4126,12 @@ def notify_formatter_usage(
     for note in attachment_notes:
         body_lines.extend(["", note])
 
-    subject_parts = [f"Formatter QA [{_FORMATTER_BUILD_VERSION}]", client]
+    subject_prefix = (
+        f"Formatter QA WARNING [{_FORMATTER_BUILD_VERSION}]"
+        if warnings
+        else f"Formatter QA [{_FORMATTER_BUILD_VERSION}]"
+    )
+    subject_parts = [subject_prefix, client]
     if candidate:
         subject_parts.append(candidate.replace("\n", " ").strip())
     if selected_job and selected_job.casefold() != "none":
@@ -4081,45 +4143,10 @@ def notify_formatter_usage(
     config = _formatter_usage_email_config()
     messages = []
     if config is not None:
+        # v74: one successful-run email only. When warnings occurred, the same QA
+        # email carries WARNING in its subject/body and includes the warning detail
+        # plus both resume attachments. This avoids duplicate emails for one run.
         messages.append((subject, "\n".join(body_lines), attachments))
-
-        if warnings:
-            warning_lines = [
-                f"Formatter build: {_FORMATTER_BUILD_VERSION}",
-                "Severity: WARNING",
-                f"Client: {client}",
-                f"Run ID: {run_id}",
-                f"Timestamp: {timestamp}",
-                f"Candidate: {candidate or '[blank]'}",
-                f"Selected job/requisition: {selected_job or '[none selected]'}",
-                "",
-                "The run completed and the generated resume now exists, so both the original",
-                "resume and the generated output are attached to this warning email.",
-                "",
-                "WARNINGS:",
-            ]
-            for index, warning in enumerate(warnings, start=1):
-                warning_lines.extend(
-                    [
-                        "",
-                        f"Warning {index}:",
-                        str(warning.get("message", "") or "").strip(),
-                    ]
-                )
-                details = str(warning.get("technical_details", "") or "").strip()
-                if details:
-                    warning_lines.extend(["Technical details:", details])
-            warning_lines.extend(["", "FORM INPUTS / AUTO-POPULATED FORM VALUES:"])
-            for label, value in snapshot:
-                warning_lines.extend(
-                    [
-                        "",
-                        f"{label}:",
-                        value if str(value or "") else "[blank]",
-                    ]
-                )
-            warning_subject = f"Formatter WARNING [{_FORMATTER_BUILD_VERSION}] - {client} - {run_id}"
-            messages.append((warning_subject, "\n".join(warning_lines), attachments))
 
     _clear_formatter_run(client)
 
@@ -4158,7 +4185,7 @@ def notify_formatter_diagnostic(
     level = str(severity or "INFO").strip().upper()
 
     # Successful-run warnings are deferred until the generated document exists so
-    # the warning email can include BOTH the original and output resumes.
+    # the single QA email can include the warning plus BOTH original/output resumes.
     if level == "WARNING" and _record_formatter_run_warning(
         client,
         message,
@@ -4167,7 +4194,7 @@ def notify_formatter_diagnostic(
         return
     filename = str(uploaded_filename or _formatter_source_filename(raw_text) or "Unknown").strip()
     source_format = _formatter_source_format(raw_text) or "Unknown"
-    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    timestamp = _formatter_now_eastern().isoformat(timespec="seconds")
     run_seed = f"{timestamp}|{client}|{level}|{filename}|{message}"
     run_id = hashlib.sha256(run_seed.encode("utf-8", errors="ignore")).hexdigest()[:12]
 
@@ -4431,11 +4458,14 @@ def _resilient_source_items_for_role(experience, role_index, blocks, anchors, cl
     # Do not cross into a major non-experience section.
     for idx in range(start, end):
         text = str(blocks[idx].get("text", "") or "").strip()
-        if _looks_like_section_heading(text) and re.search(
-            r"\b(?:education|certifications?|skills|technical skills|awards?|references?|projects?|"
-            r"additional experience|earlier experience|professional experience|community involvement)\b",
-            text,
-            flags=re.I,
+        if _looks_like_section_heading(text) and (
+            _is_skills_section_heading(text)
+            or re.search(
+                r"\b(?:education|certifications?|awards?|references?|projects?|"
+                r"additional experience|earlier experience|professional experience|community involvement)\b",
+                text,
+                flags=re.I,
+            )
         ):
             end = idx
             break
@@ -4776,7 +4806,7 @@ def _fannie_parse_date_endpoint(value, is_end=False):
     if not value:
         return None
     if re.search(r"\b(?:present|current|now)\b", value, flags=re.I):
-        now = date.today()
+        now = _formatter_today_eastern()
         return (now.year, now.month, "current")
 
     months = {
@@ -5712,13 +5742,13 @@ def enforce_source_fidelity(data, raw_text, client_name="Resume Formatter"):
             ) from fallback_error
 
         warning_text = str(strict_error)
-        diagnostic_lines = [str(x) for x in warnings[:18]]
-        fallback_actions = recovered.get("_FidelityFallbackActions", []) if isinstance(recovered, dict) else []
-        if fallback_actions:
-            # Always surface the action summary in the email even when the warning
-            # list itself is long enough that a simple [:25] slice would hide it.
-            diagnostic_lines.append("Fallback actions:")
-            diagnostic_lines.extend(f"- {str(x)}" for x in fallback_actions[:12])
+        diagnostic_lines = []
+        seen_diagnostic_lines = set()
+        for item in warnings[:32]:
+            line = str(item or "").strip()
+            if line and line not in seen_diagnostic_lines:
+                diagnostic_lines.append(line)
+                seen_diagnostic_lines.add(line)
         notify_formatter_diagnostic(
             client_name,
             "WARNING",
@@ -16689,7 +16719,7 @@ ORIGINAL RESUME:
                     ensure_ascii=False,
                 )
 
-                current_date_obj = date.today()
+                current_date_obj = _formatter_today_eastern()
                 current_date = current_date_obj.isoformat()
 
                 calculated_total_experience = fred_calculate_total_experience(
@@ -19072,7 +19102,7 @@ def capital_one_app():
                             - Prioritize the specific "Must-Have" technologies.
                             - Use only tools explicitly mentioned in resume/Q&A/notes
                             Format: "Skill Area (Tool1, Tool2, Tool3, Tool4)"
-                            Years format: "X+ years, current" OR "X+ years, 2026"
+                            Years format: "X+ years, current" OR "X+ years, {_formatter_current_year()}"
 
                             ========================
                             🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
@@ -19491,7 +19521,7 @@ def adusa_app():
                             - Prioritize the specific "Must-Have" technologies.
                             - Use only tools explicitly mentioned in resume/Q&A/notes
                             Format: "Skill Area (Tool1, Tool2, Tool3, Tool4)"
-                            Years format: "X+ years, current" OR "X+ years, 2026"
+                            Years format: "X+ years, current" OR "X+ years, {_formatter_current_year()}"
 
                             ========================
                             🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
@@ -19878,7 +19908,7 @@ def cbre_app():
                             - Prioritize the specific "Must-Have" technologies.
                             - Use only tools explicitly mentioned in resume/Q&A/notes
                             Format: "Skill Area (Tool1, Tool2, Tool3, Tool4)"
-                            Years format: "X+ years, current" OR "X+ years, 2026"
+                            Years format: "X+ years, current" OR "X+ years, {_formatter_current_year()}"
 
                             ========================
                             🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
@@ -20104,10 +20134,13 @@ def _bnsf_detect_structured_dated_roles(blocks):
         # Do not let the final role consume a later major resume section.
         for idx in range(start, end):
             value = str(blocks[idx].get('text', '') or '').strip()
-            if _looks_like_section_heading(value) and re.search(
-                r"\b(?:education|certifications?|skills|technical skills|awards?|references?|projects?)\b",
-                value,
-                flags=re.I,
+            if _looks_like_section_heading(value) and (
+                _is_skills_section_heading(value)
+                or re.search(
+                    r"\b(?:education|certifications?|awards?|references?|projects?)\b",
+                    value,
+                    flags=re.I,
+                )
             ):
                 end = idx
                 break
@@ -20205,10 +20238,13 @@ def _bnsf_structured_dated_roles_are_complete(blocks, headers):
         value = str(blocks[idx].get('text', '') or '').strip()
         if not _looks_like_section_heading(value):
             continue
-        if re.search(
-            r"\b(?:education|certifications?|certificates?|skills|technical skills|awards?|references?|projects?)\b",
-            value,
-            flags=re.I,
+        if (
+            _is_skills_section_heading(value)
+            or re.search(
+                r"\b(?:education|certifications?|certificates?|awards?|references?|projects?)\b",
+                value,
+                flags=re.I,
+            )
         ):
             experience_end = idx
             break
@@ -20535,7 +20571,7 @@ def bnsf_app():
                             - Prioritize the specific "Must-Have" technologies.
                             - Use only tools explicitly mentioned in resume/Q&A/notes
                             Format: "Skill Area (Tool1, Tool2, Tool3, Tool4)"
-                            Years format: "X+ years, current" OR "X+ years, 2026"
+                            Years format: "X+ years, current" OR "X+ years, {_formatter_current_year()}"
 
                             ========================
                             🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
@@ -20772,7 +20808,7 @@ def dallas_generic_app():
                     3. Education: Extract School, Degree, and DegreeStatus.
                         - DegreeStatus: Evaluate if the degree is completed or in progress.
                         - Return "Yes" ONLY if the resume explicitly indicates the degree is finished or gives a past graduation/completion date.
-                        - Return "Pursuing" if the resume indicates ongoing study, contains the word "Pursuing", "In-progress", or lists a graduation date in the future (relative to October 2026).
+                        - Return "Pursuing" if the resume indicates ongoing study, contains the word "Pursuing", "In-progress", or lists a graduation date in the future (relative to {_formatter_current_month_year()}).
                         - If completion cannot be established from the resume, return "". Never guess completion.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
                         - SOURCE FIDELITY: Bullets are extraction-only historical content. Preserve every substantive source bullet/experience paragraph in ORIGINAL ORDER. One source item must remain one output item. NEVER rewrite, improve grammar, summarize, merge, split, omit, add, or reorder work-history content. Return EVERY professional role shown in the source, including abbreviated or undated roles under Additional Experience, Earlier Experience, Prior Experience, or similar sections. If an abbreviated role has no source dates or bullets, keep Dates blank and Bullets empty rather than omitting the role.
@@ -20911,7 +20947,7 @@ def dallas_generic_app():
                             - Prioritize the specific "Must-Have" technologies.
                             - Use only tools explicitly mentioned in resume/Q&A/notes
                             Format: "Skill Area (Tool1, Tool2, Tool3, Tool4)"
-                            Years format: "X+ years, current" OR "X+ years, 2026"
+                            Years format: "X+ years, current" OR "X+ years, {_formatter_current_year()}"
 
                             ========================
                             🚨 ZERO-TOLERANCE HALLUCINATION RULES (CRITICAL)
@@ -23599,7 +23635,7 @@ def deloitte_app():
                             - Years format when supported: "X+ years" only.
                             - Companies format when supported: comma-separated exact employer/client names from the resume where the skill was used.
                             - Calculate years from the dated Professional Experience evidence for that skill and round DOWN to the nearest whole year.
-                            - Use November 2026 as the current date for a present/current role.
+                            - Use {_formatter_current_month_year()} as the current date for a present/current role.
 
                             Return ONLY valid JSON in this exact structure:
                             {{
@@ -23777,7 +23813,7 @@ def deloitte_app():
                                 SKILLS MATRIX YEARS ACCURACY RULES
                                 ========================
                                 - These rules apply ONLY to YEARS1 through YEARS8 in the Skills Matrix, not to SUMMARY1-SUMMARY5.
-                                - Use October 2026 as the current date.
+                                - Use {_formatter_current_month_year()} as the current date.
                                 - STRICT MATH (DATE-DRIVEN ONLY): Calculate years strictly based on the earliest chronological date provided in the 'Professional Experience'. Round DOWN to the nearest whole year.
 
                                 ========================
@@ -24001,7 +24037,7 @@ def navy_normalize_completion_status(education_item, current_year=None):
         return ""
 
     if current_year is None:
-        current_year = date.today().year
+        current_year = _formatter_today_eastern().year
 
     school = str(education_item.get("School", "") or "").strip()
     degree = str(education_item.get("Degree", "") or "").strip()
@@ -26170,7 +26206,7 @@ def navy_federal_app():
                     f.write(resume_file.getbuffer())
 
                 raw_text = extract_text(resume_path)
-                current_date_obj = date.today()
+                current_date_obj = _formatter_today_eastern()
                 current_date = current_date_obj.isoformat()
 
                 # ====================================================
