@@ -1,3 +1,4 @@
+# v75 FREDDIE SOURCE STRUCTURE, ADDRESS METADATA, EDUCATION AND GROUPED DATES
 # v74 NAVY SECTION-BOUNDARY HARDENING + SINGLE QA WARNING EMAIL + AUTO EASTERN DATE
 # v73 QA EMAIL ON EVERY SUCCESSFUL FORMATTER RUN + DUAL RESUME ATTACHMENTS
 # v72 FREDDIE DONT-HAVE EXCLUSION RESTORED
@@ -2347,6 +2348,9 @@ def _validate_role_date_precision(role, blocks, anchor_index, client_name, role_
         str(blocks[i].get('text', '') or '')
         for i in nearby_indices
     )
+    if str(client_name or '').strip().casefold() == 'freddie mac':
+        dates = _freddie_expand_short_month_years(dates)
+        nearby = re.sub(_FRED_DATE_RANGE, lambda m: _freddie_expand_short_month_years(m.group()), nearby, flags=re.I)
     output_years = set(_extract_years(dates))
     source_years = set(_extract_years(nearby))
     if output_years and not output_years.issubset(source_years):
@@ -2787,6 +2791,217 @@ def _freddie_strip_trailing_graduation_year(degree):
     ).strip(" ,-()")
 
 
+
+# v75: Freddie-only source presentation and source-owned metadata recovery.
+_FRED_MONTH_WORD = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+_FRED_DATE_ENDPOINT = rf"(?:{_FRED_MONTH_WORD}\s+[\'’]?(?:(?:19|20)\d{{2}}|\d{{2}})\b|(?:0?[1-9]|1[0-2])/(?:19|20)\d{{2}}\b|(?:19|20)\d{{2}}[-/](?:0?[1-9]|1[0-2])\b|(?:19|20)\d{{2}}\b)"
+_FRED_DATE_RANGE = rf"{_FRED_DATE_ENDPOINT}\s*(?:[-–—]|\bto\b)\s*(?:{_FRED_DATE_ENDPOINT}|present|current|(?:till?|to)\s+(?:date|present))"
+
+
+def _freddie_expand_short_month_years(value):
+    """Only expand explicit month + two-digit year tokens, never a bare number.
+
+    The conventional %y century pivot is used for historical resume dates;
+    no month or day is invented. Applies to Freddie date comparisons/display only.
+    """
+    def expand(match):
+        number = int(match.group(2))
+        return f"{match.group(1)} {1900 + number if number >= 69 else 2000 + number}"
+    return re.sub(rf"\b({_FRED_MONTH_WORD})\s+['’]?(\d{{2}})(?!\d|\s*[,/]\s*\d{{4}})\b", expand, str(value or ""), flags=re.I)
+
+
+_FRED_STATES = ("AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC|Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming|District of Columbia")
+
+
+def _freddie_address_indices(blocks):
+    """Recognize only an address immediately after a dated employment header.
+
+    A street number (or spelled-out One through Nine), a street suffix, and a
+    paired standalone city/state line are required. Never match narrative work,
+    a tool name, a client site in a responsibility, or the candidate location.
+    """
+    street = re.compile(r"^(?:\d{1,6}|One|Two|Three|Four|Five|Six|Seven|Eight|Nine)\s+[A-Za-z0-9 .'-]{2,75}\s+(?:Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Boulevard|Blvd|Lane|Ln|Court|Ct|Way|Parkway|Pkwy|Place|Pl|Terrace|Ter)\.?\s*,?$", re.I)
+    city = re.compile(rf"^[A-Za-z][A-Za-z .'-]{{1,55}}?\s*,?\s+(?:{_FRED_STATES})(?:\s+\d{{5}}(?:-\d{{4}})?)?\s*,?$", re.I)
+    removed = set()
+    for i in range(1, len(blocks)-1):
+        text = str(blocks[i].get('text', '')).strip()
+        next_text = str(blocks[i+1].get('text', '')).strip()
+        previous = str(blocks[i-1].get('text', '')).strip()
+        if blocks[i].get('is_list') or blocks[i+1].get('is_list') or blocks[i-1].get('is_list'):
+            continue
+        if len(previous) > 220 or not re.search(rf"{_FRED_DATE_RANGE}\s*$", previous, re.I):
+            continue
+        if street.fullmatch(text) and city.fullmatch(next_text):
+            removed.update((i, i+1))
+    return removed
+
+
+def _freddie_company_location_line(text, role):
+    """A source employer line with only a trailing city/state is metadata, not a project."""
+    company = _normalize_source_match(clean_company_name(role.get('Company', '')))
+    source = _normalize_source_match(_strip_list_marker_only(text))
+    if not company or not source.startswith(company):
+        return False
+    tail = source[len(company):].strip(' ,|-')
+    if not tail:
+        return True
+    return bool(re.fullmatch(rf"[a-z][a-z .'-]{{1,55}}?\s*,?\s+(?:{_FRED_STATES})(?:\s+\d{{5}}(?:-\d{{4}})?)?", tail, re.I))
+
+
+def _freddie_prepare_source(raw_text):
+    """Build a Freddie-only source view, retaining original upload and registry.
+
+    Only conclusively identified employer address metadata is removed. Both the
+    extractor and fidelity verifier see the same filtered view, preventing
+    address lines from reappearing during strict or fallback reconstruction.
+    """
+    entry = _SOURCE_FIDELITY_REGISTRY.get(_source_key(raw_text), {})
+    blocks = entry.get('blocks', [])
+    removed = _freddie_address_indices(blocks)
+    if not removed:
+        return raw_text
+    kept = [dict(block) for i, block in enumerate(blocks) if i not in removed]
+    for i, block in enumerate(kept):
+        block['index'] = i
+    filtered = '\n'.join(block['text'] for block in kept if block.get('text'))
+    _SOURCE_FIDELITY_REGISTRY[_source_key(filtered)] = dict(entry, blocks=kept)
+    while len(_SOURCE_FIDELITY_REGISTRY) > 20:
+        _SOURCE_FIDELITY_REGISTRY.pop(next(iter(_SOURCE_FIDELITY_REGISTRY)))
+    return filtered
+
+
+def _freddie_degree_key(value):
+    text = _normalize_source_match(value)
+    text = re.sub(r"^b\.?\s*s\.?\s+(?:in\s+)?|^bachelor(?:'s)?\s+of\s+science\s+(?:in\s+)?", 'bachelor of science ', text)
+    text = re.sub(r"^b\.?\s*a\.?\s+(?:in\s+)?|^bachelor(?:'s)?\s+of\s+arts\s+(?:in\s+)?", 'bachelor of arts ', text)
+    text = re.sub(r"^m\.?\s*s\.?\s+(?:in\s+)?|^master(?:'s)?\s+of\s+science\s+(?:in\s+)?", 'master of science ', text)
+    return text.strip()
+
+
+def _freddie_recover_degree_only_entries(education, blocks):
+    """Restore clear degree-only lines in an explicit Education section.
+
+    Do not guess a missing institution or copy a location into School. Existing
+    verified school/degree pairs remain untouched. Recovery is deliberately narrow
+    and preserves source wording (apart from an explicit geographic suffix).
+    """
+    result = [dict(x) for x in education if isinstance(x, dict)] if isinstance(education, list) else []
+    pattern = re.compile(r"^(?:(?:B\.?\s*[AS]\.?|M\.?\s*[AS]\.?|BSc|MSc|Bachelor(?:'s)?(?: of [A-Za-z]+)?|Master(?:'s)?(?: of [A-Za-z]+)?|Doctor(?:ate)?|Ph\.?D\.?)\s+in\s+|(?:Higher\s+)?Diploma\s+in\s+)[A-Za-z][A-Za-z &/'().-]{1,85}$", re.I)
+    for start, end in _freddie_education_section_ranges(blocks):
+        for i in range(start, end):
+            text = _strip_list_marker_only(blocks[i].get('text', ''))
+            degree = re.sub(r",\s*(?:India|USA|United States|Canada|United Kingdom|UK|Australia|Pakistan|Bangladesh|Nepal|China|Mexico)\s*$", '', text, flags=re.I).strip()
+            if not pattern.fullmatch(degree):
+                continue
+            key = _freddie_degree_key(degree)
+            matching = [item for item in result if _freddie_degree_key(item.get('Degree', '')) == key]
+            if matching:
+                # A bare country is not an institution.
+                if degree != text:
+                    country = text[len(degree):].strip(' ,').casefold()
+                    for item in matching:
+                        if str(item.get('School', '')).strip().casefold() == country:
+                            item['School'] = ''
+                continue
+            # If another verified row already covers the credential wording, avoid
+            # creating a duplicate simply because the model normalized its label.
+            if any(key in _freddie_degree_key(item.get('Degree', '')) for item in result):
+                continue
+            # Place the recovered degree before the next source-owned academic row.
+            insert_at = len(result)
+            later = _normalize_source_match(' '.join(str(b.get('text', '')) for b in blocks[i+1:end]))
+            for j, item in enumerate(result):
+                other = _normalize_source_match(item.get('Degree', ''))
+                if other and other in later:
+                    insert_at = j
+                    break
+            result.insert(insert_at, {'School': '', 'Degree': degree})
+    return result
+
+
+def _freddie_group_explicit_client_assignments(data, blocks):
+    """Recover a single explicit dated parent role with a list of client projects.
+
+    Only activate on an unambiguous 'From ... at Below Clients' heading and at
+    least two exact project - client lines, ending at an explicit Environment.
+    Replace only a contiguous set of extracted roles demonstrably owned by that
+    group. Dates belong to the parent, not each individual project.
+    """
+    if not isinstance(data, dict) or not isinstance(data.get('Experience'), list):
+        return data
+    roles = data['Experience']
+    heading = re.compile(rf"^(?P<title>[^:;]{{2,80}}?)\s+(?:from\s+)?(?P<dates>{_FRED_DATE_RANGE})\s+(?:at|for|with)\s+(?:the\s+)?(?:below|following)\s+clients\s*:?$", re.I)
+    for i, block in enumerate(blocks):
+        match = heading.fullmatch(str(block.get('text', '')).strip())
+        if not match or block.get('is_list'):
+            continue
+        entries = []
+        env = ''
+        for b in blocks[i+1:i+15]:
+            t = _strip_list_marker_only(b.get('text', ''))
+            em = re.match(r'^Environment\s*:\s*(.+)$', t, re.I)
+            if em:
+                env = em.group(1).strip(); break
+            if not re.match(r'^.{3,100}?\s*[-–—]\s*[^-–—]{3,150}$', t) or re.search(_FRED_DATE_RANGE, t, re.I):
+                entries = []; break
+            entries.append(t)
+        if len(entries) < 2 or not env:
+            continue
+        payload = _normalize_source_match(' '.join(entries))
+        title = match.group('title').strip()
+        hits = []
+        for j, role in enumerate(roles):
+            if not isinstance(role, dict): continue
+            company = _normalize_source_match(clean_company_name(role.get('Company', '')))
+            role_title = _normalize_source_match(role.get('Title', ''))
+            items = role.get('Bullets', [])
+            if isinstance(items, str): items = items.splitlines()
+            item_match = any(len(_normalize_source_match(x)) >= 8 and _normalize_source_match(x) in payload for x in items or [])
+            if (company and len(company) >= 4 and company in payload) or (role_title == _normalize_source_match(title) and (item_match or not company)):
+                hits.append(j)
+        if not hits or hits != list(range(hits[0], hits[-1]+1)):
+            continue
+        group = {'Company': '', 'Title': title, 'Dates': match.group('dates'), 'Bullets': entries, 'Environment': env, '_FreddieGroupedAssignment': True}
+        roles[hits[0]:hits[-1]+1] = [group]
+    return data
+
+
+def _freddie_source_presentation(experience, blocks):
+    """Classify verified items by exact source paragraph type, within each role.
+
+    Unknown/ambiguous items retain the legacy bullet style. Source text remains
+    unchanged. Explicit list formatting takes precedence over heading heuristics.
+    """
+    anchors = _resilient_role_anchors(experience, blocks)
+    result = []
+    for i, role in enumerate(experience):
+        anchor = anchors[i]
+        end = _next_distinct_anchor(i, anchors, len(blocks))
+        cursor = anchor + 1 if anchor is not None else end
+        kinds = []
+        items = role.get('Bullets', [])
+        if isinstance(items, str): items = items.splitlines()
+        for item in items or []:
+            norm = _normalize_source_match(_strip_list_marker_only(item))
+            found = next((j for j in range(cursor, end) if _normalize_source_match(_strip_list_marker_only(blocks[j].get('text',''))) == norm), None)
+            kind = 'bullet'
+            if found is not None:
+                cursor = found+1
+                b = blocks[found]
+                if not b.get('is_list'):
+                    text = _strip_list_marker_only(b.get('text',''))
+                    heading = _looks_like_freddie_project_subsection_label(text) or bool(re.fullmatch(r'.{2,90}\b(?:responsibilities|duties|project overview|role overview)\s*:', text, re.I))
+                    # A short label only receives heading styling if there is a
+                    # following source item in this same role; never invent one.
+                    kind = 'heading' if heading and found+1 < end else 'paragraph'
+            if role.get('_FreddieGroupedAssignment'):
+                kind = 'paragraph'
+            kinds.append(kind)
+        result.append(kinds)
+    return result
+
+
+
 def _freddie_education_section_ranges(blocks):
     """Recognize Freddie Education headings, including EDUCATION/CERTIFICATION."""
     ranges = []
@@ -2808,7 +3023,8 @@ def _freddie_education_section_ranges(blocks):
         end = len(blocks)
         for j in range(idx + 1, len(blocks)):
             nxt = str(blocks[j].get("text", "") or "").strip()
-            if _is_skills_section_heading(nxt) or stop_re.search(nxt):
+            if (_is_skills_section_heading(nxt) or stop_re.search(nxt)
+                    or re.fullmatch(r"(?:experience|certifications?|certificates?|training|professional development)\s*:?", nxt, re.I)):
                 end = j
                 break
         ranges.append((idx + 1, end))
@@ -3459,6 +3675,9 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
             if (
                 idx not in context_indices_for_role
                 and not _likely_role_metadata_block(blocks[idx].get('text', ''), role)
+                and not (str(client_name or "").strip().casefold() == "freddie mac"
+                         and not blocks[idx].get("is_list")
+                         and _freddie_company_location_line(blocks[idx].get("text", ""), role))
                 and not (
                     is_fannie_client
                     and _looks_like_fannie_compound_role_header(
@@ -3567,7 +3786,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v74"
+_FORMATTER_BUILD_VERSION = "v75"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -4478,12 +4697,14 @@ def _resilient_source_items_for_role(experience, role_index, blocks, anchors, cl
         text = str(block.get("text", "") or "").strip()
         if not text:
             continue
+        if is_freddie and not block.get("is_list") and _freddie_company_location_line(text, role):
+            continue
         if _likely_role_metadata_block(text, role):
             # v66 Freddie: short project/system labels can look like generic
             # section headings to the shared metadata detector. Preserve them
             # when they independently satisfy the narrow Freddie project-label
             # test; continue dropping true company/title/date/section metadata.
-            if not (is_freddie and _looks_like_freddie_project_subsection_label(text)):
+            if not (is_freddie and (_looks_like_freddie_project_subsection_label(text) or (role.get("_FreddieGroupedAssignment") and text in role.get("Bullets", [])))):
                 continue
         if is_fannie and _looks_like_fannie_compound_role_header(text, role):
             continue
@@ -4502,7 +4723,7 @@ def _resilient_source_items_for_role(experience, role_index, blocks, anchors, cl
     list_items = [(idx, block) for idx, block in interval if block.get("is_list")]
     source_items = []
 
-    if list_items and is_freddie:
+    if is_freddie:
         # Freddie resumes frequently contain one employer/role with multiple
         # named projects or systems followed by exact bullets. Preserve the
         # source-owned project labels and meaningful narrative paragraphs in
@@ -4518,7 +4739,8 @@ def _resilient_source_items_for_role(experience, role_index, blocks, anchors, cl
             if (
                 _looks_like_short_role_subheading(text)
                 or _looks_like_freddie_project_subsection_label(text)
-                or len(text) >= 40
+                or re.fullmatch(r".{2,90}\b(?:responsibilities|duties|project overview|role overview)\s*:", text, re.I)
+                or len(text) >= 25
             ):
                 source_items.append(text)
 
@@ -14484,7 +14706,7 @@ def fred_standardize_dates(date_str):
     if not date_str:
         return ""
 
-    text = str(date_str)
+    text = _freddie_expand_short_month_years(date_str)
 
     # Normalize line breaks, spacing, and dash characters.
     text = text.replace("\r", " ").replace("\n", " ")
@@ -14535,7 +14757,7 @@ def fred_standardize_dates(date_str):
 
     # Current / Present
     text = re.sub(
-        r"\b(?:current|present)\b",
+        r"\b(?:current|present|(?:till?|to)\s+(?:date|present))\b",
         "CURRENT",
         text,
         flags=re.IGNORECASE,
@@ -15307,6 +15529,7 @@ def process_freddie_word_doc(
     mapping,
     vetting_pairs,
     out_path,
+    presentation=None,
 ):
     """
     Freddie-specific Word processor.
@@ -15358,7 +15581,7 @@ def process_freddie_word_doc(
     # ================================================================
 
     has_any_education = any(
-        str(mapping.get(f"School{i}", "") or "").strip()
+        (str(mapping.get(f"School{i}", "") or "").strip() or str(mapping.get(f"Degree{i}", "") or "").strip())
         for i in range(1, 4)
     )
 
@@ -15378,10 +15601,17 @@ def process_freddie_word_doc(
                 for i in range(1, 4):
                     if (
                         f"{{{{school{i}}}}}".lower() in row_text
-                        and not str(mapping.get(f"School{i}", "") or "").strip()
+                        and not (str(mapping.get(f"School{i}", "") or "").strip() or str(mapping.get(f"Degree{i}", "") or "").strip())
                     ):
                         rows_to_delete.append(row)
                         break
+                    if (f"{{{{school{i}}}}}".lower() in row_text and not str(mapping.get(f"School{i}", "") or "").strip() and str(mapping.get(f"Degree{i}", "") or "").strip()):
+                        # The legacy template hardcodes Yes. A degree-only recovery
+                        # has no independent completion evidence; leave status blank.
+                        if len(row.cells) >= 3:
+                            for status_p in row.cells[2].paragraphs:
+                                if status_p.text.strip().casefold() == "yes":
+                                    replace_tag_safely(status_p, status_p.text, "")
 
             for row in rows_to_delete:
                 try:
@@ -15468,14 +15698,48 @@ def process_freddie_word_doc(
                     continue
 
                 replace_tag_safely(p, tag, lines[0])
-
+                num_match = re.search(r"\d+", key)
+                role_index = int(num_match.group()) - 1 if num_match else -1
+                kinds = presentation[role_index] if presentation and 0 <= role_index < len(presentation) else []
+                # Only apply types if the source item count is consistent with the
+                # rendering input; otherwise preserve the existing bullet template.
+                if len(kinds) != len(lines):
+                    kinds = ['bullet'] * len(lines)
+                prototype = copy.deepcopy(p._p)
+                ref_font = fred_get_reference_font(p)
                 curr_p = p
-
-                for line in lines[1:]:
-                    curr_p = insert_bullet_line_after(
-                        curr_p,
-                        line,
-                    )
+                for idx, (line, kind) in enumerate(zip(lines, kinds)):
+                    if idx:
+                        xml = copy.deepcopy(prototype)
+                        curr_p._p.addnext(xml)
+                        curr_p = Paragraph(xml, p._parent)
+                        for run in list(curr_p.runs):
+                            run._element.getparent().remove(run._element)
+                        # Match the legacy insert_bullet_line_after font behavior.
+                        original = Paragraph(prototype, p._parent)
+                        run = curr_p.add_run(line)
+                        if original.runs:
+                            font = original.runs[0].font
+                            run.font.bold = font.bold
+                            run.font.italic = font.italic
+                            if font.color and font.color.rgb:
+                                run.font.color.rgb = font.color.rgb
+                            run.font.size = font.size
+                            run.font.name = font.name
+                    if kind in {'paragraph', 'heading'}:
+                        curr_p.style = doc.styles['Normal']
+                        pp = curr_p._p.get_or_add_pPr()
+                        # Explicit list numbering survives a style change unless removed.
+                        for node in pp.xpath('./w:numPr | ./w:ind | ./w:tabs'):
+                            pp.remove(node)
+                        fmt = curr_p.paragraph_format
+                        fmt.left_indent = Pt(0)
+                        fmt.first_line_indent = Pt(0)
+                        fmt.space_before = Pt(3 if kind == 'heading' else 0)
+                        fmt.space_after = Pt(3)
+                        fmt.keep_with_next = kind == 'heading'
+                        for run in curr_p.runs:
+                            fred_apply_reference_font(run, ref_font, bold=(kind == 'heading'))
 
                 # Preserve explicit Environment / Technologies lines only,
                 # following the same rule as your existing formatter.
@@ -16405,7 +16669,7 @@ def freddie_mac_app():
                         resume_file.getbuffer()
                     )
 
-                raw_text = extract_text(resume_path)
+                raw_text = _freddie_prepare_source(extract_text(resume_path))
 
                 # ====================================================
                 # PASS 1 - STRUCTURED RESUME EXTRACTION
@@ -16449,6 +16713,8 @@ RULES:
   Return School = "University of Madras" and Degree = "Bachelor of Engineering".
 - Never omit a clearly stated academic degree merely because the source places
   the school and year inside/after the degree line.
+- If a degree is stated but the institution is not, retain the degree and leave School blank.
+- A country or city alone is not a school; never invent an institution.
 
 4. EXPERIENCE
 Return EVERY professional role shown anywhere in the resume, including dated,
@@ -16472,7 +16738,9 @@ TITLE:
 - Do not upgrade or alter seniority.
 
 BULLETS:
-- Preserve every substantive original bullet.
+- Preserve every substantive original bullet and non-list narrative paragraph.
+- Do not extract employer street addresses or standalone office location metadata as historical bullets.
+- If a dated parent role explicitly lists multiple client projects without individual dates, preserve the parent period once and preserve each project/client line exactly; do not assign the entire period to each project.
 - Freddie-specific project/subsection context is also historical evidence. When
   a role contains a named project, system, product, initiative, or subsection
   label followed by narrative or bullets (for example a short project name such
@@ -16566,7 +16834,10 @@ ORIGINAL RESUME:
                 # Keep AI name inference completely out of source-fidelity decisions.
                 if isinstance(data, dict):
                     data["FullName"] = ""
+                data = _freddie_group_explicit_client_assignments(data, _source_blocks_for_text(raw_text))
                 data = enforce_source_fidelity(data, raw_text, 'Freddie Mac')
+                data['Education'] = _freddie_recover_degree_only_entries(data.get('Education', []), _source_blocks_for_text(raw_text))
+                freddie_presentation = _freddie_source_presentation(data.get('Experience', []), _source_blocks_for_text(raw_text))
 
                 name = re.sub(r"\s+", " ", Candidate_Name.strip())
                 data["FullName"] = name
@@ -16645,6 +16916,7 @@ ORIGINAL RESUME:
                             "Company": clean_company_name(
                                 role.get("Company", "")
                             ),
+                            "_FreddieGroupedAssignment": bool(role.get("_FreddieGroupedAssignment")),
                             "Title": clean_job_title(
                                 role.get("Title", "")
                             ),
@@ -18083,13 +18355,9 @@ FULL ORIGINAL RESUME
                     if i <= len(experience):
                         role = experience[i - 1]
 
-                        mapping[f"Company{i}"] = clean_company_name(
-                            role.get("Company", "")
-                        )
-
-                        mapping[f"Title{i}"] = clean_job_title(
-                            role.get("Title", "")
-                        )
+                        grouped = role.get("_FreddieGroupedAssignment", False)
+                        mapping[f"Company{i}"] = (role.get("Title", "") if grouped else clean_company_name(role.get("Company", "")))
+                        mapping[f"Title{i}"] = "" if grouped else clean_job_title(role.get("Title", ""))
 
                         mapping[f"Bullets{i}"] = clean_bullets(
                             role.get(
@@ -18141,6 +18409,7 @@ FULL ORIGINAL RESUME
                     mapping,
                     vetting_pairs,
                     out_file,
+                    presentation=freddie_presentation,
                 )
 
                 # ====================================================
