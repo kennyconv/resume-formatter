@@ -1,3 +1,4 @@
+# v78 FANNIE SOURCE-ANCHORED SKILL TENURE + CURRENT EMPLOYMENT DATES
 # v77 LITERAL WORD REPLACEMENT + FANNIE TECHNICAL ENVIRONMENT FIDELITY
 # v76 FREDDIE STRUCTURED SKILL RESOLUTION + EVIDENCE ALIASES + TARGETED NARRATIVE REFINEMENTS
 # v75 FREDDIE SOURCE STRUCTURE, ADDRESS METADATA, EDUCATION AND GROUPED DATES
@@ -2022,7 +2023,7 @@ def _looks_like_fannie_compound_role_header(text, role):
     month = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|\d{1,2})"
     endpoint = rf"(?:(?:{month})[ /-]+)?(?:19|20)\d{{2}}"
     date_range_re = re.compile(
-        rf"{endpoint}\s*(?:[-–—]|\bto\b)\s*(?:{endpoint}|present|current)",
+        rf"{endpoint}\s*(?:[-–—]|\bto\b)\s*(?:{endpoint}|{_FANNIE_CURRENT_ENDPOINT})",
         flags=re.I,
     )
     date_match = date_range_re.search(value)
@@ -3843,7 +3844,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v77"
+_FORMATTER_BUILD_VERSION = "v78"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -5079,53 +5080,48 @@ def _fannie_skill_display_needs_polish(value):
     return polished != _sanitize_ai_generated_text(value)
 
 
+# v78: only explicit ongoing employment endpoints, never a missing end date.
+_FANNIE_CURRENT_ENDPOINT = r"(?:present(?:\s+day)?|presently|current(?:ly)?|now|ongoing|(?:till?|until|to|through|thru|up\s+to|as\s+of)\s+(?:date|today|now|present)|at\s+present|today)"
+_FANNIE_MONTH_ENDPOINT = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?"
+_FANNIE_DATED_ENDPOINT = rf"(?:{_FANNIE_MONTH_ENDPOINT}[ /-]+(?:19|20)\d{{2}}|(?:0?[1-9]|1[0-2])[/.-](?:19|20)\d{{2}}|(?:19|20)\d{{2}}[-/](?:0?[1-9]|1[0-2])|(?:19|20)\d{{2}})"
+_FANNIE_RANGE_PATTERN = rf"(?P<start>{_FANNIE_DATED_ENDPOINT})\s*(?:[-–—−]|\bto\b|\bthrough\b|\bthru\b|\buntil\b)\s*(?P<end>{_FANNIE_DATED_ENDPOINT}|{_FANNIE_CURRENT_ENDPOINT})(?![\w/])"
+
+
 def _fannie_parse_date_endpoint(value, is_end=False):
-    """Parse a source-supported month/year or year endpoint for safe duplicate-role collapsing."""
-    value = re.sub(r"\s+", " ", str(value or "")).strip().replace("–", "-").replace("—", "-")
-    if not value:
-        return None
-    if re.search(r"\b(?:present|current|now)\b", value, flags=re.I):
+    """Parse explicit endpoints without inventing source month precision."""
+    value = re.sub(r"\s+", " ", str(value or "")).strip()
+    if is_end and re.fullmatch(_FANNIE_CURRENT_ENDPOINT, value, flags=re.I):
         now = _formatter_today_eastern()
         return (now.year, now.month, "current")
-
-    months = {
-        'jan': 1, 'january': 1, 'feb': 2, 'february': 2, 'mar': 3, 'march': 3,
-        'apr': 4, 'april': 4, 'may': 5, 'jun': 6, 'june': 6, 'jul': 7, 'july': 7,
-        'aug': 8, 'august': 8, 'sep': 9, 'sept': 9, 'september': 9,
-        'oct': 10, 'october': 10, 'nov': 11, 'november': 11, 'dec': 12, 'december': 12,
-    }
-    m = re.search(r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(19\d{2}|20\d{2})\b", value, flags=re.I)
+    m = re.fullmatch(r"(0?[1-9]|1[0-2])[/.-]((?:19|20)\d{2})", value)
     if m:
-        return (int(m.group(2)), months[m.group(1).casefold().rstrip('.')], 'month')
-    y = re.search(r"\b(19\d{2}|20\d{2})\b", value)
-    if y:
-        return (int(y.group(1)), 12 if is_end else 1, 'year')
+        return (int(m[2]), int(m[1]), 'month')
+    m = re.fullmatch(r"((?:19|20)\d{2})[-/](0?[1-9]|1[0-2])", value)
+    if m:
+        return (int(m[1]), int(m[2]), 'month')
+    m = re.fullmatch(rf"({_FANNIE_MONTH_ENDPOINT})[ /-]+((?:19|20)\d{{2}})", value, flags=re.I)
+    if m:
+        months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+        return (int(m[2]), months.index(m[1][:3].lower()) + 1, 'month')
+    if re.fullmatch(r"(?:19|20)\d{2}", value):
+        return (int(value), 12 if is_end else 1, 'year')
     return None
 
 
 def _fannie_parse_date_range(value):
-    """Return (start, end, precision) only for defensible source date ranges."""
-    raw = re.sub(r"\s+", " ", str(value or "")).strip()
-    if not raw:
-        return None
-    parts = re.split(r"\s+(?:to|through|thru)\s+|\s*[–—-]\s*", raw, maxsplit=1, flags=re.I)
-    if len(parts) != 2:
-        return None
-    start = _fannie_parse_date_endpoint(parts[0], is_end=False)
-    end = _fannie_parse_date_endpoint(parts[1], is_end=True)
-    if not start or not end:
-        return None
-    # Merge only like precision or current-ended month/year spans. This avoids
-    # inventing month precision when the source only supplied years.
-    if start[2] != 'month' or end[2] not in {'month', 'current'}:
-        return None
-    return start, end
+    """Month-precision duplicate-role collapse; retain existing precision safeguards."""
+    parsed = _fannie_parse_any_date_range(value)
+    if parsed and parsed[0][2] == 'month' and parsed[1][2] in {'month', 'current'}:
+        return parsed
+    return None
 
 
 def _fannie_format_month_endpoint(point):
     year, month, precision = point
     if precision == 'current':
-        return 'Present'
+        return 'Current'
+    if precision == 'year':
+        return str(year)
     names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
     return f"{names[month - 1]} {year}"
 
@@ -5260,49 +5256,23 @@ def _fannie_merge_compound_date_ranges(value):
 
 
 def _fannie_standardize_display_dates(value):
-    """
-    Fannie-only deterministic work-history date presentation.
-
-    Preserve the exact source-supported precision while normalizing only display
-    conventions:
-      * month names keep the formatter's existing three-letter abbreviations;
-      * Present/Current displays as Present;
-      * every supported range separator (to/through/thru/hyphen/en dash/em dash)
-        displays as a regular spaced hyphen: `` - ``;
-      * year-only endpoints stay year-only, so ``Aug 1993 - 1998`` never gains an
-        invented ending month.
-
-    Compound disjoint ranges, if one ever survives the source-safe consolidation
-    pass, are normalized segment-by-segment without changing their meaning.
-    This helper is intentionally Fannie-only so other client date conventions are
-    not affected.
-    """
-    raw = standardize_dates(str(value or ""))
-    raw = re.sub(r"\s+", " ", raw).strip()
-    if not raw:
-        return ""
-
-    raw = re.sub(r"\b(?:present|current)\b", "Present", raw, flags=re.I)
-
-    def normalize_segment(segment):
-        segment = re.sub(r"\s+", " ", str(segment or "")).strip()
+    """Fannie display only: Current, source precision, standard range separator."""
+    raw = re.sub(r"\s+", " ", str(value or "")).strip()
+    segments = []
+    for segment in raw.split(';'):
+        segment = segment.strip()
         if not segment:
-            return ""
-        # Replace only the first date-range separator in this segment. This keeps
-        # punctuation inside titles/labels untouched and is sufficient for one
-        # employment span.
-        segment = re.sub(
-            r"\s+(?:to|through|thru)\s+|\s*[–—-]\s*",
-            " - ",
-            segment,
-            count=1,
-            flags=re.I,
-        )
-        return re.sub(r"\s+", " ", segment).strip()
-
-    segments = [normalize_segment(part) for part in raw.split(";")]
-    segments = [part for part in segments if part]
-    return "; ".join(segments)
+            continue
+        parsed = _fannie_parse_any_date_range(segment)
+        if parsed:
+            segments.append(' - '.join(_fannie_format_month_endpoint(p) for p in parsed))
+        else:
+            # Keep unfamiliar date text rather than inventing a date or end marker.
+            fallback = standardize_dates(segment)
+            fallback = re.sub(rf"(\s*[-–—−]\s*|\s+(?:to|through|thru)\s+){_FANNIE_CURRENT_ENDPOINT}\s*$", " - Current", fallback, flags=re.I)
+            fallback = re.sub(r"\s+(?:to|through|thru)\s+|\s*[–—-]\s*", " - ", fallback, count=1, flags=re.I)
+            segments.append(re.sub(r"\s+", " ", fallback).strip())
+    return '; '.join(segments)
 
 
 def _fannie_normalize_compound_assignment_dates(experience):
@@ -5313,16 +5283,18 @@ def _fannie_normalize_compound_assignment_dates(experience):
 
 
 def _fannie_parse_any_date_range(value):
-    """Parse month/year or year-only role spans for safe containment checks only."""
-    raw = re.sub(r"\s+", " ", str(value or "")).strip()
-    if not raw:
+    """Parse full explicit ranges, including year-only and mixed precision."""
+    raw = re.sub(r"\s+", " ", str(value or "")).strip().strip('()')
+    raw = re.sub(r"['’](\d{2})", lambda m: ("20" if int(m[1]) < 50 else "19") + m[1], raw)
+    # Also recognize 'July 2025 till date' and 'July 2025 to date' without a dash.
+    m = re.fullmatch(_FANNIE_RANGE_PATTERN, raw, flags=re.I)
+    if not m:
+        m = re.fullmatch(rf"(?P<start>{_FANNIE_DATED_ENDPOINT})\s+(?P<end>{_FANNIE_CURRENT_ENDPOINT})", raw, flags=re.I)
+    if not m:
         return None
-    parts = re.split(r"\s+(?:to|through|thru)\s+|\s*[–—-]\s*", raw, maxsplit=1, flags=re.I)
-    if len(parts) != 2:
-        return None
-    start = _fannie_parse_date_endpoint(parts[0], is_end=False)
-    end = _fannie_parse_date_endpoint(parts[1], is_end=True)
-    if not start or not end:
+    start = _fannie_parse_date_endpoint(m['start'])
+    end = _fannie_parse_date_endpoint(m['end'], is_end=True)
+    if not start or not end or start[:2] > end[:2]:
         return None
     return start, end
 
@@ -5614,7 +5586,167 @@ def _fannie_summary_validation_issues(payload, first_name):
     return issues
 
 
-def _fannie_skills_validation_issues(payload, raw_text):
+def _fannie_skills_source_timeline(experience, raw_text):
+    """Use verified role anchors; match dates in the actual nearby source header.
+
+    Keep role IDs stable before any presentation-only merging. Uncertain spans
+    remain available as experience evidence but cannot certify tenure/recency.
+    """
+    blocks = _source_blocks_for_text(raw_text)
+    if not blocks:
+        return []
+    roles = list(experience or [])
+    anchors = _resilient_role_anchors(roles, blocks)
+    timeline = []
+    for i, role in enumerate(roles):
+        if not isinstance(role, dict) or anchors[i] is None:
+            continue
+        anchor = anchors[i]
+        end = _next_distinct_anchor(i, anchors, len(blocks))
+        start = anchor
+        # Some layouts put dates immediately before the employer/title.
+        if anchor > 0 and (i == 0 or anchors[i-1] is None or anchor - 1 > anchors[i-1]):
+            previous = str(blocks[anchor-1].get('text', '') or '').strip()
+            if _fannie_parse_any_date_range(previous):
+                start -= 1
+        expected = _fannie_parse_any_date_range(role.get('Dates', ''))
+        source_ranges = {}
+        if anchors.count(anchor) == 1:
+            for j in range(start, min(end, anchor + 4)):
+                block = blocks[j]
+                if block.get('is_list'):
+                    continue
+                text = str(block.get('text', '') or '')
+                if len(text) > 350 or re.match(r"\s*(?:technical environment|environment|technologies)\s*:", text, flags=re.I):
+                    continue
+                text = re.sub(r"['’](\d{2})", lambda m: ("20" if int(m[1]) < 50 else "19") + m[1], text)
+                candidates = list(re.finditer(_FANNIE_RANGE_PATTERN, text, flags=re.I))
+                candidates += list(re.finditer(rf"(?P<start>{_FANNIE_DATED_ENDPOINT})\s+(?P<end>{_FANNIE_CURRENT_ENDPOINT})(?!\w)", text, flags=re.I))
+                for match in candidates:
+                    parsed = _fannie_parse_any_date_range(match.group())
+                    if parsed:
+                        source_ranges[parsed] = match.group()
+        matching = [source_ranges[expected]] if expected in source_ranges else []
+        if not matching and len(source_ranges) == 1 and isinstance(role, dict):
+            actual, source_range = next(iter(source_ranges.items()))
+            known_start = expected[0] if expected else _fannie_parse_date_endpoint(role.get('Dates', ''))
+            # Repair a mismatched ongoing marker only when the exact start matches
+            # and there is one unambiguous source range for this role. Never infer
+            # ongoing employment merely because an extracted end is absent.
+            if known_start == actual[0] and (actual[1][2] == 'current' or (expected and expected[1][2] == 'current')):
+                role['Dates'] = source_range
+                matching = [source_range]
+        # An end marker must be source-supported, not inferred from a start year.
+        if not matching:
+            continue
+        bullets = role.get('Bullets', [])
+        if isinstance(bullets, str):
+            bullets = bullets.splitlines()
+        local_source = _normalize_source_match(' '.join(str(b.get('text', '') or '') for b in blocks[anchor:end]))
+        evidence = []
+        for item in [role.get('Title', '')] + list(bullets or []):
+            item = _strip_list_marker_only(item)
+            norm = _normalize_source_match(item)
+            if norm and norm in local_source and item not in evidence:
+                evidence.append(item)
+        timeline.append({
+            'role_id': str(i+1), 'company': role.get('Company', ''),
+            'dates': _fannie_standardize_display_dates(matching[0]),
+            'evidence': evidence,
+        })
+    return timeline
+
+
+def _fannie_skill_date_rules(timeline):
+    return (
+        'AUTHORITATIVE CURRENT DATE (U.S. Eastern): ' + _formatter_current_date_iso() + '\n'
+        'SOURCE-VERIFIED DATED ROLE EVIDENCE (role_id, company, dates, source title/bullets):\n'
+        + json.dumps(timeline, ensure_ascii=False) + '\n'
+        'For EACH skill row, return SKILLn_ROLE_EVIDENCE as a list of objects with role_id and quote. '
+        'Scan ALL dated roles, including ongoing roles, and cite every materially relevant role. '
+        'The quote must be a verbatim contiguous excerpt of that role\'s listed evidence and demonstrate '
+        'the competency CATEGORY, not merely a loosely related tool. Use title alone only when the title '
+        'directly demonstrates the broad competency; do not use environment inventories alone. '
+        'Never assign current to a narrow past competency based on unrelated current work. '
+        'Python will verify each quote against its own role, use the latest verified role end date, '
+        'and cap claimed tenure by the union of relevant dated periods (not their sum). '
+        'A full role span is an upper bound, not proof of continuous use; estimate actual tenure conservatively. '
+        'If the resume explicitly states longer tenure for this SAME category, include the complete verbatim source statement (including what the years refer to) '
+        'in SKILLn_TENURE_QUOTE, otherwise return an empty string. '
+        'Do not transfer overall career tenure or a single tool\'s tenure to a narrower competency. '
+        'If no dated evidence exists, leave ROLE_EVIDENCE empty and do not invent dates. '
+        'These fields are QA-only and never displayed in Word.'
+    )
+
+
+def _fannie_skill_years_from_evidence(payload, idx, timeline, raw_text):
+    """Calculate recency and bound the model's tenure; never trust unsupported years."""
+    rows = {str(r['role_id']): r for r in timeline or []}
+    refs = payload.get(f'SKILL{idx}_ROLE_EVIDENCE', [])
+    if not isinstance(refs, list) or not refs:
+        return '', f'SKILL{idx} has no verified dated role evidence.'
+    intervals = []
+    ends = []
+    seen = set()
+    now = _formatter_today_eastern()
+    today_month = now.year * 12 + now.month - 1
+    for ref in refs:
+        if not isinstance(ref, dict):
+            return '', f'SKILL{idx} has invalid role evidence.'
+        rid = str(ref.get('role_id', '')).strip()
+        quote = _normalize_source_match(ref.get('quote', ''))
+        role = rows.get(rid)
+        # Require a substantive quote from THIS role, not a quote elsewhere in the resume.
+        if not role or len(quote) < 12 or not any(quote in _normalize_source_match(x) for x in role['evidence']):
+            return '', f'SKILL{idx} has unverified role-specific evidence (role {rid}).'
+        if rid in seen:
+            continue
+        seen.add(rid)
+        parsed = _fannie_parse_any_date_range(role['dates'])
+        if not parsed:
+            return '', f'SKILL{idx} has an unverified date range (role {rid}).'
+        start, end = parsed
+        # Year-only boundaries use a conservative lower-bound elapsed span. Exact
+        # month ranges use elapsed months (not inclusive calendar-month rounding).
+        left = start[0]*12 + (12 if start[2] == 'year' else start[1]) - 1
+        right = end[0]*12 + (1 if end[2] == 'year' else end[1]) - 1
+        if left > today_month or (end[2] != 'current' and end[0] > now.year):
+            return '', f'SKILL{idx} cites a future employment period.'
+        right = min(right, today_month)
+        if right >= left:
+            intervals.append((left, right))
+        ends.append(end)
+    merged = []
+    for left, right in sorted(intervals):
+        if merged and left <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(right, merged[-1][1]))
+        else:
+            merged.append((left, right))
+    months = sum(right-left for left, right in merged)
+    max_years = months // 12
+    # Explicit self-reported tenure may cover dates not fully itemized in the resume.
+    # The AI must select a same-category statement; Python checks literal source and number.
+    tenure_quote = str(payload.get(f'SKILL{idx}_TENURE_QUOTE', '') or '').strip()
+    if tenure_quote:
+        match = re.search(r'\b(\d{1,2})\s*\+?\s+years?\b', tenure_quote, flags=re.I)
+        exact_statement = _normalize_source_match(_strip_list_marker_only(tenure_quote))
+        source_statements = {_normalize_source_match(_strip_list_marker_only(line)) for line in str(raw_text or '').splitlines()}
+        if not match or exact_statement not in source_statements or len(re.findall(r'\b[a-zA-Z]+\b', tenure_quote)) < 5:
+            return '', f'SKILL{idx} cites unverified explicit tenure.'
+        max_years = max(max_years, int(match[1]))
+    proposed = str(payload.get(f'YEARS{idx}', '') or '').strip()
+    match = re.fullmatch(r'(<1 year|\d+\+ years),\s*(current|(?:19|20)\d{2})', proposed, flags=re.I)
+    if not match:
+        return '', f'YEARS{idx} is missing or malformed.'
+    proposed_years = 0 if match[1].lower().startswith('<') else int(match[1].split('+')[0])
+    # Respect AI's shorter, evidence-based estimate; never assume the whole role was spent on a skill.
+    years = min(proposed_years, max_years)
+    recency = 'current' if any(e[2] == 'current' for e in ends) else str(max(e[0] for e in ends))
+    value = f'{years}+ years, {recency}' if years else f'<1 year, {recency}'
+    return value, ''
+
+
+def _fannie_skills_validation_issues(payload, raw_text, timeline=None):
     """Nonfatal QA for Fannie's four-row skills table."""
     issues = []
     payload = payload if isinstance(payload, dict) else {}
@@ -5640,6 +5772,13 @@ def _fannie_skills_validation_issues(payload, raw_text):
                 f"YEARS{idx} must be exactly 'X+ years, current' or 'X+ years, YYYY' "
                 f"(or '<1 year, ...'); received: {years or '[blank]'}."
             )
+
+        if timeline is not None:
+            verified_years, date_issue = _fannie_skill_years_from_evidence(payload, idx, timeline, raw_text)
+            if date_issue:
+                issues.append(date_issue)
+            elif verified_years.casefold() != years.casefold():
+                issues.append(f"YEARS{idx} is inconsistent with role evidence: {years}; verified bound/recency: {verified_years}. Check ALL relevant roles and correct the dates/tenure.")
 
         if _fannie_skill_display_needs_polish(skill):
             issues.append(
@@ -7704,7 +7843,7 @@ def fannie_mae_app():
                     3. Education: Extract School and Degree.
                     4. Experience: Company, Title, Bullets (LIST), Environment (String, optional), Dates.
                         - SOURCE FIDELITY: Bullets are extraction-only historical content. Preserve every substantive source bullet/experience paragraph in ORIGINAL ORDER. One source item must remain one output item. NEVER rewrite, improve grammar, summarize, merge, split, omit, add, or reorder work-history content. Return EVERY professional role shown in the source, including abbreviated or undated roles under Additional Experience, Earlier Experience, Prior Experience, or similar sections. If an abbreviated role has no source dates or bullets, keep Dates blank and Bullets empty rather than omitting the role.
-                        - For 'Dates', preserve the date precision from the original resume. If a role lists only years, return only those years (for example, "2018 - 2020"). NEVER invent January, "01", or any other month. If month + year are present, preserve them; mixed-precision ranges must stay mixed.
+                        - For 'Dates', preserve the date precision from the original resume. Preserve any explicit ongoing end marker such as Till Date, Present, Current, or To Date exactly during extraction; never infer ongoing employment from a missing end date. If a role lists only years, return only those years (for example, "2018 - 2020"). NEVER invent January, "01", or any other month. If month + year are present, preserve them; mixed-precision ranges must stay mixed.
                         - For 'Title', preserve the actual job title wording. Remove only clearly extraneous employment-type suffixes (for example "- Contract", "(Contract)") or an explicit project/program/client qualifier (for example "Senior Developer - Starship Project" -> "Senior Developer"). Do NOT remove legitimate specialty/technology wording merely because the title contains a dash or parentheses.
                         - For 'Environment', extract only an explicitly labeled inventory ("Environment:", "Technical Environment:", or "Technologies:") within that same role, whether before or after the responsibilities. Preserve the source inventory exactly, without its label. Do not include it again in Bullets. If none is explicitly present, leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
@@ -7764,6 +7903,18 @@ def fannie_mae_app():
                     name = re.sub(r"\s+", " ", Candidate_Name.strip())
                     data['FullName'] = name
                     first_name = _fannie_first_name(name)
+
+                    # Fannie date audit must not block the underlying resume generation.
+                    try:
+                        fannie_skill_timeline = _fannie_skills_source_timeline(data.get('Experience', []), raw_text)
+                    except Exception as date_error:
+                        fannie_skill_timeline = []
+                        notify_formatter_diagnostic(
+                            "Fannie Mae", "WARNING", "Fannie dated-role evidence could not be prepared; verify the skills dates manually.",
+                            raw_text=raw_text, uploaded_filename=resume_file.name,
+                            technical_details=str(date_error),
+                        )
+                    fannie_skill_date_rules = _fannie_skill_date_rules(fannie_skill_timeline)
 
                     # v58 Fannie presentation cleanup, source-supported only:
                     # 1) union overlapping/touching date ranges for one shared assignment;
@@ -8006,6 +8157,7 @@ def fannie_mae_app():
                               FastAPI, PySpark, ETL/ELT, AWS, SQL, Summit, and Microsoft 365.
 
                             YEARS OF EXPERIENCE + YEAR LAST USED:
+                            {fannie_skill_date_rules}
                             - Give the best defensible tenure for THAT competency. Do not bias it high or low.
                             - A long value such as 14+ years is correct when the resume supports it.
                             - Do not substitute total-career years unless the competency truly spans that period.
@@ -8046,22 +8198,6 @@ def fannie_mae_app():
                             G. Replace weaker/redundant content with stronger supported evidence BEFORE
                                returning the JSON. Do not add any unsupported claim to improve coverage.
 
-                            OUTPUT FORMAT:
-                            {{
-                              "SUMMARY1": "Anchor sentence",
-                              "SUMMARY2": "Alignment / hook sentence",
-                              "SUMMARY3": "Execution + impact / proof sentence",
-                              "SUMMARY4": "Evidence-based closer sentence",
-                              "SKILL1": "Competency Area (Supporting Detail, Tool)",
-                              "YEARS1": "X+ years, current",
-                              "SKILL2": "Competency Area (Supporting Detail, Tool)",
-                              "YEARS2": "X+ years, YYYY",
-                              "SKILL3": "Competency Area (Supporting Detail, Tool)",
-                              "YEARS3": "X+ years, current",
-                              "SKILL4": "Competency Area (Supporting Detail, Tool)",
-                              "YEARS4": "X+ years, YYYY"
-                            }}
-
                             CANDIDATE FULL NAME (authoritative recruiter input):
                             {name}
 
@@ -8091,6 +8227,30 @@ def fannie_mae_app():
 
                             ORIGINAL RESUME:
                             {raw_text}
+
+                            OUTPUT SCHEMA:
+                            {{
+                              "SUMMARY1": "Anchor sentence",
+                              "SUMMARY2": "Alignment / hook sentence",
+                              "SUMMARY3": "Execution + impact / proof sentence",
+                              "SUMMARY4": "Evidence-based closer sentence",
+                              "SKILL1": "Competency Area (Supporting Detail, Tool)",
+                              "YEARS1": "X+ years, current",
+                              "SKILL1_ROLE_EVIDENCE": [{{"role_id": "", "quote": ""}}],
+                              "SKILL1_TENURE_QUOTE": "",
+                              "SKILL2": "Competency Area (Supporting Detail, Tool)",
+                              "YEARS2": "X+ years, YYYY",
+                              "SKILL2_ROLE_EVIDENCE": [{{"role_id": "", "quote": ""}}],
+                              "SKILL2_TENURE_QUOTE": "",
+                              "SKILL3": "Competency Area (Supporting Detail, Tool)",
+                              "YEARS3": "X+ years, current",
+                              "SKILL3_ROLE_EVIDENCE": [{{"role_id": "", "quote": ""}}],
+                              "SKILL3_TENURE_QUOTE": "",
+                              "SKILL4": "Competency Area (Supporting Detail, Tool)",
+                              "YEARS4": "X+ years, YYYY",
+                              "SKILL4_ROLE_EVIDENCE": [{{"role_id": "", "quote": ""}}],
+                              "SKILL4_TENURE_QUOTE": ""
+                            }}
                             """
                             time.sleep(2)
                             summary_data = {}
@@ -8242,10 +8402,11 @@ def fannie_mae_app():
                             skill_issues = _fannie_skills_validation_issues(
                                 summary_data,
                                 raw_text,
+                                fannie_skill_timeline,
                             )
                             if skill_issues:
                                 skill_repair_prompt = f"""
-                                Return a valid JSON object ONLY with SKILL1-4 and YEARS1-4.
+                                Return a valid JSON object ONLY with the four skill rows, years, and role/tenure evidence fields shown below.
 
                                 Repair ONLY the Fannie Skill & Competency rows. Do not alter the summary.
                                 Keep the proven v57 Fannie presentation style.
@@ -8264,6 +8425,7 @@ def fannie_mae_app():
                                   over a weaker synonym.
                                 - Before returning, perform a coverage audit: if a major supported requirement
                                   is missing while a lower-value/redundant detail occupies scarce space, swap it.
+                                {fannie_skill_date_rules}
                                 - Give the best defensible skill-specific tenure without upward/downward bias.
                                 - Recency belongs to the competency category as a whole. A broader truthful
                                   category may use a later year only when material evidence for that broader
@@ -8292,12 +8454,16 @@ def fannie_mae_app():
                                 CURRENT SKILLS DRAFT:
                                 {json.dumps({k: summary_data.get(k, '') for k in ('SKILL1','YEARS1','SKILL2','YEARS2','SKILL3','YEARS3','SKILL4','YEARS4')}, ensure_ascii=False, indent=2)}
 
-                                OUTPUT:
+                                OUTPUT SCHEMA:
                                 {{
                                   "SKILL1": "", "YEARS1": "",
+                                  "SKILL1_ROLE_EVIDENCE": [{{"role_id": "", "quote": ""}}], "SKILL1_TENURE_QUOTE": "",
                                   "SKILL2": "", "YEARS2": "",
+                                  "SKILL2_ROLE_EVIDENCE": [{{"role_id": "", "quote": ""}}], "SKILL2_TENURE_QUOTE": "",
                                   "SKILL3": "", "YEARS3": "",
-                                  "SKILL4": "", "YEARS4": ""
+                                  "SKILL3_ROLE_EVIDENCE": [{{"role_id": "", "quote": ""}}], "SKILL3_TENURE_QUOTE": "",
+                                  "SKILL4": "", "YEARS4": "",
+                                  "SKILL4_ROLE_EVIDENCE": [{{"role_id": "", "quote": ""}}], "SKILL4_TENURE_QUOTE": ""
                                 }}
                                 """
                                 try:
@@ -8308,11 +8474,27 @@ def fannie_mae_app():
                                     )
                                     repaired = repair_and_load_json(repair_response.text)
                                     if isinstance(repaired, dict):
-                                        for key in ("SKILL1","YEARS1","SKILL2","YEARS2","SKILL3","YEARS3","SKILL4","YEARS4"):
-                                            if key in repaired:
-                                                summary_data[key] = repaired[key]
+                                        keys = [key for i in range(1, 5) for key in (f"SKILL{i}", f"YEARS{i}", f"SKILL{i}_ROLE_EVIDENCE", f"SKILL{i}_TENURE_QUOTE")]
+                                        if all(key in repaired for key in keys):
+                                            trial = dict(summary_data)
+                                            trial.update({key: repaired[key] for key in keys})
+                                            old_valid = sum(not _fannie_skill_years_from_evidence(summary_data, i, fannie_skill_timeline, raw_text)[1] for i in range(1, 5))
+                                            new_valid = sum(not _fannie_skill_years_from_evidence(trial, i, fannie_skill_timeline, raw_text)[1] for i in range(1, 5))
+                                            trial_issues = _fannie_skills_validation_issues(trial, raw_text, fannie_skill_timeline)
+                                            if new_valid >= old_valid and len(trial_issues) <= len(skill_issues):
+                                                summary_data = trial
                                 except Exception:
                                     pass
+
+                            # Final authority for date values: source-anchored role evidence.
+                            # Never publish a guessed year if the repair cannot verify it.
+                            unresolved_date_issues = []
+                            for i in range(1, 5):
+                                if str(summary_data.get(f"SKILL{i}", "") or "").strip():
+                                    verified_years, date_issue = _fannie_skill_years_from_evidence(summary_data, i, fannie_skill_timeline, raw_text)
+                                    if date_issue:
+                                        unresolved_date_issues.append(date_issue + " Verify tenure/recency manually; unverified years left blank.")
+                                    summary_data[f"YEARS{i}"] = verified_years
 
                             remaining_summary_issues = _fannie_summary_validation_issues(
                                 summary_data,
@@ -8321,8 +8503,9 @@ def fannie_mae_app():
                             remaining_skill_issues = _fannie_skills_validation_issues(
                                 summary_data,
                                 raw_text,
+                                fannie_skill_timeline,
                             )
-                            remaining_fannie_issues = remaining_summary_issues + remaining_skill_issues
+                            remaining_fannie_issues = list(dict.fromkeys(remaining_summary_issues + remaining_skill_issues + unresolved_date_issues))
                             # v59: successful self-repair is intentionally quiet. Only notify
                             # when generated-content QA still has unresolved issues after the
                             # summary-only / skills-only repair passes have already run.
