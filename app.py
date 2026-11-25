@@ -1,3 +1,4 @@
+# v77 LITERAL WORD REPLACEMENT + FANNIE TECHNICAL ENVIRONMENT FIDELITY
 # v76 FREDDIE STRUCTURED SKILL RESOLUTION + EVIDENCE ALIASES + TARGETED NARRATIVE REFINEMENTS
 # v75 FREDDIE SOURCE STRUCTURE, ADDRESS METADATA, EDUCATION AND GROUPED DATES
 # v74 NAVY SECTION-BOUNDARY HARDENING + SINGLE QA WARNING EMAIL + AUTO EASTERN DATE
@@ -40,6 +41,7 @@ import threading
 import hashlib
 import difflib
 import tempfile
+import traceback
 import unicodedata
 from email.message import EmailMessage
 from copy import deepcopy
@@ -3177,6 +3179,45 @@ def _freddie_parent_assignment_interval(role, role_index, experience, blocks, ro
     return (start, end) if start < end else None
 
 
+def _fannie_technical_environment_payload(text):
+    """An explicitly labeled source inventory, not a generated skills list."""
+    match = re.match(r"^technical\s+environments?\s*:\s*(.+)$",
+                     _strip_list_marker_only(text), flags=re.I)
+    return match.group(1).strip() if match else ""
+
+
+def _fannie_technical_environment_for_role(role_index, blocks, anchors):
+    """Recover only one unambiguous inventory in a uniquely anchored role.
+
+    If the next role is not anchored, or multiple inventories occur, do not
+    infer ownership. Stop at an explicit major section boundary.
+    """
+    if role_index >= len(anchors):
+        return ""
+    anchor = anchors[role_index]
+    if anchor is None or anchors.count(anchor) != 1:
+        return ""
+    if role_index + 1 < len(anchors):
+        end = anchors[role_index + 1]
+        if end is None or end <= anchor:
+            return ""
+    else:
+        end = len(blocks)
+    matches = []
+    for idx in range(anchor + 1, end):
+        text = str(blocks[idx].get("text", "") or "").strip()
+        if _looks_like_section_heading(text) and (
+            _is_skills_section_heading(text) or re.fullmatch(
+                r"(?:education|certifications?|awards?|references?|additional experience|earlier experience|professional experience|work experience|employment history|projects?)\s*:?",
+                _canonical_section_heading_text(text), flags=re.I)
+        ):
+            break
+        payload = _fannie_technical_environment_payload(text)
+        if payload:
+            matches.append(payload)
+    return matches[0] if len(matches) == 1 else ""
+
+
 def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatter"):
     """
     Fail-closed historical-resume verification used by every client.
@@ -3416,6 +3457,10 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
         role_anchor = role_anchors[role_index]
         is_shared_anchor = shared_anchor_counts.get(role_anchor, 0) > 1
 
+        fannie_technical_env = (
+            _fannie_technical_environment_for_role(role_index, blocks, role_anchors)
+            if str(client_name or '').strip().casefold() == 'fannie mae' else ""
+        )
         bullets = role.get('Bullets', [])
         if isinstance(bullets, str):
             bullets = [x for x in bullets.split('\n') if str(x).strip()]
@@ -3468,6 +3513,11 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
             for bullet_num, bullet in enumerate(bullets, start=1):
                 candidate = _strip_list_marker_only(bullet)
                 if not candidate:
+                    continue
+
+                if fannie_technical_env and _normalize_source_match(
+                    _fannie_technical_environment_payload(candidate) or candidate
+                ) == _normalize_source_match(fannie_technical_env):
                     continue
 
                 # v48: Gemini sometimes promotes a non-bulleted role-context line
@@ -3584,7 +3634,11 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
         # Environment/Technologies is also historical source content. Restore it
         # only from an explicit source line inside this role's source interval.
         env_value = str(role.get('Environment', '') or '').strip()
-        if env_value:
+        if fannie_technical_env:
+            # The original role explicitly provides a single inventory. Restore
+            # that exact text even when the model omitted or reformatted it.
+            role['Environment'] = fannie_technical_env
+        elif env_value:
             env_clean = _strip_list_marker_only(env_value)
             env_clean = re.sub(
                 r"^(?:environment|environments|technologies|tech\s+stack|technology\s+stack)\s*:\s*",
@@ -3676,6 +3730,8 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
             if (
                 idx not in context_indices_for_role
                 and not _likely_role_metadata_block(blocks[idx].get('text', ''), role)
+                and not (is_fannie_client and _fannie_technical_environment_payload(blocks[idx].get('text', ''))
+                         and _normalize_source_match(_fannie_technical_environment_payload(blocks[idx].get('text', ''))) == _normalize_source_match(role.get('Environment', '')))
                 and not (str(client_name or "").strip().casefold() == "freddie mac"
                          and not blocks[idx].get("is_list")
                          and _freddie_company_location_line(blocks[idx].get("text", ""), role))
@@ -3787,7 +3843,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v76"
+_FORMATTER_BUILD_VERSION = "v77"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -5828,7 +5884,18 @@ def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_erro
 
         # Historical Environment/Technologies must be explicitly source-labeled.
         env = str(role.get("Environment", "") or "").strip()
-        if env:
+        fannie_technical_env = (
+            _fannie_technical_environment_for_role(role_index, blocks, anchors)
+            if str(client_name or '').strip().casefold() == 'fannie mae' else ""
+        )
+        if fannie_technical_env:
+            role["Environment"] = fannie_technical_env
+            role["Bullets"] = [
+                item for item in role.get("Bullets", [])
+                if _normalize_source_match(_fannie_technical_environment_payload(item) or item)
+                != _normalize_source_match(fannie_technical_env)
+            ]
+        elif env:
             env_clean = re.sub(
                 r"^(?:environment|environments|technologies|tech\s+stack|technology\s+stack)\s*:\s*",
                 "",
@@ -6307,7 +6374,7 @@ def replace_tag_safely(p, tag, value, unbold=False, force_bold=False, font_name=
     for run in p.runs:
         if tag.lower() in run.text.lower():
             pattern = re.compile(re.escape(tag), re.IGNORECASE)
-            run.text = pattern.sub(str(value), run.text)
+            run.text = pattern.sub(lambda _match: str(value), run.text)
             if unbold:
                 run.font.bold = False
             if force_bold:
@@ -6318,7 +6385,7 @@ def replace_tag_safely(p, tag, value, unbold=False, force_bold=False, font_name=
     if not replaced:
         full_text = p.text
         pattern = re.compile(re.escape(tag), re.IGNORECASE)
-        new_text = pattern.sub(str(value), full_text)
+        new_text = pattern.sub(lambda _match: str(value), full_text)
         if p.runs:
             p.runs[0].text = new_text
             if unbold:
@@ -6980,6 +7047,26 @@ def process_word_doc(temp_path, mapping, out_path):
             tag = f"{{{{{key}}}}}"
             if tag.lower() in p.text.lower():
                 if not value or not str(value).strip():
+                    # Fannie abbreviated roles can contain only an explicit environment
+                    # inventory. Render it where the empty bullets would otherwise be.
+                    env_number = re.fullmatch(r"Bullets(\d+)", key, flags=re.I)
+                    if "FormerFM" in mapping and env_number:
+                        env_key = f"Environment{env_number.group(1)}"
+                        env_value = str(mapping.get(env_key, "") or "").strip()
+                        env_tag = "{{" + env_key + "}}"
+                        if env_value and not any(env_tag.lower() in q.text.lower() for q in doc.paragraphs):
+                            env_p = p.insert_paragraph_before("")
+                            env_p.style = doc.styles['Normal']
+                            env_p.paragraph_format.left_indent = Pt(0)
+                            env_p.paragraph_format.space_after = Pt(0)
+                            b_run = env_p.add_run("Environment: ")
+                            b_run.bold = True
+                            b_run.font.name = env_font
+                            b_run.font.size = Pt(12)
+                            n_run = env_p.add_run(env_value)
+                            n_run.bold = False
+                            n_run.font.name = env_font
+                            n_run.font.size = Pt(12)
                     if any(k.lower() in key.lower() for k in kill_keys):
                         if p not in paras_to_remove:
                             paras_to_remove.append(p)
@@ -7598,6 +7685,7 @@ def fannie_mae_app():
             st.error(f"❌ Error: The preloaded template '{TEMPLATE_FILENAME}' was not found. Please make sure it is uploaded to your GitHub repository.")
         else:
             begin_formatter_run("Fannie Mae")
+            raw_text = ""
             with st.spinner("Processing document and querying AI..."):
                 try:
                     resume_path = f"temp_{resume_file.name}"
@@ -7618,7 +7706,7 @@ def fannie_mae_app():
                         - SOURCE FIDELITY: Bullets are extraction-only historical content. Preserve every substantive source bullet/experience paragraph in ORIGINAL ORDER. One source item must remain one output item. NEVER rewrite, improve grammar, summarize, merge, split, omit, add, or reorder work-history content. Return EVERY professional role shown in the source, including abbreviated or undated roles under Additional Experience, Earlier Experience, Prior Experience, or similar sections. If an abbreviated role has no source dates or bullets, keep Dates blank and Bullets empty rather than omitting the role.
                         - For 'Dates', preserve the date precision from the original resume. If a role lists only years, return only those years (for example, "2018 - 2020"). NEVER invent January, "01", or any other month. If month + year are present, preserve them; mixed-precision ranges must stay mixed.
                         - For 'Title', preserve the actual job title wording. Remove only clearly extraneous employment-type suffixes (for example "- Contract", "(Contract)") or an explicit project/program/client qualifier (for example "Senior Developer - Starship Project" -> "Senior Developer"). Do NOT remove legitimate specialty/technology wording merely because the title contains a dash or parentheses.
-                        - For 'Environment', you may ONLY extract this if the original resume explicitly uses the word "Environment:" or "Technologies:" at the bottom of the role. If those exact words are not there, you MUST leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
+                        - For 'Environment', extract only an explicitly labeled inventory ("Environment:", "Technical Environment:", or "Technologies:") within that same role, whether before or after the responsibilities. Preserve the source inventory exactly, without its label. Do not include it again in Bullets. If none is explicitly present, leave it blank "". Do NOT auto-generate or compile an environment list from the bullet points.
                     5. Certifications: Extract any certifications listed into a single comma-separated string. If none are found, leave it blank "".
 
                     JSON Structure:
@@ -8295,7 +8383,9 @@ def fannie_mae_app():
                 except Exception as e:
                     notify_formatter_diagnostic(
                         "Fannie Mae", "FATAL", str(e),
+                        raw_text=raw_text,
                         uploaded_filename=getattr(locals().get("resume_file"), "name", ""),
+                        technical_details=traceback.format_exc(),
                     )
                     st.error(f"❌ Process Failed: {str(e)}")
 
