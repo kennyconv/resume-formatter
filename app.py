@@ -1,3 +1,4 @@
+# v80 FANNIE EXACT ROLE TITLE RECOVERY + PRIORITY-PRESERVING REPAIR
 # v79 FANNIE INVENTORY FIDELITY + RELEVANCE-FIRST TAILORING + CONTEXT + EVIDENCE QA
 # v78 FANNIE SOURCE-ANCHORED SKILL TENURE + CURRENT EMPLOYMENT DATES
 # v77 LITERAL WORD REPLACEMENT + FANNIE TECHNICAL ENVIRONMENT FIDELITY
@@ -3348,6 +3349,132 @@ def _fannie_rendered_inventory_issues(output_path, experience):
     return []
 
 
+def _fannie_exact_header_title(role, blocks):
+    """Recover a separate, unambiguous title immediately after a unique company/date header.
+
+    Require exact company text and full date precision, not the fuzzy/best-effort
+    anchor alone. Never borrow a title from another assignment or a responsibility.
+    Complex/condensed headers are intentionally left to existing QA/manual review.
+    """
+    company = _normalize_source_match(clean_company_name(role.get('Company', '')))
+    dates = _fannie_parse_any_date_range(role.get('Dates', ''))
+    if not company or not dates:
+        return ''
+    company_pattern = r'(?<!\w)' + re.escape(company) + r'(?!\w)'
+    matches = []
+    for j in range(_initial_experience_search_start(blocks), len(blocks)):
+        block = blocks[j]
+        text = str(block.get('text', '') or '').strip()
+        if block.get('is_list') or len(text) > 350 or not re.search(company_pattern, _normalize_source_match(text)):
+            continue
+        ranges = list(re.finditer(_FANNIE_RANGE_PATTERN, text, re.I))
+        if not ranges:
+            ranges = list(re.finditer(rf'{_FANNIE_DATED_ENDPOINT}\s+{_FANNIE_CURRENT_ENDPOINT}(?!\w)', text, re.I))
+        if (len(ranges) == 1 and _fannie_parse_any_date_range(ranges[0].group()) == dates
+                and not text[ranges[0].end():].strip(' |,;:-()')
+                and re.search(company_pattern, _normalize_source_match(text[:ranges[0].start()]))):
+            matches.append(j)
+        elif not ranges and j+1 < len(blocks) and not blocks[j+1].get('is_list'):
+            # Separate company and date paragraphs, only when company line is exact.
+            if _normalize_source_match(text) == company and _fannie_parse_any_date_range(blocks[j+1].get('text','')) == dates:
+                matches.append(j+1)
+    if len(set(matches)) != 1:
+        return ''
+    j = matches[0] + 1
+    if j >= len(blocks):
+        return ''
+    block = blocks[j]
+    raw = str(block.get('text', '') or '').strip()
+    explicit = re.match(r'^(?:job\s+title|position|title|role|designation)\s*:\s*(.+)$', raw, re.I)
+    candidate = explicit.group(1).strip() if explicit else raw
+    # Occupation words are a structural safety check, not a whitelist of skills.
+    title_like = re.compile(r'\b(?:analyst|engineer|developer|architect|manager|director|specialist|consultant|tester|lead|owner|administrator|coordinator|associate|officer|technician|designer|scientist|accountant|supervisor|programmer|advisor|representative|assistant|executive|auditor|writer|researcher|scrum master)\b', re.I)
+    def plausible(value):
+        return bool(value and len(value) <= 200 and len(value.split()) <= 24
+                    and not re.search(r'\b(?:19|20)\d{2}\b|[!?;]|\.$', value)
+                    and not re.match(r'^(?:developed|managed|led|worked|responsible|supported|created|implemented|performed|designed|provided|elicited|analyzed|built|client|employer|team|environment|technologies|tools)\b', value, re.I)
+                    and not re.match(r'^(?:project|program|assignment|workstream)\s*:', value, re.I)
+                    and not re.search(r'\b(?:years? of experience|responsible for|worked on|worked with)\b', value, re.I)
+                    and not _fannie_inventory_section_boundary(value)
+                    and not _FANNIE_INVENTORY_LABEL.match(value)
+                    and title_like.search(value))
+    if block.get('is_list') or not plausible(candidate):
+        return ''
+    # Reject a second competing title immediately below, rather than arbitrarily
+    # choosing one. An explicit label provides stronger proof but not ambiguity relief.
+    if j+1 < len(blocks) and not blocks[j+1].get('is_list'):
+        next_text = str(blocks[j+1].get('text','') or '').strip()
+        if plausible(next_text) or _fannie_parse_any_date_range(next_text):
+            return ''
+    old = _normalize_source_match(clean_job_title(role.get('Title','')))
+    new = _normalize_source_match(candidate)
+    if not old and not explicit:
+        # Blank extractions have no wording clue: require a concise title-cased
+        # header, not a free-form narrative that happens to mention an occupation.
+        words = re.findall(r'[A-Za-z][A-Za-z.-]*', candidate)
+        if any(w[0].islower() and w.casefold() not in {'and','of','the','for','in','to','with','or'} for w in words):
+            return ''
+    if old and old != new and not explicit:
+        # Only recover close extraction mistakes from unlabeled title lines. The
+        # actual output is the original source text, never the similarity match.
+        old_words = set(re.findall(r'\w+', old))
+        new_words = set(re.findall(r'\w+', new))
+        if (not old_words or len(old_words & new_words)/max(len(old_words),len(new_words)) < .65
+            or difflib.SequenceMatcher(None, old, new).ratio() < .78):
+            return ''
+    return candidate
+
+
+def _fannie_recover_source_titles(experience, blocks):
+    """Repair missing/unsupported titles before either fidelity path rebuilds bullets."""
+    changes = []
+    for i, role in enumerate(experience):
+        if not isinstance(role, dict):
+            continue
+        old = clean_job_title(role.get('Title',''))
+        if old and (_source_supports_display_value(old, blocks) or _source_supports_split_job_title(old, blocks)):
+            continue
+        recovered = _fannie_exact_header_title(role, blocks)
+        if recovered:
+            role['Title'] = recovered
+            changes.append({'role': i+1, 'company': role.get('Company',''), 'extracted_title': old, 'restored_source_title': recovered})
+    return changes
+
+
+def _fannie_rendered_title_issues(output_path, experience, mapping):
+    """Read-only, role-ordered audit of mapped title paragraphs in final Word output."""
+    doc = docx.Document(output_path)
+    actual = [_normalize_source_match(p.text) for p in doc.paragraphs if p.text.strip()]
+    issues = []
+    cursor = 0
+    for i, role in enumerate(experience, 1):
+        company = str(mapping.get(f'Company{i}', '') or '').strip()
+        dates = str(mapping.get(f'Dates{i}', '') or '').strip()
+        title = _normalize_source_match(mapping.get(f'Title{i}', ''))
+        if not title:
+            issues.append(f'Role {i} ({company}): missing job title in final mapping; verify against original resume.')
+        header = _normalize_source_match(f'{company} {dates}')
+        # Existing Fannie template places company and dates together, title on
+        # the next nonempty paragraph. Support separate company/date lines too.
+        found = None
+        for j in range(cursor, len(actual)):
+            if header and actual[j] == header:
+                found = j
+                break
+            if company and dates and actual[j] == _normalize_source_match(company) and j+1 < len(actual) and actual[j+1] == _normalize_source_match(dates):
+                found = j+1
+                break
+        if found is None:
+            issues.append(f'Role {i} ({company}): rendered title audit could not locate the expected company/date header; review Word output.')
+            continue
+        cursor = found + 1
+        if title and (cursor >= len(actual) or actual[cursor] != title):
+            issues.append(f'Role {i} ({company}): expected job title missing or different after rendered company/date header; review Word output.')
+        elif title:
+            cursor += 1
+    return issues
+
+
 def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatter"):
     """
     Fail-closed historical-resume verification used by every client.
@@ -3438,6 +3565,10 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
     experience = result.get('Experience', [])
     if not isinstance(experience, list):
         raise RuntimeError(f"{client_name} extraction returned an invalid Experience list.")
+
+    if str(client_name or '').strip().casefold() == 'fannie mae':
+        title_recoveries = _fannie_recover_source_titles(experience, blocks)
+        _fannie_record_qa_details('strict_source_title_recoveries', title_recoveries)
 
     # Locate roles before bullet restoration so role order/date precision can be verified.
     role_anchors = []
@@ -3974,7 +4105,7 @@ def _enforce_source_fidelity_strict(data, raw_text, client_name="Resume Formatte
 # --- v55 PRODUCTION RESILIENCE / DIAGNOSTICS ---
 # ====================================================================
 
-_FORMATTER_BUILD_VERSION = "v79"
+_FORMATTER_BUILD_VERSION = "v80"
 
 
 def _formatter_source_filename(raw_text=""):
@@ -4509,7 +4640,7 @@ def notify_formatter_usage(
         body_lines.append("[No client form values were available in session state.]")
 
     if client.casefold() == "fannie mae" and state.get("fannie_qa_details"):
-        body_lines.extend(["", "FANNIE SOURCE INVENTORY / TAILORING QA DETAILS (v79):",
+        body_lines.extend(["", f"FANNIE SOURCE INVENTORY / TAILORING QA DETAILS ({_FORMATTER_BUILD_VERSION}):",
                            json.dumps(state["fannie_qa_details"], ensure_ascii=False, indent=2)])
     if warnings:
         body_lines.extend(["", "WARNINGS RECORDED DURING THIS RUN:"])
@@ -6060,6 +6191,46 @@ def _fannie_priority_coverage_issues(payload, evidence_text):
     return list(dict.fromkeys(issues))
 
 
+def _fannie_coverage_repair_review(before, after, evidence_text):
+    """Compare the SAME frozen source-supported priority plan before/after repair.
+
+    v79's count-only comparison could replace a covered priority with a missing
+    one. The plan has no verified ordinal rank, so do not silently trade away
+    covered priorities. Keep unrelated style/date gates and existing repair budget.
+    """
+    frozen = dict(after)
+    frozen['PRIORITY_COVERAGE'] = before.get('PRIORITY_COVERAGE', [])
+    previous = _fannie_priority_coverage_issues(before, evidence_text)
+    current = _fannie_priority_coverage_issues(frozen, evidence_text)
+    resolved = [issue for issue in previous if issue not in current]
+    introduced = [issue for issue in current if issue not in previous]
+    return {'accepted': not introduced and len(current) <= len(previous),
+            'before_issues': previous, 'after_issues': current,
+            'resolved_issues': resolved, 'introduced_issues': introduced}
+
+
+def _fannie_coverage_repair_instructions(payload, evidence_text):
+    issues = _fannie_priority_coverage_issues(payload, evidence_text)
+    covered = []
+    plan = payload.get('PRIORITY_COVERAGE', [])
+    if isinstance(plan, list):
+        for item in plan[:6]:
+            if not isinstance(item, dict):
+                continue
+            one = dict(payload, PRIORITY_COVERAGE=[item])
+            if not _fannie_priority_coverage_issues(one, evidence_text):
+                covered.append({'priority': item.get('priority',''), 'acceptable_terms': item.get('terms',[])})
+    return ('PRESERVE COVERAGE DURING REPAIR: The priority plan is fixed. Retain all already covered '
+            'source-supported priorities across the summary and four skills rows, while resolving omissions. '
+            'Combine genuinely complementary details within existing rows or sentences; replace redundant or '
+            'lower-value details outside the protected plan rather than swapping one protected priority for another. '
+            'Never add unsupported facts, inflate tenure, create extra rows, or keyword-stuff. '
+            'If the missing priority cannot be added truthfully without losing a protected priority, retain the better '
+            'existing coverage and allow the unresolved issue to remain for review.\n'
+            'Already covered priorities to protect: ' + json.dumps(covered, ensure_ascii=False) + '\n'
+            'Outstanding coverage issues: ' + json.dumps(issues, ensure_ascii=False))
+
+
 def _fannie_tailoring_validation_issues(payload, first_name, raw_text):
     """Compatibility wrapper: summary quality + skills quality, all nonfatal."""
     return (
@@ -6174,6 +6345,10 @@ def _resilient_source_fidelity_fallback(data, raw_text, client_name, strict_erro
         raise RuntimeError(f"{client_name} extraction returned an invalid Experience list.")
 
     experience = [copy.deepcopy(role) for role in experience if isinstance(role, dict)]
+    if str(client_name or '').strip().casefold() == 'fannie mae':
+        title_recoveries = _fannie_recover_source_titles(experience, blocks)
+        _fannie_record_qa_details('fallback_source_title_recoveries', title_recoveries)
+        fallback_actions.extend(f"Role {item['role']}: exact source job title restored" for item in title_recoveries)
     anchors = _resilient_role_anchors(experience, blocks)
 
     for role_index, role in enumerate(experience):
@@ -8632,6 +8807,7 @@ def fannie_mae_app():
                                 Only output fields in the OUTPUT schema below. The priority plan is review-only in this repair; do not regenerate it or modify skills.
                                 EXISTING PRIORITY PLAN (review for coverage; do not invent claims):
                                 {json.dumps(summary_data.get('PRIORITY_COVERAGE', []), ensure_ascii=False)}
+                                {_fannie_coverage_repair_instructions(summary_data, fannie_coverage_source)}
                                 CURRENT SKILLS (unchanged in this repair):
                                 {json.dumps({f'SKILL{i}': summary_data.get(f'SKILL{i}', '') for i in range(1,5)}, ensure_ascii=False)}
                                 CURRENT SUMMARY DRAFT:
@@ -8658,9 +8834,10 @@ def fannie_mae_app():
                                         trial.update({k: repaired[k] for k in ('SUMMARY1','SUMMARY2','SUMMARY3','SUMMARY4','SUMMARY3_PROOF') if k in repaired})
                                         trial_issues = _fannie_summary_validation_issues(trial, first_name)
                                         trial_coverage = _fannie_priority_coverage_issues(trial, fannie_coverage_source)
-                                        if len(trial_issues) <= len(summary_issues) and len(trial_coverage) <= len(initial_coverage_issues):
+                                        coverage_review = _fannie_coverage_repair_review(summary_data, trial, fannie_coverage_source)
+                                        if len(trial_issues) <= len(summary_issues) and coverage_review['accepted']:
                                             summary_data = trial
-                                        _fannie_record_qa_details('summary_repair_review', {'issues': trial_issues, 'coverage_issues': trial_coverage, 'accepted': summary_data is trial})
+                                        _fannie_record_qa_details('summary_repair_review', {'issues': trial_issues, 'coverage_issues': trial_coverage, 'coverage_delta': coverage_review, 'accepted': summary_data is trial})
                                 except Exception as repair_error:
                                     _fannie_record_qa_details('summary_repair_error', str(repair_error))
 
@@ -8730,6 +8907,7 @@ def fannie_mae_app():
                                 Only output fields in the OUTPUT SCHEMA below. The summary, proof and priority plan are review-only in this repair; do not regenerate them.
                                 EXISTING PRIORITY PLAN (review for coverage, do not change the plan):
                                 {json.dumps(summary_data.get('PRIORITY_COVERAGE', []), ensure_ascii=False)}
+                                {_fannie_coverage_repair_instructions(summary_data, fannie_coverage_source)}
                                 CURRENT SUMMARY (unchanged in this repair):
                                 {json.dumps({f'SUMMARY{i}': summary_data.get(f'SUMMARY{i}', '') for i in range(1,5)}, ensure_ascii=False)}
                                 CURRENT SKILLS DRAFT:
@@ -8765,8 +8943,10 @@ def fannie_mae_app():
                                             trial_coverage = _fannie_priority_coverage_issues(trial, fannie_coverage_source)
                                             old_count = sum(bool(str(summary_data.get(f'SKILL{i}', '') or '').strip()) for i in range(1,5))
                                             new_count = sum(bool(str(trial.get(f'SKILL{i}', '') or '').strip()) for i in range(1,5))
-                                            _fannie_record_qa_details('skill_repair_attempt', {'rows': _fannie_skill_audit_snapshot(trial, fannie_skill_timeline, raw_text), 'issues': trial_issues, 'coverage_issues': trial_coverage})
-                                            if new_valid >= old_valid and new_count >= old_count and len(trial_issues) <= len(skill_issues) and len(trial_coverage) <= len(skill_coverage_issues):
+                                            coverage_review = _fannie_coverage_repair_review(summary_data, trial, fannie_coverage_source)
+                                            accept_repair = new_valid >= old_valid and new_count >= old_count and len(trial_issues) <= len(skill_issues) and coverage_review['accepted']
+                                            _fannie_record_qa_details('skill_repair_attempt', {'rows': _fannie_skill_audit_snapshot(trial, fannie_skill_timeline, raw_text), 'issues': trial_issues, 'coverage_issues': trial_coverage, 'coverage_delta': coverage_review, 'accepted': accept_repair})
+                                            if accept_repair:
                                                 summary_data = trial
                                             else:
                                                 # Preserve independently repaired date evidence for an unchanged competency.
@@ -8853,6 +9033,15 @@ def fannie_mae_app():
                     if render_issues:
                         notify_formatter_diagnostic('Fannie Mae', 'WARNING', 'Fannie rendered inventory QA needs review.', raw_text=raw_text, uploaded_filename=resume_file.name, technical_details='\n'.join(render_issues))
                         st.warning('⚠️ Rendered environment inventory check needs manual review. See the QA email.')
+
+                    try:
+                        title_issues = _fannie_rendered_title_issues(out_file, exp, mapping)
+                    except Exception as title_error:
+                        title_issues = [f'Rendered job title check could not finish: {title_error}']
+                    _fannie_record_qa_details('rendered_title_issues', title_issues)
+                    if title_issues:
+                        notify_formatter_diagnostic('Fannie Mae', 'WARNING', 'Fannie rendered job title completeness needs review.', raw_text=raw_text, uploaded_filename=resume_file.name, technical_details='\n'.join(title_issues))
+                        st.warning('⚠️ One or more rendered job titles need manual review. See the QA email.')
 
                     notify_formatter_usage(
                         "Fannie Mae",
